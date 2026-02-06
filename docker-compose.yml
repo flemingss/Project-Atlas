@@ -1,0 +1,221 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: atlas-postgres
+    environment:
+      POSTGRES_DB: atlas
+      POSTGRES_USER: atlas
+      POSTGRES_PASSWORD: atlas
+    ports:
+      - "5432:5432"
+    volumes:
+      - atlas_postgres:/var/lib/postgresql/data
+      - ./docker/postgres/init-multi-db.sql:/docker-entrypoint-initdb.d/01-init-multi-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atlas -d atlas"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  qdrant:
+    image: qdrant/qdrant:v1.11.5
+    container_name: atlas-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - atlas_qdrant:/qdrant/storage
+
+  redis:
+    image: redis:7
+    container_name: atlas-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - atlas_redis:/data
+    command: ["redis-server", "--requirepass", "${DIFY_REDIS_PASSWORD:-difyai123456}"]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a ${DIFY_REDIS_PASSWORD:-difyai123456} ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # -------------------- Dify (Primary UI + HITL) --------------------
+  dify-api:
+    image: langgenius/dify-api:1.12.1
+    container_name: atlas-dify-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "5001:5001"
+    environment:
+      MODE: api
+      LOG_LEVEL: ${DIFY_LOG_LEVEL:-INFO}
+      SECRET_KEY: ${DIFY_SECRET_KEY:-sk-change-me}
+      INIT_PASSWORD: ${DIFY_INIT_PASSWORD:-}
+
+      # Storage (OpenDAL)
+      OPENDAL_SCHEME: fs
+      OPENDAL_FS_ROOT: /app/api/storage
+
+      DB_TYPE: postgresql
+      DB_USERNAME: atlas
+      DB_PASSWORD: atlas
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: dify
+
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${DIFY_REDIS_PASSWORD:-difyai123456}
+      CELERY_BROKER_URL: redis://:${DIFY_REDIS_PASSWORD:-difyai123456}@redis:6379/1
+      CELERY_BACKEND: redis
+
+      # Keep Dify's internal dataset vector store available without adding extra DBs.
+      VECTOR_STORE: qdrant
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_API_KEY: ${DIFY_QDRANT_API_KEY:-}
+
+      # URLs used by Dify UI for console/app API targets.
+      CONSOLE_WEB_URL: ${DIFY_CONSOLE_WEB_URL:-http://localhost}
+      CONSOLE_API_URL: ${DIFY_CONSOLE_API_URL:-http://localhost:5001}
+      APP_WEB_URL: ${DIFY_APP_WEB_URL:-http://localhost}
+      APP_API_URL: ${DIFY_APP_API_URL:-http://localhost:5001}
+
+      MIGRATION_ENABLED: "true"
+    volumes:
+      - ./volumes/dify/storage:/app/api/storage
+
+  dify-worker:
+    image: langgenius/dify-api:1.12.1
+    container_name: atlas-dify-worker
+    restart: unless-stopped
+    depends_on:
+      dify-api:
+        condition: service_started
+    environment:
+      MODE: worker
+      LOG_LEVEL: ${DIFY_LOG_LEVEL:-INFO}
+      SECRET_KEY: ${DIFY_SECRET_KEY:-sk-change-me}
+
+      # Storage (OpenDAL)
+      OPENDAL_SCHEME: fs
+      OPENDAL_FS_ROOT: /app/api/storage
+
+      DB_TYPE: postgresql
+      DB_USERNAME: atlas
+      DB_PASSWORD: atlas
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: dify
+
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${DIFY_REDIS_PASSWORD:-difyai123456}
+      CELERY_BROKER_URL: redis://:${DIFY_REDIS_PASSWORD:-difyai123456}@redis:6379/1
+      CELERY_BACKEND: redis
+
+      VECTOR_STORE: qdrant
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_API_KEY: ${DIFY_QDRANT_API_KEY:-}
+      MIGRATION_ENABLED: "true"
+    volumes:
+      - ./volumes/dify/storage:/app/api/storage
+
+  dify-worker-beat:
+    image: langgenius/dify-api:1.12.1
+    container_name: atlas-dify-worker-beat
+    restart: unless-stopped
+    depends_on:
+      dify-api:
+        condition: service_started
+    environment:
+      MODE: beat
+      LOG_LEVEL: ${DIFY_LOG_LEVEL:-INFO}
+      SECRET_KEY: ${DIFY_SECRET_KEY:-sk-change-me}
+
+      # Storage (OpenDAL)
+      OPENDAL_SCHEME: fs
+      OPENDAL_FS_ROOT: /app/api/storage
+
+      DB_TYPE: postgresql
+      DB_USERNAME: atlas
+      DB_PASSWORD: atlas
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: dify
+
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${DIFY_REDIS_PASSWORD:-difyai123456}
+      CELERY_BROKER_URL: redis://:${DIFY_REDIS_PASSWORD:-difyai123456}@redis:6379/1
+      CELERY_BACKEND: redis
+
+      VECTOR_STORE: qdrant
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_API_KEY: ${DIFY_QDRANT_API_KEY:-}
+      MIGRATION_ENABLED: "true"
+    volumes:
+      - ./volumes/dify/storage:/app/api/storage
+
+  dify-web:
+    image: langgenius/dify-web:1.12.1
+    container_name: atlas-dify-web
+    restart: unless-stopped
+    depends_on:
+      dify-api:
+        condition: service_started
+    ports:
+      - "80:3000"
+    environment:
+      CONSOLE_WEB_URL: ${DIFY_CONSOLE_WEB_URL:-http://localhost}
+      CONSOLE_API_URL: ${DIFY_CONSOLE_API_URL:-http://localhost:5001}
+      APP_WEB_URL: ${DIFY_APP_WEB_URL:-http://localhost}
+      APP_API_URL: ${DIFY_APP_API_URL:-http://localhost:5001}
+
+  dify-plugin-daemon:
+    image: langgenius/dify-plugin-daemon:0.5.3-local
+    container_name: atlas-dify-plugin-daemon
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      dify-api:
+        condition: service_started
+    ports:
+      - "5003:5003"
+    environment:
+      DB_TYPE: postgresql
+      DB_USERNAME: atlas
+      DB_PASSWORD: atlas
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: dify_plugin
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${DIFY_REDIS_PASSWORD:-difyai123456}
+      SERVER_PORT: 5002
+      SERVER_KEY: ${DIFY_PLUGIN_DAEMON_KEY:-change-me}
+      DIFY_INNER_API_URL: http://dify-api:5001
+      DIFY_INNER_API_KEY: ${DIFY_PLUGIN_DIFY_INNER_API_KEY:-change-me}
+      PLUGIN_REMOTE_INSTALLING_HOST: 0.0.0.0
+      PLUGIN_REMOTE_INSTALLING_PORT: 5003
+      PLUGIN_STORAGE_TYPE: local
+      PLUGIN_STORAGE_LOCAL_ROOT: /app/storage
+      PLUGIN_WORKING_PATH: /app/storage/cwd
+      PLUGIN_INSTALLED_PATH: plugin
+      PLUGIN_PACKAGE_CACHE_PATH: plugin_packages
+      PLUGIN_MEDIA_CACHE_PATH: assets
+    volumes:
+      - ./volumes/dify/plugin-daemon:/app/storage
+
+volumes:
+  atlas_postgres:
+  atlas_qdrant:
+  atlas_redis:

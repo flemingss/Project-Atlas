@@ -1,0 +1,22 @@
+version: 1
+
+thresholds:
+  judge_cutoff_refine: 4
+  judge_borderline_low: 3
+  judge_borderline_high: 4
+
+limits:
+  refine_max_retries: 2
+  tier2_chunk_cap_per_document: 25
+
+frontier_fallback:
+  enabled: false
+  vram_percent_threshold: 92
+  queue_depth_threshold: 2
+
+cache:
+  semantic_cache_enabled: false
+  similarity_threshold: 0.98
+
+privacy:
+  default_is_sensitive: true

@@ -1,0 +1,49 @@
+version: 1
+
+providers:
+  lmstudio:
+    type: openai_compat
+    base_url_env: ATLAS_OPENAI_BASE_URL
+
+  openai_frontier:
+    type: openai
+    api_key_env: OPENAI_API_KEY
+
+  anthropic_frontier:
+    type: anthropic
+    api_key_env: ANTHROPIC_API_KEY
+
+roles:
+  judge_model:
+    provider: lmstudio
+    model_name: "llama-3.2-3b"
+    params:
+      temperature: 0.0
+
+  refine_model:
+    provider: lmstudio
+    model_name: "llama-3.2-vision"
+    params:
+      temperature: 0.2
+
+  embed_model:
+    provider: lmstudio
+    model_name: "text-embedding-nomic-embed-text-v1.5"
+    params: {}
+
+  metadata_tier1_model:
+    provider: lmstudio
+    model_name: "llama-3.2-3b"
+    params:
+      temperature: 0.0
+
+  metadata_tier2_model:
+    provider: openai_frontier
+    model_name: "gpt-4o-mini"
+    params:
+      temperature: 0.0
+
+  reranker_model:
+    provider: lmstudio
+    model_name: "bge-reranker"
+    params: {}

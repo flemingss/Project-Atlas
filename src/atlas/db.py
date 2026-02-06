@@ -1,0 +1,27 @@
+from __future__ import annotations
+
+from collections.abc import Iterator
+from contextlib import contextmanager
+
+from sqlalchemy import Engine, create_engine
+from sqlalchemy.orm import Session, sessionmaker
+
+
+def make_engine(db_url: str) -> Engine:
+    # SQLAlchemy uses the driver specified by the URL scheme.
+    # Normalize `postgresql://` to `postgresql+psycopg://` (psycopg3) for convenience.
+    url = db_url
+    if url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+psycopg://")
+
+    return create_engine(url, pool_pre_ping=True)
+
+
+def make_sessionmaker(engine: Engine) -> sessionmaker[Session]:
+    return sessionmaker(bind=engine, expire_on_commit=False)
+
+
+@contextmanager
+def session_scope(session_factory: sessionmaker[Session]) -> Iterator[Session]:
+    with session_factory() as session:
+        yield session
