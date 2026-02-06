@@ -74,12 +74,13 @@ class ConcurrencyGuard:
         This is a placeholder that returns mock data.
         """
         # TODO: Implement actual VRAM monitoring via nvidia-smi or torch
+        from datetime import datetime
         vram_percent = 0.0  # Placeholder
         metrics = ResourceMetrics(
             vram_percent=vram_percent,
             queue_depth=self.queue_depth,
             active_heavy_tasks=self.heavy_semaphore._value,  # noqa: SLF001
-            timestamp="",
+            timestamp=datetime.utcnow().isoformat() + "Z",
         )
         return metrics
 

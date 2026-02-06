@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -9,15 +9,8 @@ class TextChunk:
     index: int
     text: str
     parent_header_id: str | None = None
-    sibling_ids: list[str] = None
-    section_path: list[str] = None
-
-    def __post_init__(self):
-        # Initialize mutable defaults
-        if self.sibling_ids is None:
-            object.__setattr__(self, "sibling_ids", [])
-        if self.section_path is None:
-            object.__setattr__(self, "section_path", [])
+    sibling_ids: list[str] = field(default_factory=list)
+    section_path: list[str] = field(default_factory=list)
 
 
 def chunk_text(*, text: str, max_chars: int) -> list[TextChunk]:
