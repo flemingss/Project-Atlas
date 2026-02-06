@@ -1,0 +1,196 @@
+"""Concurrency and resource management for Project Atlas (HLD section 4).
+
+Provides:
+- vLLM semaphore for heavy task concurrency control
+- VRAM monitoring and thresholds
+- Queue depth tracking
+- Frontier fallback logic
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from dataclasses import dataclass
+
+from atlas.diagnostics import get_diagnostics
+
+
+@dataclass
+class ResourceMetrics:
+    """Current resource usage metrics."""
+
+    vram_percent: float
+    queue_depth: int
+    active_heavy_tasks: int
+    timestamp: str
+
+
+class ConcurrencyGuard:
+    """Concurrency guard with semaphore for heavy tasks (HLD section 4).
+
+    Implements:
+    - vLLM Semaphore: Concurrency = 1 for "Heavy" tasks
+    - VRAM monitoring and fallback triggers
+    - Queue depth tracking
+    """
+
+    def __init__(
+        self,
+        *,
+        heavy_task_limit: int = 1,
+        vram_threshold_percent: float = 92.0,
+        queue_depth_threshold: int = 2,
+    ):
+        self.heavy_semaphore = asyncio.Semaphore(heavy_task_limit)
+        self.vram_threshold = vram_threshold_percent
+        self.queue_depth_threshold = queue_depth_threshold
+        self.queue_depth = 0
+        self.logger = logging.getLogger("atlas.concurrency")
+        self.diagnostics = get_diagnostics()
+
+    async def acquire_heavy_task(self) -> None:
+        """Acquire semaphore for a heavy task (e.g., local LLM inference)."""
+        self.queue_depth += 1
+        self.diagnostics.log_info(
+            component="concurrency",
+            message=f"Acquiring heavy task slot (queue_depth={self.queue_depth})",
+        )
+        await self.heavy_semaphore.acquire()
+        self.queue_depth -= 1
+
+    def release_heavy_task(self) -> None:
+        """Release semaphore for a heavy task."""
+        self.heavy_semaphore.release()
+        self.diagnostics.log_info(
+            component="concurrency",
+            message="Released heavy task slot",
+        )
+
+    async def check_resources(self) -> ResourceMetrics:
+        """Check current resource usage.
+
+        Note: VRAM monitoring requires platform-specific implementation.
+        This is a placeholder that returns mock data.
+        """
+        # TODO: Implement actual VRAM monitoring via nvidia-smi or torch
+        vram_percent = 0.0  # Placeholder
+        metrics = ResourceMetrics(
+            vram_percent=vram_percent,
+            queue_depth=self.queue_depth,
+            active_heavy_tasks=self.heavy_semaphore._value,  # noqa: SLF001
+            timestamp="",
+        )
+        return metrics
+
+    async def should_fallback_to_frontier(self, *, frontier_enabled: bool) -> bool:
+        """Determine if we should fallback to frontier API (HLD section 4).
+
+        Returns True if:
+        - Frontier fallback is enabled
+        - VRAM exceeds threshold OR queue depth exceeds threshold
+        """
+        if not frontier_enabled:
+            return False
+
+        metrics = await self.check_resources()
+
+        if metrics.vram_percent > self.vram_threshold:
+            self.diagnostics.log_warning(
+                component="concurrency",
+                message=f"VRAM threshold exceeded: {metrics.vram_percent}% > {self.vram_threshold}%",
+                context={"vram_percent": metrics.vram_percent},
+            )
+            return True
+
+        if metrics.queue_depth > self.queue_depth_threshold:
+            self.diagnostics.log_warning(
+                component="concurrency",
+                message=f"Queue depth exceeded: {metrics.queue_depth} > {self.queue_depth_threshold}",
+                context={"queue_depth": metrics.queue_depth},
+            )
+            return True
+
+        return False
+
+
+class ResourceGuard:
+    """Resource guard for managing model execution (HLD section 4).
+
+    Implements privacy guard and resource-based routing.
+    """
+
+    def __init__(self, *, default_is_sensitive: bool = True):
+        self.default_is_sensitive = default_is_sensitive
+        self.logger = logging.getLogger("atlas.resource_guard")
+        self.diagnostics = get_diagnostics()
+
+    def check_privacy(self, *, is_sensitive: bool | None, allow_api: bool) -> bool:
+        """Check if operation is allowed given privacy constraints (HLD section 4).
+
+        Privacy Guard: Default is_sensitive: true. Override required for API routing.
+        Enforced per-tenant.
+        """
+        sensitive = is_sensitive if is_sensitive is not None else self.default_is_sensitive
+
+        if sensitive and allow_api:
+            self.diagnostics.log_warning(
+                component="resource_guard",
+                message="Attempting API routing for sensitive data",
+                context={"is_sensitive": sensitive, "allow_api": allow_api},
+            )
+            return False
+
+        return True
+
+    def select_provider(
+        self,
+        *,
+        preferred_provider: str,
+        fallback_provider: str,
+        is_sensitive: bool | None,
+        concurrency_guard: ConcurrencyGuard,
+        frontier_enabled: bool,
+    ) -> str:
+        """Select provider based on resource constraints and privacy.
+
+        Returns the provider to use based on:
+        - Privacy constraints
+        - Resource availability
+        - Frontier fallback configuration
+        """
+        # Check privacy first
+        can_use_api = self.check_privacy(
+            is_sensitive=is_sensitive,
+            allow_api=True,  # This should be per-tenant config
+        )
+
+        # If sensitive data, must use local
+        if not can_use_api:
+            return preferred_provider
+
+        # Check if we should fallback due to resources
+        # Note: This is async but we're in sync context - would need restructuring
+        # For now, return preferred
+        return preferred_provider
+
+
+# Global concurrency guard instance
+_global_concurrency_guard: ConcurrencyGuard | None = None
+
+
+def get_concurrency_guard(
+    *,
+    heavy_task_limit: int = 1,
+    vram_threshold: float = 92.0,
+    queue_depth_threshold: int = 2,
+) -> ConcurrencyGuard:
+    """Get or create the global concurrency guard."""
+    global _global_concurrency_guard
+    if _global_concurrency_guard is None:
+        _global_concurrency_guard = ConcurrencyGuard(
+            heavy_task_limit=heavy_task_limit,
+            vram_threshold_percent=vram_threshold,
+            queue_depth_threshold=queue_depth_threshold,
+        )
+    return _global_concurrency_guard
