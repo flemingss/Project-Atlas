@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from atlas.llm.deterministic import DeterministicProvider
 from atlas.llm.openai_compat import OpenAICompatibleProvider
 from atlas.llm.provider import ILlmProvider
 from atlas.settings import Settings
@@ -43,6 +44,9 @@ class ModelRegistry:
         if ptype == "openai_compat":
             # Base URL is set via env var to make swapping IP easy.
             return OpenAICompatibleProvider(base_url=self._settings.atlas_openai_base_url)
+
+        if ptype == "deterministic":
+            return DeterministicProvider()
 
         if ptype in ("openai", "anthropic"):
             # Wired for config purposes; implementation comes next.

@@ -1,13 +1,16 @@
-"""Human-in-the-Loop (HITL) integration for Project Atlas (HLD section 5).
+"""Human-in-the-Loop (HITL) integration for Project Atlas.
 
-Manages HITL workflow with Dify integration and priority queue.
+Current: in-memory HITL task queue used for scaffolding and tests.
+
+Note: Dify push is a placeholder/optional experiment. The primary ops/HITL direction is a
+purpose-built console (“Control Center”) per TECHNICAL_DESIGN.md.
 """
 
 from __future__ import annotations
 
 import uuid
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from atlas.diagnostics import get_diagnostics
@@ -15,9 +18,9 @@ from atlas.schemas import HITLTask
 
 
 class HITLManager:
-    """HITL Manager with priority queue and Dify integration (HLD section 5).
+    """HITL Manager with priority queue.
 
-    HITL Hub (Pluggable): Dify-based interface with priority queue
+    HITL Hub (Pluggable): Dify integration is optional/experimental.
     Priority: High-sensitivity + Low Score = Top
     Schema: before_md, after_md, reason_for_edit
     """
@@ -59,7 +62,7 @@ class HITLManager:
             is_sensitive=is_sensitive,
             judge_score=judge_score,
             before_md=before_md,
-            created_at=datetime.utcnow().isoformat() + "Z",
+            created_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         )
 
         self.task_queue.append(task)
@@ -126,7 +129,7 @@ class HITLManager:
                 task.status = "completed"
                 task.after_md = after_md
                 task.reason_for_edit = reason_for_edit
-                task.completed_at = datetime.utcnow().isoformat() + "Z"
+                task.completed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
                 self.completed_tasks[task_id] = task
 
@@ -149,7 +152,7 @@ class HITLManager:
         for task in self.task_queue:
             if task.task_id == task_id:
                 task.status = "skipped"
-                task.completed_at = datetime.utcnow().isoformat() + "Z"
+                task.completed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
                 self.diagnostics.log_info(
                     component="hitl",

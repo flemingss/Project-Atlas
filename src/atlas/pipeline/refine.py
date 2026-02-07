@@ -5,11 +5,12 @@ Uses vision model to improve document quality when judge score is low.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from atlas.diagnostics import ErrorCode, get_diagnostics
 from atlas.llm.provider import ILlmProvider
+from atlas.llm.provider import ChatMessage
 from atlas.schemas import FidelityFlag, RefineResult
 
 
@@ -79,7 +80,7 @@ class RefineNode:
                     improvements_made=["Max retries exceeded"],
                     refine_version=self.refine_version,
                     success=False,
-                    timestamp=datetime.utcnow().isoformat() + "Z",
+                    timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 )
 
             try:
@@ -97,7 +98,7 @@ class RefineNode:
                     improvements_made=improvements,
                     refine_version=self.refine_version,
                     success=True,
-                    timestamp=datetime.utcnow().isoformat() + "Z",
+                    timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 )
 
                 self.diagnostics.log_info(
@@ -120,7 +121,7 @@ class RefineNode:
                     improvements_made=[],
                     refine_version=self.refine_version,
                     success=False,
-                    timestamp=datetime.utcnow().isoformat() + "Z",
+                    timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 )
 
     def _build_prompt(self, markdown: str, judge_score: int) -> str:
@@ -139,12 +140,11 @@ Improved Document:"""
 
         NOTE: Simplified implementation. Full version would handle vision inputs.
         """
-        self.diagnostics.log_warning(
-            component="refine",
-            message="Using placeholder refine implementation - vision model not yet wired",
-        )
-        # Placeholder - return original with marker
-        return "[REFINED - Placeholder]\n" + prompt.split("Original Document:")[-1].split("Improved Document:")[0].strip()
+        messages = [
+            ChatMessage(role="system", content=REFINE_SYSTEM_PROMPT),
+            ChatMessage(role="user", content=prompt),
+        ]
+        return await self.provider.chat(model=self.model_name, messages=messages, params=self.model_params)
 
     def _analyze_improvements(self, original: str, refined: str) -> list[str]:
         """Analyze what improvements were made."""

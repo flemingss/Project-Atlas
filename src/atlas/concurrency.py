@@ -13,6 +13,8 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
+from datetime import datetime, timezone
+
 from atlas.diagnostics import get_diagnostics
 
 
@@ -80,13 +82,12 @@ class ConcurrencyGuard:
         This is a placeholder that returns mock data.
         """
         # TODO: Implement actual VRAM monitoring via nvidia-smi or torch
-        from datetime import datetime
         vram_percent = 0.0  # Placeholder
         metrics = ResourceMetrics(
             vram_percent=vram_percent,
             queue_depth=self.queue_depth,
             active_heavy_tasks=self.active_tasks,
-            timestamp=datetime.utcnow().isoformat() + "Z",
+            timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         )
         return metrics
 

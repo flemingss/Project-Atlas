@@ -1,13 +1,14 @@
 # Project Atlas
 
-Local-first “Professional Grade RAG” pipeline (LangGraph) with HITL via Dify. Design source: `HLD.md`.
+Local-first RAG system with a running FastAPI service (admin + RAG MVP), config versioning, and a repeatable black-box E2E runner.
+
+Design source of truth: `TECHNICAL_DESIGN.md` (build-continuity plan; current reality vs target end-state). `HLD.md` is retained as historical original intent.
 
 ## Prereqs
 
 - Windows + Docker Desktop
 - Python (3.11+ recommended)
-- LM Studio running an OpenAI-compatible server
-  - Base URL: `http://192.168.20.113:1234` (swappable)
+- Optional: LM Studio (or any OpenAI-compatible server) for non-deterministic embeddings/LLM calls
 
 ## Quickstart (Infra)
 
@@ -15,12 +16,14 @@ Local-first “Professional Grade RAG” pipeline (LangGraph) with HITL via Dify
 docker compose up -d
 ```
 
+If you set `ATLAS_ENV` to a non-dev value (e.g. `prod`), Atlas will refuse to start unless you also set `ATLAS_ADMIN_TOKEN`.
+
 This starts:
 - Postgres on `localhost:5432`
 - Qdrant on `localhost:6333`
 - Redis on `localhost:6379`
 
-And Dify (primary UI):
+And (optional / experimental) Dify:
 - Dify Web on `http://localhost` (port 80)
 - Dify API on `http://localhost:5001`
 
@@ -44,6 +47,16 @@ Backend endpoints:
 - `GET /health`
 - `GET /admin/config/effective`
 - `POST /admin/reload-yaml`
+- `POST /admin/self-test`
+- `GET /admin/looking-glass/qdrant`
+- `GET /admin/looking-glass/inventory`
+- `GET /admin/looking-glass/docs`
+- `GET /admin/looking-glass/docs/{doc_id}`
+- `GET /admin/looking-glass/docs/{doc_id}/chunks/{chunk_index}`
+
+Admin auth:
+- If `ATLAS_ADMIN_TOKEN` is set, `/admin/*` requires header `X-Atlas-Admin-Token: <token>`.
+- If `ATLAS_ENV` is non-dev, Atlas refuses to start unless `ATLAS_ADMIN_TOKEN` is set to a non-placeholder secret.
 
 Tuning endpoints (Postgres-backed config versions):
 - `GET /admin/config-versions`
@@ -69,9 +82,62 @@ Integration breadcrumbs (hit live external services like Docker Qdrant):
 & ".\.venv\Scripts\python.exe" -m pytest -m integration -q
 ```
 
+## Release Candidate Verification
+
+Suggested pre-RC checks:
+
+```powershell
+# Unit tests (fast)
+& ".\.venv\Scripts\python.exe" -m pytest -q
+
+# Integration tests (requires: docker compose up -d)
+docker compose up -d
+& ".\.venv\Scripts\python.exe" -m pytest -m integration -q
+
+# Appliance self-test (requires: API + Qdrant + Postgres running)
+# If ATLAS_ADMIN_TOKEN is set, include the header.
+curl -X POST http://127.0.0.1:8080/admin/self-test
+
+# With admin token:
+curl -H "X-Atlas-Admin-Token: $env:ATLAS_ADMIN_TOKEN" -X POST http://127.0.0.1:8080/admin/self-test
+
+# Lint (dev extra)
+& ".\.venv\Scripts\python.exe" -m ruff check src tests
+```
+
+## E2E Scenario Tests
+
+Black-box E2E scenario runner (talks to a running API + Qdrant):
+
+```powershell
+docker compose -f docker-compose.e2e.yml up -d
+& ".\.venv\Scripts\python.exe" -m atlas
+
+# In a second terminal (scenarios only):
+& ".\.venv\Scripts\python.exe" scripts\e2e_scenarios.py
+
+# Or run the full orchestrated flow (docker + api + scenarios):
+& ".\.venv\Scripts\python.exe" scripts\e2e_runner.py
+```
+
+Notes:
+- If LM Studio isn’t running, the runner will activate a deterministic embeddings config version automatically.
+- If the Qdrant collection already exists, the runner matches its vector dimension.
+
+You can also run the built-in self-test against a running appliance:
+
+```powershell
+curl -X POST http://127.0.0.1:8080/admin/self-test
+
+# With admin token:
+curl -H "X-Atlas-Admin-Token: $env:ATLAS_ADMIN_TOKEN" -X POST http://127.0.0.1:8080/admin/self-test
+```
+
 ## Dify
 
-Dify is included in this repo’s `docker-compose.yml` for a unified local appliance baseline.
+Dify is included in this repo’s `docker-compose.yml` for experiments.
+
+Status: Atlas does not rely on Dify for the current RC path; the HITL/ops UX direction is a purpose-built console (“Control Center”) per `TECHNICAL_DESIGN.md`.
 
 First-time setup:
 - Open `http://localhost/install` to initialize the admin account.
@@ -86,3 +152,11 @@ Defaults live in:
 - `config/models.yaml` (model roles and provider wiring)
 
 Goal: change models and thresholds without code edits by updating YAML and/or DB-stored config versions.
+
+### Local-only RAG (no LM Studio)
+
+If you don’t have an OpenAI-compatible server running (e.g., LM Studio), RAG ingest/search will fail at embeddings.
+
+For local sanity checks, you can switch embeddings to a deterministic local provider:
+- In `config/models.yaml`, set `roles.embed_model.provider: deterministic`
+- Optionally set `roles.embed_model.params.dim` to control vector size (default: 384)

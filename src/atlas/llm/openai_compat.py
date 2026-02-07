@@ -22,15 +22,23 @@ class OpenAICompatibleProvider(ILlmProvider):
             "messages": [{"role": m.role, "content": m.content} for m in messages],
             **(params or {}),
         }
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.post(f"{self._v1}/chat/completions", json=payload)
-            try:
-                resp.raise_for_status()
-            except httpx.HTTPStatusError as e:
-                raise ValueError(
-                    f"OpenAI-compatible chat failed ({resp.status_code}) for model='{model}': {resp.text}"
-                ) from e
-            data = resp.json()
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                resp = await client.post(f"{self._v1}/chat/completions", json=payload)
+                try:
+                    resp.raise_for_status()
+                except httpx.HTTPStatusError as e:
+                    raise ValueError(
+                        f"OpenAI-compatible chat failed ({resp.status_code}) for model='{model}' at '{self._v1}': {resp.text}"
+                    ) from e
+                data = resp.json()
+        except httpx.RequestError as e:
+            raise ValueError(
+                "OpenAI-compatible chat request failed. "
+                f"Is your server running and reachable at '{self._v1}'? "
+                "If you are using LM Studio, ensure the server is started and ATLAS_OPENAI_BASE_URL points to it. "
+                f"Original error: {e}"
+            ) from e
 
         # OpenAI-style: choices[0].message.content
         try:
@@ -44,15 +52,24 @@ class OpenAICompatibleProvider(ILlmProvider):
             "input": texts,
             **(params or {}),
         }
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.post(f"{self._v1}/embeddings", json=payload)
-            try:
-                resp.raise_for_status()
-            except httpx.HTTPStatusError as e:
-                raise ValueError(
-                    f"OpenAI-compatible embeddings failed ({resp.status_code}) for model='{model}': {resp.text}"
-                ) from e
-            data = resp.json()
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                resp = await client.post(f"{self._v1}/embeddings", json=payload)
+                try:
+                    resp.raise_for_status()
+                except httpx.HTTPStatusError as e:
+                    raise ValueError(
+                        f"OpenAI-compatible embeddings failed ({resp.status_code}) for model='{model}' at '{self._v1}': {resp.text}"
+                    ) from e
+                data = resp.json()
+        except httpx.RequestError as e:
+            raise ValueError(
+                "OpenAI-compatible embeddings request failed. "
+                f"Is your server running and reachable at '{self._v1}'? "
+                "If you are using LM Studio, ensure the server is started and ATLAS_OPENAI_BASE_URL points to it. "
+                "Alternatively, you can switch the embed model provider to a deterministic local provider in config/models.yaml for dev. "
+                f"Original error: {e}"
+            ) from e
 
         try:
             return [row["embedding"] for row in data["data"]]

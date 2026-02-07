@@ -5,11 +5,12 @@ Evaluates document quality using Llama 3.2 3B with explicit few-shot rubric.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from atlas.diagnostics import ErrorCode, get_diagnostics
 from atlas.llm.provider import ILlmProvider
+from atlas.llm.provider import ChatMessage
 from atlas.schemas import JudgeResult
 
 
@@ -90,7 +91,7 @@ class JudgeNode:
                     confidence_rationale=rationale,
                     judge_version=self.judge_version,
                     needs_refinement=needs_refinement,
-                    timestamp=datetime.utcnow().isoformat() + "Z",
+                    timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 )
 
                 self.diagnostics.log_info(
@@ -114,7 +115,7 @@ class JudgeNode:
                     confidence_rationale=f"Error during grading: {e}",
                     judge_version=self.judge_version,
                     needs_refinement=True,
-                    timestamp=datetime.utcnow().isoformat() + "Z",
+                    timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 )
 
     def _build_prompt(self, markdown: str) -> str:
@@ -141,13 +142,11 @@ Your response:"""
         NOTE: Simplified implementation. Full version would use proper
         message format and handle streaming/errors better.
         """
-        # For now, return a placeholder response
-        # Full implementation would call: await self.provider.generate(...)
-        self.diagnostics.log_warning(
-            component="judge",
-            message="Using placeholder judge implementation - LLM call not yet wired",
-        )
-        return "SCORE: 4\nRATIONALE: Placeholder response - actual judge model not yet implemented."
+        messages = [
+            ChatMessage(role="system", content=JUDGE_SYSTEM_PROMPT),
+            ChatMessage(role="user", content=prompt),
+        ]
+        return await self.provider.chat(model=self.model_name, messages=messages, params=self.model_params)
 
     def _parse_response(self, response: str) -> tuple[int, str]:
         """Parse judge model response to extract score and rationale."""

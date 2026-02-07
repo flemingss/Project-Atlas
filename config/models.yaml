@@ -5,6 +5,9 @@ providers:
     type: openai_compat
     base_url_env: ATLAS_OPENAI_BASE_URL
 
+  deterministic:
+    type: deterministic
+
   openai_frontier:
     type: openai
     api_key_env: OPENAI_API_KEY

@@ -25,13 +25,34 @@ class _FakeQdrantClient:
         self.upserts: list[tuple[str, int]] = []
         self.queries: list[dict[str, Any]] = []
         self._exists = False
+        self._dim = 0
 
     def collection_exists(self, name: str) -> bool:
         return self._exists
 
     def create_collection(self, *, collection_name: str, vectors_config: Any) -> None:
         self._exists = True
+        self._dim = int(vectors_config.size)
         self.created.append((collection_name, int(vectors_config.size)))
+
+    def get_collection(self, name: str):
+        class _Vectors:
+            def __init__(self, size: int):
+                self.size = size
+
+        class _Params:
+            def __init__(self, size: int):
+                self.vectors = _Vectors(size)
+
+        class _Config:
+            def __init__(self, size: int):
+                self.params = _Params(size)
+
+        class _Info:
+            def __init__(self, size: int):
+                self.config = _Config(size)
+
+        return _Info(self._dim)
 
     def upsert(self, *, collection_name: str, points: list[Any], wait: bool) -> None:
         self.upserts.append((collection_name, len(points)))
@@ -50,3 +71,16 @@ def test_qdrant_store_uses_query_points(monkeypatch: Any) -> None:
     assert hits
     assert hits[0].id == "p1"
     assert hits[0].payload["k"] == "v"
+
+
+def test_qdrant_store_dimension_mismatch(monkeypatch: Any) -> None:
+    monkeypatch.setattr(qs, "QdrantClient", _FakeQdrantClient)
+    store = qs.QdrantStore(url="http://localhost:6333", api_key=None, collection="c")
+
+    store.ensure_collection(vector_size=3)
+
+    try:
+        store.ensure_collection(vector_size=4)
+        raise AssertionError("Expected ValueError on dim mismatch")
+    except ValueError as e:
+        assert "dimension mismatch" in str(e)

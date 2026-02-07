@@ -7,7 +7,7 @@ Ingest → Judge → Refine → Embeddings → Chunking → Commit
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
@@ -107,7 +107,7 @@ class PipelineStateManager:
 
         if to_node == PipelineNode.COMPLETED:
             context.state.is_completed = True
-            context.state.completed_at = datetime.utcnow().isoformat() + "Z"
+            context.state.completed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
         return True
 
@@ -170,6 +170,6 @@ def create_pipeline_context(
         source_uri=source_uri,
         source_mime_type=source_mime_type,
         max_refine_retries=max_refine_retries,
-        started_at=datetime.utcnow().isoformat() + "Z",
+        started_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     )
     return PipelineContext(state=state)

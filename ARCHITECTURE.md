@@ -2,36 +2,30 @@
 
 ## Overview
 
-Project Atlas implements a modular, diagnosable agentic pipeline for document processing following the High-Level Design (HLD.md).
+Project Atlas implements a modular, diagnosable document ingestion + retrieval service with a pipeline scaffold.
+
+Source of truth: `TECHNICAL_DESIGN.md` (current reality, explicit scope decisions, and roadmap). `HLD.md` is historical original intent.
 
 ## Core Modules
 
 ### Pipeline Module (`atlas.pipeline`)
 
-Agentic processing pipeline implementing the flow: **Ingest → Judge → Refine → Metadata → Embeddings → Chunking → Commit**
+Pipeline scaffold implementing the intended flow: **Ingest → Judge → Refine → Metadata → Embeddings → Chunking → Commit**.
+
+Status note (Feb 2026): the running RAG MVP uses the API path (`/rag/ingest/text`) + chunking + embeddings provider abstraction + Qdrant commit. The judge/refine/metadata nodes exist as scaffolding and are not yet the default ingest path.
 
 - **`ingest.py`** - Document ingestion node
-  - Converts documents to DoclingDocument format
-  - Stores full JSON as ground truth
-  - Generates Markdown projection for LLM consumption
-  - Tracks source_mime_type and parse_profile
+  - Scaffold for ingest orchestration
+  - Docling-based parsing is planned (see `TECHNICAL_DESIGN.md` Phase 4)
 
 - **`judge.py`** - Quality grading node
-  - Grades Markdown on 1-5 scale using Llama 3.2 3B
-  - Uses explicit few-shot rubric
-  - Outputs confidence_rationale
-  - Persists judge_version for traceability
+  - Scaffold for quality grading (provider calls + rubric/versioning planned)
 
 - **`refine.py`** - Document refinement node
-  - Triggered when Judge Score < 4
-  - Uses Llama 3.2 Vision for improvements
-  - Max 2 retries before HITL escalation
-  - Tags problematic chunks with fidelity_flag
+  - Scaffold for refinement + retry + HITL escalation
 
 - **`metadata.py`** - Tiered metadata generation
-  - Tier 1: Small local model for 90% of chunks
-  - Tier 2: Frontier/70B model for technical density or borderline scores (3-4)
-  - Cost guardrail: Configurable cap per document
+  - Scaffold for tiered metadata generation
 
 - **`orchestrator.py`** - Pipeline coordination
   - Manages state transitions between nodes
@@ -124,10 +118,10 @@ Human-in-the-Loop workflow:
   - Before/after markdown tracking
   - Reason for edit documentation
 
-- **Dify Integration** (scaffold)
-  - Push tasks to Dify API
-  - Callback handling for completed reviews
-  - Priority-based task routing
+- **Integration surface** (scaffold)
+  - Current: in-memory queue semantics
+  - Dify integration remains optional/experimental
+  - Primary direction is a purpose-built console (“Control Center”) per `TECHNICAL_DESIGN.md`
 
 ### Enhanced Chunking (`atlas.rag.chunking`)
 
@@ -174,7 +168,7 @@ Heading-aware hierarchical chunking:
 
 ## Testing
 
-43 passing tests covering:
+Current automated coverage:
 - Schema creation and validation
 - Diagnostics and error handling
 - Pipeline state transitions
@@ -182,6 +176,10 @@ Heading-aware hierarchical chunking:
 - Admin and RAG endpoints
 - Config management
 - Qdrant integration
+
+Status (as of Feb 2026):
+- Unit/breadcrumb tests: 49 passing
+- Integration tests: 1 passing (requires Docker Qdrant)
 
 Run tests:
 ```bash
@@ -203,6 +201,7 @@ Still needed for full HLD implementation:
 - 🔄 Actual LLM calls in judge/refine nodes
 - 🔄 Embeddings node implementation
 - 🔄 Commit node with vector store integration
-- 🔄 Dify API integration
-- 🔄 Hybrid search (BM25 + vector)
+- 🔄 Durable HITL model + operator UX (Dify optional; purpose-built console planned)
+- 🔄 Repo “Looking Glass” (corpus inspection) API/UX per `TECHNICAL_DESIGN.md`
+- 🔄 Retrieval upgrades (hybrid/rerank) are explicitly deferred unless a measured failure mode requires them
 - 🔄 Semantic cache implementation

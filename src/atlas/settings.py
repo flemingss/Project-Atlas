@@ -9,10 +9,16 @@ class Settings(BaseSettings):
     atlas_env: str = "dev"
     atlas_log_level: str = "INFO"
 
+    # Minimal RC auth: shared secret required for /admin endpoints in non-dev.
+    atlas_admin_token: str = ""
+
     atlas_host: str = "127.0.0.1"
     atlas_port: int = 8080
 
     atlas_artifacts_dir: str = "./artifacts"
+
+    # Directory containing pipeline.yaml and models.yaml. Defaults to repo-local ./config.
+    atlas_config_dir: str = "./config"
 
     atlas_openai_base_url: str = "http://192.168.20.113:1234"
 

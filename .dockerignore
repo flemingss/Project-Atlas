@@ -1,0 +1,11 @@
+.git
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.ruff_cache
+artifacts
+volumes
+project_atlas.egg-info

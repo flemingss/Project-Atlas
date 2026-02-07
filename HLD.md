@@ -1,12 +1,21 @@
 HLD: Adaptive Agentic Knowledge Runtime ("Project Atlas")
 
+Status note (Feb 2026): This document captures the original high-level intent. The authoritative build-continuity plan (including current repo reality and explicit scope decisions) is `TECHNICAL_DESIGN.md`.
+
+Key deltas vs original intent:
+- LangGraph: optional only if it reduces risk; not required for the next RC.
+- HITL UI: Dify is optional/experimental; the default direction is a purpose-built console (“Control Center”).
+- Retrieval v1: vector-only + metadata filters; hybrid BM25/rerank deferred until a measured failure mode requires it.
+- Rollback v1: doc_version granularity; deep supersedes-chain semantics deferred.
+- Repo inspection: a “Repo Looking Glass” is planned so operators can assess corpus state without exporting.
+
 1. System Vision
 
 Project Atlas ingests heterogeneous domain documents and outputs a "Professional Grade" RAG package. The system is local-first (RTX 3090), idempotent, self-refining, and features Human-in-the-Loop (HITL) checkpoints.
 
 2. Core Architecture: The Agentic Loop
 
-The system utilizes a State Graph (LangGraph) to manage the lifecycle of a document.
+Originally proposed: a State Graph (LangGraph) to manage the lifecycle of a document. Current implementation uses an internal pipeline scaffold; LangGraph remains optional.
 
 Node Flow & Logic
 
@@ -66,11 +75,11 @@ State Management: Use is_finalized and supersedes_chunk_id. Superseded chunks ar
 
 The runtime path is optimized for high-precision fact retrieval:
 
-Hybrid Search: Combine vector similarity (dense) with BM25 (keyword) search on content and section_path.
+Hybrid Search (deferred): Combine vector similarity (dense) with BM25 (keyword) search on content and section_path.
 
 Filtering: Default filter on is_finalized: true and tenant_id. Optionally filter by fidelity_flag for high-stakes queries.
 
-Rerank Step: Use a small local cross-encoder (e.g., BGE-Reranker) to re-score the top 50 candidates using the rich metadata fields.
+Rerank Step (deferred): Use a small local cross-encoder (e.g., BGE-Reranker) to re-score the top candidates using the rich metadata fields.
 
 4. Concurrency & Resource Guard
 
@@ -86,7 +95,7 @@ Central Config: Thresholds (Judge cutoffs, VRAM limits, cache similarity) are ce
 
 Diagnostics: Structured error channel (e.g., DOC_PARSE_TIMEOUT, VLM_OCR_FAIL) and a "debug trace level" to capture intermediate prompts/responses.
 
-HITL Hub (Pluggable): Dify-based interface with a priority queue (High-sensitivity + Low Score = Top). Schema: before_md, after_md, reason_for_edit.
+HITL Hub (Pluggable): Originally Dify-based interface with a priority queue. Current direction: purpose-built console; Dify optional.
 
 Multi-Tenancy: tenant_id and project_id required in all metadata.
 
@@ -102,6 +111,6 @@ Semantic Cache: Similarity > 0.98 to reuse existing metadata.
 
 Cold-Start Mode: Aggressive first pass; subsequent passes use incremental sync.
 
-Rollback Tool: CLI tool to re-materialize previous RAG MD using supersedes_chunk_id chains.
+Rollback Tool (re-scoped): rollback at doc_version granularity first; supersedes-chain semantics deferred.
 
 Eval Hooks: Golden QA set for "shadow evaluation" of retrieval/answering quality. Unit tests per node to validate heading and parent/child logic.

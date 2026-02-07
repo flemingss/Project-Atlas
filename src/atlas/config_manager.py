@@ -23,10 +23,15 @@ def _stable_hash(obj: Any) -> str:
 
 
 class ConfigManager:
-    def __init__(self, *, root_dir: Path):
-        self._root_dir = root_dir
-        self._pipeline_path = root_dir / "config" / "pipeline.yaml"
-        self._models_path = root_dir / "config" / "models.yaml"
+    def __init__(self, *, root_dir: Path | None = None, config_dir: Path | None = None):
+        if config_dir is None:
+            if root_dir is None:
+                raise ValueError("ConfigManager requires either root_dir or config_dir")
+            config_dir = root_dir / "config"
+
+        self._config_dir = config_dir
+        self._pipeline_path = config_dir / "pipeline.yaml"
+        self._models_path = config_dir / "models.yaml"
         self._cached: EffectiveConfig | None = None
 
     def load_yaml_defaults(self) -> EffectiveConfig:
@@ -36,7 +41,13 @@ class ConfigManager:
         return EffectiveConfig(
             pipeline=pipeline,
             models=models,
-            source={"yaml": {"pipeline": str(self._pipeline_path), "models": str(self._models_path)}},
+            source={
+                "yaml": {
+                    "config_dir": str(self._config_dir),
+                    "pipeline": str(self._pipeline_path),
+                    "models": str(self._models_path),
+                }
+            },
             hash=_stable_hash(effective),
         )
 

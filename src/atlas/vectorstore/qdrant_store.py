@@ -31,6 +31,20 @@ class QdrantStore:
 
     def ensure_collection(self, *, vector_size: int) -> None:
         if self._client.collection_exists(self._collection):
+            # Validate vector dimension matches existing collection.
+            try:
+                info = self._client.get_collection(self._collection)
+                existing_size = int(info.config.params.vectors.size)
+            except Exception:  # noqa: BLE001
+                # If we cannot introspect (older client/server), skip validation.
+                return
+
+            if existing_size != int(vector_size):
+                raise ValueError(
+                    "Qdrant collection vector dimension mismatch: "
+                    f"collection='{self._collection}' expects dim={existing_size}, got dim={int(vector_size)}. "
+                    "Use a different collection name or ensure your embedding model dimension matches the existing collection."
+                )
             return
         self._client.create_collection(
             collection_name=self._collection,

@@ -5,11 +5,13 @@ Implements tiered metadata generation with cost-aware routing.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
+import json
 from typing import Any
 
 from atlas.diagnostics import ErrorCode, get_diagnostics
 from atlas.llm.provider import ILlmProvider
+from atlas.llm.provider import ChatMessage
 from atlas.schemas import MetadataResult
 
 
@@ -140,7 +142,7 @@ class MetadataNode:
                 tags=tags,
                 tier=1,
                 model_used=self.tier1_model,
-                timestamp=datetime.utcnow().isoformat() + "Z",
+                timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             )
 
         except Exception as e:
@@ -154,7 +156,7 @@ class MetadataNode:
                 tags={"error": str(e)},
                 tier=1,
                 model_used=self.tier1_model,
-                timestamp=datetime.utcnow().isoformat() + "Z",
+                timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             )
 
     async def _generate_tier2(self, content: str) -> MetadataResult:
@@ -179,7 +181,7 @@ class MetadataNode:
                 tags=tags,
                 tier=2,
                 model_used=self.tier2_model,
-                timestamp=datetime.utcnow().isoformat() + "Z",
+                timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             )
 
         except Exception as e:
@@ -202,14 +204,23 @@ class MetadataNode:
         - Parse JSON response
         - Validate schema
         """
-        self.diagnostics.log_warning(
-            component="metadata",
-            message="Using placeholder metadata generation",
-        )
-
-        # Return placeholder tags
+        messages = [
+            ChatMessage(role="system", content="You extract metadata and return JSON only."),
+            ChatMessage(role="user", content=prompt),
+        ]
+        raw = await provider.chat(model=model, messages=messages, params={})
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                return data
+        except Exception as e:  # noqa: BLE001
+            self.diagnostics.log_warning(
+                component="metadata",
+                message=f"Failed to parse metadata JSON, returning fallback tags: {e}",
+            )
         return {
-            "topic": "placeholder",
-            "keywords": ["sample", "tags"],
+            "topic": "unparsed",
+            "keywords": ["unparsed"],
             "density": "general",
+            "raw": raw[:5000],
         }

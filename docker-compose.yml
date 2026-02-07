@@ -26,6 +26,31 @@ services:
     volumes:
       - atlas_qdrant:/qdrant/storage
 
+  atlas:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: atlas-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ATLAS_ENV: ${ATLAS_ENV:-dev}
+      ATLAS_LOG_LEVEL: ${ATLAS_LOG_LEVEL:-INFO}
+      # Admin auth. Leave blank for dev; required for non-dev.
+      ATLAS_ADMIN_TOKEN: ${ATLAS_ADMIN_TOKEN:-}
+      ATLAS_HOST: 0.0.0.0
+      ATLAS_PORT: 8080
+      ATLAS_CONFIG_DIR: /app/config
+      ATLAS_ARTIFACTS_DIR: /app/artifacts
+      # Use service hostnames inside the compose network (do not inherit host .env localhost URLs).
+      ATLAS_DB_URL: postgresql+psycopg://atlas:atlas@postgres:5432/atlas
+      ATLAS_QDRANT_URL: http://qdrant:6333
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./artifacts:/app/artifacts
+
   redis:
     image: redis:7
     container_name: atlas-redis
@@ -40,7 +65,7 @@ services:
       timeout: 5s
       retries: 20
 
-  # -------------------- Dify (Primary UI + HITL) --------------------
+  # -------------------- Dify (optional / experimental) --------------------
   dify-api:
     image: langgenius/dify-api:1.12.1
     container_name: atlas-dify-api

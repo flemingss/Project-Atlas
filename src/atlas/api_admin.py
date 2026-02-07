@@ -1,8 +1,13 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from typing import Any
+
+from fastapi import APIRouter, Depends
+from fastapi import Query, Request
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from atlas.auth import require_admin_token
 from atlas.config_manager import ConfigManager
 from atlas.config_versions import (
     ConfigVersionCreateRequest,
@@ -12,10 +17,150 @@ from atlas.config_versions import (
     get_active_config_version,
     list_config_versions,
 )
+from atlas.e2e.scenarios import run_scenarios
+from atlas.settings import Settings
+from atlas.workflow_ledger import (
+    ArtifactRefCreateRequest,
+    ArtifactRefResponse,
+    NodeRunCreateRequest,
+    NodeRunResponse,
+    WorkflowRunCreateRequest,
+    WorkflowRunResponse,
+    add_artifact_ref,
+    create_node_run,
+    create_workflow_run,
+    get_workflow_run,
+    list_artifact_refs,
+    list_node_runs,
+    list_workflow_runs,
+    to_artifact_ref_response,
+    to_node_run_response,
+    to_run_response,
+)
+from atlas.hitl_ledger import (
+    HitlTaskCompleteRequest,
+    HitlTaskCreateRequest,
+    HitlTaskRejectRequest,
+    HitlTaskResponse,
+    HitlTaskSkipRequest,
+    claim_next_task,
+    complete_task,
+    create_hitl_task,
+    get_hitl_task,
+    list_hitl_tasks,
+    reject_task,
+    skip_task,
+    to_hitl_response,
+)
+from atlas.models import HitlTaskRow, NodeRun, WorkflowRun
+from atlas.pipeline.runner import resume_completed_hitl_task
 
 
 def make_admin_router(*, config_manager: ConfigManager, session_factory: sessionmaker[Session]) -> APIRouter:
-    r = APIRouter(prefix="/admin")
+    r = APIRouter(prefix="/admin", dependencies=[Depends(require_admin_token)])
+    settings = Settings()
+
+    def _group_count(
+        session: Session,
+        *,
+        label_col: Any,
+        from_table: Any,
+        where: Any | None = None,
+    ) -> dict[str, int]:
+        stmt = select(label_col, func.count()).select_from(from_table)
+        if where is not None:
+            stmt = stmt.where(where)
+        stmt = stmt.group_by(label_col)
+        res = session.execute(stmt).all()
+        out: dict[str, int] = {}
+        for k, v in res:
+            if k is None:
+                continue
+            out[str(k)] = int(v)
+        return out
+
+    def _ledger_summary(session: Session) -> dict[str, Any]:
+        run_status = _group_count(session, label_col=WorkflowRun.status, from_table=WorkflowRun)
+        run_node = _group_count(session, label_col=WorkflowRun.current_node, from_table=WorkflowRun)
+        run_failed_codes = _group_count(
+            session,
+            label_col=WorkflowRun.error_code,
+            from_table=WorkflowRun,
+            where=(WorkflowRun.error_code != ""),
+        )
+
+        node_status = _group_count(session, label_col=NodeRun.status, from_table=NodeRun)
+        node_name = _group_count(session, label_col=NodeRun.node_name, from_table=NodeRun)
+        node_failed_codes = _group_count(
+            session,
+            label_col=NodeRun.error_code,
+            from_table=NodeRun,
+            where=(NodeRun.error_code != ""),
+        )
+
+        hitl_status = _group_count(session, label_col=HitlTaskRow.status, from_table=HitlTaskRow)
+        hitl_unassigned_pending = session.execute(
+            select(func.count())
+            .select_from(HitlTaskRow)
+            .where(HitlTaskRow.status == "pending")
+            .where(HitlTaskRow.assigned_to == "")
+        ).scalar_one()
+
+        run_total = session.execute(select(func.count()).select_from(WorkflowRun)).scalar_one()
+        node_total = session.execute(select(func.count()).select_from(NodeRun)).scalar_one()
+        hitl_total = session.execute(select(func.count()).select_from(HitlTaskRow)).scalar_one()
+
+        return {
+            "workflow_runs": {
+                "total": int(run_total),
+                "by_status": run_status,
+                "by_current_node": run_node,
+                "failed_by_error_code": run_failed_codes,
+            },
+            "node_runs": {
+                "total": int(node_total),
+                "by_status": node_status,
+                "by_node_name": node_name,
+                "failed_by_error_code": node_failed_codes,
+            },
+            "hitl_tasks": {
+                "total": int(hitl_total),
+                "by_status": hitl_status,
+                "pending_unassigned": int(hitl_unassigned_pending),
+            },
+        }
+
+    def _qdrant_url() -> str:
+        return settings.atlas_qdrant_url.rstrip("/")
+
+    def _qdrant_collection() -> str:
+        # Keep consistent with current RAG MVP behavior.
+        return "atlas_chunks"
+
+    async def _qdrant_get_json(path: str) -> dict[str, Any]:
+        import httpx
+
+        url = f"{_qdrant_url()}{path}"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            return resp.json()
+
+    async def _qdrant_post_json(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        import httpx
+
+        url = f"{_qdrant_url()}{path}"
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(url, json=payload)
+            resp.raise_for_status()
+            return resp.json()
+
+    def _parse_cursor(cursor: str | None) -> str | int | None:
+        if cursor is None or cursor == "":
+            return None
+        if cursor.isdigit():
+            return int(cursor)
+        return cursor
 
     @r.get("/config/effective")
     def effective_config() -> dict:
@@ -79,5 +224,482 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
         with session_factory() as session:
             activate_config_version(session, config_id=config_id)
         return {"ok": True, "active_id": config_id}
+
+    @r.get("/runs", response_model=list[WorkflowRunResponse])
+    def runs(limit: int = Query(default=100, ge=1, le=500)) -> list[WorkflowRunResponse]:
+        with session_factory() as session:
+            rows = list_workflow_runs(session, limit=int(limit))
+        return [to_run_response(r) for r in rows]
+
+    @r.post("/runs", response_model=WorkflowRunResponse)
+    def create_run(req: WorkflowRunCreateRequest) -> WorkflowRunResponse:
+        with session_factory() as session:
+            row = create_workflow_run(session, req=req)
+        return to_run_response(row)
+
+    @r.get("/runs/{run_id}", response_model=WorkflowRunResponse)
+    def run_detail(run_id: int) -> WorkflowRunResponse:
+        with session_factory() as session:
+            row = get_workflow_run(session, run_id=run_id)
+        if row is None:
+            # Keep it simple for now; caller can treat as not found.
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=404, detail="run not found")
+        return to_run_response(row)
+
+    @r.get("/runs/{run_id}/node-runs", response_model=list[NodeRunResponse])
+    def node_runs(run_id: int, limit: int = Query(default=500, ge=1, le=2000)) -> list[NodeRunResponse]:
+        with session_factory() as session:
+            rows = list_node_runs(session, run_id=run_id, limit=int(limit))
+        return [to_node_run_response(n) for n in rows]
+
+    @r.post("/runs/{run_id}/node-runs", response_model=NodeRunResponse)
+    def create_node_run_endpoint(run_id: int, req: NodeRunCreateRequest) -> NodeRunResponse:
+        with session_factory() as session:
+            # Validate run exists.
+            if get_workflow_run(session, run_id=run_id) is None:
+                from fastapi import HTTPException
+
+                raise HTTPException(status_code=404, detail="run not found")
+            row = create_node_run(session, run_id=run_id, req=req)
+        return to_node_run_response(row)
+
+    @r.get("/runs/{run_id}/artifacts", response_model=list[ArtifactRefResponse])
+    def artifacts(run_id: int, limit: int = Query(default=500, ge=1, le=2000)) -> list[ArtifactRefResponse]:
+        with session_factory() as session:
+            rows = list_artifact_refs(session, run_id=run_id, limit=int(limit))
+        return [to_artifact_ref_response(a) for a in rows]
+
+    @r.post("/runs/{run_id}/artifacts", response_model=ArtifactRefResponse)
+    def add_artifact(run_id: int, req: ArtifactRefCreateRequest) -> ArtifactRefResponse:
+        with session_factory() as session:
+            if get_workflow_run(session, run_id=run_id) is None:
+                from fastapi import HTTPException
+
+                raise HTTPException(status_code=404, detail="run not found")
+            row = add_artifact_ref(session, run_id=run_id, req=req)
+        return to_artifact_ref_response(row)
+
+    @r.get("/hitl/tasks", response_model=list[HitlTaskResponse])
+    def hitl_tasks(
+        status: str | None = Query(default=None),
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> list[HitlTaskResponse]:
+        with session_factory() as session:
+            rows = list_hitl_tasks(session, status=status, limit=int(limit))
+        return [to_hitl_response(t) for t in rows]
+
+    @r.post("/hitl/tasks", response_model=HitlTaskResponse)
+    def create_hitl(req: HitlTaskCreateRequest) -> HitlTaskResponse:
+        with session_factory() as session:
+            if get_workflow_run(session, run_id=req.run_id) is None:
+                from fastapi import HTTPException
+
+                raise HTTPException(status_code=404, detail="run not found")
+            row = create_hitl_task(session, req=req)
+        return to_hitl_response(row)
+
+    @r.get("/hitl/tasks/{task_id}", response_model=HitlTaskResponse)
+    def hitl_task_detail(task_id: int) -> HitlTaskResponse:
+        with session_factory() as session:
+            row = get_hitl_task(session, task_id=task_id)
+        if row is None:
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=404, detail="task not found")
+        return to_hitl_response(row)
+
+    @r.post("/hitl/tasks/next", response_model=HitlTaskResponse | None)
+    def hitl_next(assigned_to: str = "") -> HitlTaskResponse | None:
+        with session_factory() as session:
+            row = claim_next_task(session, assigned_to=assigned_to)
+        return None if row is None else to_hitl_response(row)
+
+    @r.post("/hitl/tasks/{task_id}/complete", response_model=HitlTaskResponse)
+    def hitl_complete(task_id: int, req: HitlTaskCompleteRequest) -> HitlTaskResponse:
+        with session_factory() as session:
+            try:
+                row = complete_task(session, task_id=task_id, req=req)
+            except KeyError:
+                from fastapi import HTTPException
+
+                raise HTTPException(status_code=404, detail="task not found")
+            except ValueError as e:
+                from fastapi import HTTPException
+
+                raise HTTPException(status_code=409, detail=str(e)) from e
+        return to_hitl_response(row)
+
+    @r.post("/hitl/tasks/{task_id}/resume")
+    async def hitl_resume(task_id: int) -> dict[str, Any]:
+        try:
+            res = await resume_completed_hitl_task(
+                config_manager=config_manager,
+                session_factory=session_factory,
+                task_id=int(task_id),
+            )
+        except KeyError:
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=404, detail="task or run not found")
+        except ValueError as e:
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=409, detail=str(e)) from e
+        except Exception as e:  # noqa: BLE001
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=502, detail=str(e)) from e
+
+        return {
+            "ok": bool(res.get("ok")),
+            "run_id": res.get("run_id"),
+            "collection": res.get("collection"),
+            "chunks_upserted": int(res.get("chunks_upserted", 0)),
+        }
+
+    @r.post("/hitl/tasks/{task_id}/skip", response_model=HitlTaskResponse)
+    def hitl_skip(task_id: int, req: HitlTaskSkipRequest) -> HitlTaskResponse:
+        with session_factory() as session:
+            try:
+                row = skip_task(session, task_id=task_id, req=req)
+            except KeyError:
+                from fastapi import HTTPException
+
+                raise HTTPException(status_code=404, detail="task not found")
+            except ValueError as e:
+                from fastapi import HTTPException
+
+                raise HTTPException(status_code=409, detail=str(e)) from e
+        return to_hitl_response(row)
+
+    @r.post("/hitl/tasks/{task_id}/reject", response_model=HitlTaskResponse)
+    def hitl_reject(task_id: int, req: HitlTaskRejectRequest) -> HitlTaskResponse:
+        with session_factory() as session:
+            try:
+                row = reject_task(session, task_id=task_id, req=req)
+            except KeyError:
+                from fastapi import HTTPException
+
+                raise HTTPException(status_code=404, detail="task not found")
+            except ValueError as e:
+                from fastapi import HTTPException
+
+                raise HTTPException(status_code=409, detail=str(e)) from e
+        return to_hitl_response(row)
+
+    @r.post("/self-test")
+    def self_test(request: Request, timeout_s: float = Query(default=20.0, ge=1.0, le=120.0)) -> dict[str, Any]:
+        api_url = str(request.base_url).rstrip("/")
+        incoming_token = request.headers.get("X-Atlas-Admin-Token")
+
+        summary = run_scenarios(
+            api_url=api_url,
+            qdrant_url=settings.atlas_qdrant_url,
+            collection=_qdrant_collection(),
+            timeout_s=float(timeout_s),
+            admin_token=incoming_token or settings.atlas_admin_token or None,
+        )
+        return {
+            "ok": bool(summary.ok),
+            "results": [{"name": r.name, "ok": bool(r.ok), "detail": r.detail} for r in summary.results],
+        }
+
+    @r.get("/looking-glass/qdrant")
+    async def looking_glass_qdrant() -> dict[str, Any]:
+        collection = _qdrant_collection()
+        info = await _qdrant_get_json(f"/collections/{collection}")
+        # best-effort: count points
+        count = await _qdrant_post_json(
+            f"/collections/{collection}/points/count",
+            {"exact": True, "filter": {}},
+        )
+        return {
+            "collection": collection,
+            "collection_info": info.get("result"),
+            "points_count": (count.get("result") or {}).get("count"),
+        }
+
+    @r.get("/looking-glass/ledger/summary")
+    def looking_glass_ledger_summary() -> dict[str, Any]:
+        with session_factory() as session:
+            return _ledger_summary(session)
+
+    @r.get("/looking-glass/ledger/in-flight", response_model=list[WorkflowRunResponse])
+    def looking_glass_in_flight(
+        limit: int = Query(default=50, ge=1, le=500),
+    ) -> list[WorkflowRunResponse]:
+        with session_factory() as session:
+            stmt = (
+                select(WorkflowRun)
+                .where(WorkflowRun.status.not_in(["completed", "failed"]))
+                .order_by(WorkflowRun.updated_at.desc(), WorkflowRun.id.desc())
+                .limit(int(limit))
+            )
+            rows = list(session.execute(stmt).scalars().all())
+            return [to_run_response(r) for r in rows]
+
+    @r.get("/looking-glass/ledger/failures")
+    def looking_glass_failures(
+        limit: int = Query(default=50, ge=1, le=500),
+    ) -> dict[str, Any]:
+        with session_factory() as session:
+            run_stmt = (
+                select(WorkflowRun)
+                .where(WorkflowRun.status == "failed")
+                .order_by(WorkflowRun.updated_at.desc(), WorkflowRun.id.desc())
+                .limit(int(limit))
+            )
+            runs = list(session.execute(run_stmt).scalars().all())
+
+            failures: list[dict[str, Any]] = []
+            for run in runs:
+                node_stmt = (
+                    select(NodeRun)
+                    .where(NodeRun.run_id == run.id)
+                    .where((NodeRun.status == "failed") | (NodeRun.error_code != "") | (NodeRun.error_message != ""))
+                    .order_by(NodeRun.id.desc())
+                    .limit(25)
+                )
+                nodes = list(session.execute(node_stmt).scalars().all())
+                failures.append(
+                    {
+                        "run": to_run_response(run).model_dump(),
+                        "node_errors": [to_node_run_response(n).model_dump() for n in nodes],
+                    }
+                )
+
+            return {"failures": failures}
+
+    @r.get("/looking-glass/ledger/hitl", response_model=list[HitlTaskResponse])
+    def looking_glass_hitl(
+        status: str | None = Query(default="pending"),
+        limit: int = Query(default=50, ge=1, le=500),
+    ) -> list[HitlTaskResponse]:
+        with session_factory() as session:
+            rows = list_hitl_tasks(session, status=status or None, limit=int(limit))
+            return [to_hitl_response(r) for r in rows]
+
+    @r.get("/looking-glass/inventory")
+    async def looking_glass_inventory(
+        max_points: int = Query(default=5000, ge=1, le=200000),
+        page_size: int = Query(default=500, ge=50, le=2000),
+    ) -> dict[str, Any]:
+        with session_factory() as session:
+            ledger = _ledger_summary(session)
+
+        collection = _qdrant_collection()
+        offset: str | int | None = None
+        scanned = 0
+        truncated = False
+
+        unique_docs: set[str] = set()
+        unique_tenants: set[str] = set()
+        unique_projects: set[str] = set()
+
+        points_by_tenant: dict[str, int] = {}
+        points_by_project: dict[str, int] = {}
+        points_by_tenant_project: dict[str, int] = {}
+        points_finalized: int = 0
+        points_nonfinalized: int = 0
+
+        while scanned < max_points:
+            body: dict[str, Any] = {
+                "limit": int(min(page_size, max_points - scanned)),
+                "with_payload": True,
+                "with_vector": False,
+            }
+            if offset is not None:
+                body["offset"] = offset
+
+            res = await _qdrant_post_json(f"/collections/{collection}/points/scroll", body)
+            result = res.get("result") or {}
+            points = result.get("points") or []
+            offset = result.get("next_page_offset")
+
+            if not points:
+                break
+
+            for p in points:
+                scanned += 1
+                payload = p.get("payload") or {}
+                doc_id = payload.get("doc_id")
+                tenant_id = payload.get("tenant_id")
+                project_id = payload.get("project_id")
+                is_finalized = payload.get("is_finalized")
+
+                if doc_id:
+                    unique_docs.add(str(doc_id))
+                if tenant_id:
+                    unique_tenants.add(str(tenant_id))
+                    points_by_tenant[str(tenant_id)] = points_by_tenant.get(str(tenant_id), 0) + 1
+                if project_id:
+                    unique_projects.add(str(project_id))
+                    points_by_project[str(project_id)] = points_by_project.get(str(project_id), 0) + 1
+
+                if tenant_id and project_id:
+                    key = f"{tenant_id}/{project_id}"
+                    points_by_tenant_project[key] = points_by_tenant_project.get(key, 0) + 1
+
+                if is_finalized is True:
+                    points_finalized += 1
+                elif is_finalized is False:
+                    points_nonfinalized += 1
+
+                if scanned >= max_points:
+                    break
+
+            if scanned >= max_points and offset is not None:
+                truncated = True
+                break
+            if offset is None:
+                break
+
+        return {
+            "collection": collection,
+            "ledger": ledger,
+            "scanned_points": scanned,
+            "truncated": truncated,
+            "unique_docs": len(unique_docs),
+            "unique_tenants": len(unique_tenants),
+            "unique_projects": len(unique_projects),
+            "points_finalized": points_finalized,
+            "points_nonfinalized": points_nonfinalized,
+            "points_by_tenant": points_by_tenant,
+            "points_by_project": points_by_project,
+            "points_by_tenant_project": points_by_tenant_project,
+        }
+
+    @r.get("/looking-glass/docs")
+    async def looking_glass_docs(
+        limit: int = Query(default=50, ge=1, le=200),
+        cursor: str | None = Query(default=None),
+        scan_page_size: int = Query(default=200, ge=50, le=1000),
+    ) -> dict[str, Any]:
+        collection = _qdrant_collection()
+        next_offset = _parse_cursor(cursor)
+
+        docs: dict[str, dict[str, Any]] = {}
+        scanned_pages = 0
+
+        while len(docs) < limit and scanned_pages < 10:
+            scanned_pages += 1
+            body: dict[str, Any] = {
+                "limit": int(scan_page_size),
+                "with_payload": True,
+                "with_vector": False,
+            }
+            if next_offset is not None:
+                body["offset"] = next_offset
+
+            res = await _qdrant_post_json(f"/collections/{collection}/points/scroll", body)
+            result = res.get("result") or {}
+            points = result.get("points") or []
+            next_offset = result.get("next_page_offset")
+
+            for p in points:
+                payload = p.get("payload") or {}
+                doc_id = payload.get("doc_id")
+                if not doc_id or doc_id in docs:
+                    continue
+                docs[str(doc_id)] = {
+                    "doc_id": str(doc_id),
+                    "tenant_id": payload.get("tenant_id"),
+                    "project_id": payload.get("project_id"),
+                    "doc_version": payload.get("doc_version"),
+                    "source_mime_type": payload.get("source_mime_type"),
+                    "is_finalized": payload.get("is_finalized"),
+                    "is_sensitive": payload.get("is_sensitive"),
+                    "created_at": payload.get("created_at"),
+                }
+                if len(docs) >= limit:
+                    break
+
+            if not points or next_offset is None:
+                break
+
+        return {
+            "collection": collection,
+            "docs": list(docs.values()),
+            "next_cursor": None if next_offset is None else str(next_offset),
+        }
+
+    @r.get("/looking-glass/docs/{doc_id}")
+    async def looking_glass_doc_detail(
+        doc_id: str,
+        limit: int = Query(default=100, ge=1, le=500),
+        cursor: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        collection = _qdrant_collection()
+        next_offset = _parse_cursor(cursor)
+
+        body: dict[str, Any] = {
+            "limit": int(limit),
+            "with_payload": True,
+            "with_vector": False,
+            "filter": {"must": [{"key": "doc_id", "match": {"value": doc_id}}]},
+        }
+        if next_offset is not None:
+            body["offset"] = next_offset
+
+        res = await _qdrant_post_json(f"/collections/{collection}/points/scroll", body)
+        result = res.get("result") or {}
+        points = result.get("points") or []
+        next_offset = result.get("next_page_offset")
+
+        chunks: list[dict[str, Any]] = []
+        for p in points:
+            payload = p.get("payload") or {}
+            chunks.append(
+                {
+                    "id": str(p.get("id")),
+                    "chunk_index": payload.get("chunk_index"),
+                    "text": payload.get("text"),
+                    "content_hash": payload.get("content_hash"),
+                    "created_at": payload.get("created_at"),
+                    "tenant_id": payload.get("tenant_id"),
+                    "project_id": payload.get("project_id"),
+                    "doc_version": payload.get("doc_version"),
+                    "is_finalized": payload.get("is_finalized"),
+                    "is_sensitive": payload.get("is_sensitive"),
+                }
+            )
+
+        return {
+            "collection": collection,
+            "doc_id": doc_id,
+            "chunks": chunks,
+            "next_cursor": None if next_offset is None else str(next_offset),
+        }
+
+    @r.get("/looking-glass/docs/{doc_id}/chunks/{chunk_index}")
+    async def looking_glass_chunk_preview(doc_id: str, chunk_index: int) -> dict[str, Any]:
+        collection = _qdrant_collection()
+        body: dict[str, Any] = {
+            "limit": 1,
+            "with_payload": True,
+            "with_vector": False,
+            "filter": {
+                "must": [
+                    {"key": "doc_id", "match": {"value": doc_id}},
+                    {"key": "chunk_index", "match": {"value": int(chunk_index)}},
+                ]
+            },
+        }
+        res = await _qdrant_post_json(f"/collections/{collection}/points/scroll", body)
+        result = res.get("result") or {}
+        points = result.get("points") or []
+        if not points:
+            return {"ok": False, "detail": "not found"}
+        p = points[0]
+        return {
+            "ok": True,
+            "collection": collection,
+            "doc_id": doc_id,
+            "chunk_index": int(chunk_index),
+            "id": str(p.get("id")),
+            "payload": p.get("payload") or {},
+        }
 
     return r
