@@ -26,7 +26,7 @@ def _log(msg: str) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Project Atlas retrieval evaluation gate harness (vector-only)")
-    ap.add_argument("--api-url", default=os.environ.get("ATLAS_API_URL", "http://127.0.0.1:8080"))
+    ap.add_argument("--api-url", default=os.environ.get("ATLAS_API_URL", "http://127.0.0.1:18080"))
     ap.add_argument("--golden", required=True, help="Path to retrieval golden set JSON")
     ap.add_argument("--out", default="", help="Optional path to write report JSON")
     args = ap.parse_args()

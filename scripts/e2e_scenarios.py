@@ -26,7 +26,7 @@ def _log(msg: str) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Project Atlas E2E scenario runner")
-    ap.add_argument("--api-url", default=os.environ.get("ATLAS_API_URL", "http://127.0.0.1:8080"))
+    ap.add_argument("--api-url", default=os.environ.get("ATLAS_API_URL", "http://127.0.0.1:18080"))
     ap.add_argument("--qdrant-url", default=os.environ.get("ATLAS_QDRANT_URL", "http://localhost:6333"))
     ap.add_argument("--collection", default=os.environ.get("ATLAS_QDRANT_COLLECTION", "atlas_chunks"))
     ap.add_argument("--timeout", type=float, default=20.0)

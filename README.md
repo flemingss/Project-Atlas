@@ -21,11 +21,17 @@ If you set `ATLAS_ENV` to a non-dev value (e.g. `prod`), Atlas will refuse to st
 This starts:
 - Postgres on `localhost:5432`
 - Qdrant on `localhost:6333`
-- Redis on `localhost:6379`
+- Atlas API on `http://localhost:18080`
 
-And (optional / experimental) Dify:
-- Dify Web on `http://localhost` (port 80)
-- Dify API on `http://localhost:5001`
+By default, this repo’s compose stack brings up the **baseline appliance** only.
+
+Optional / experimental (profile-gated) Dify stack:
+
+```powershell
+docker compose --profile dify up -d
+```
+
+This starts Redis on `localhost:6379` and Dify services (Web on `http://localhost`, API on `http://localhost:5001`).
 
 ## Quickstart (Backend)
 
@@ -44,6 +50,7 @@ python -m atlas
 ```
 
 Backend endpoints:
+- `GET /` (service info)
 - `GET /health`
 - `GET /admin/config/effective`
 - `POST /admin/reload-yaml`
@@ -96,10 +103,10 @@ docker compose up -d
 
 # Appliance self-test (requires: API + Qdrant + Postgres running)
 # If ATLAS_ADMIN_TOKEN is set, include the header.
-curl -X POST http://127.0.0.1:8080/admin/self-test
+curl -X POST http://127.0.0.1:18080/admin/self-test
 
 # With admin token:
-curl -H "X-Atlas-Admin-Token: $env:ATLAS_ADMIN_TOKEN" -X POST http://127.0.0.1:8080/admin/self-test
+curl -H "X-Atlas-Admin-Token: $env:ATLAS_ADMIN_TOKEN" -X POST http://127.0.0.1:18080/admin/self-test
 
 # Lint (dev extra)
 & ".\.venv\Scripts\python.exe" -m ruff check src tests
@@ -127,10 +134,10 @@ Notes:
 You can also run the built-in self-test against a running appliance:
 
 ```powershell
-curl -X POST http://127.0.0.1:8080/admin/self-test
+curl -X POST http://127.0.0.1:18080/admin/self-test
 
 # With admin token:
-curl -H "X-Atlas-Admin-Token: $env:ATLAS_ADMIN_TOKEN" -X POST http://127.0.0.1:8080/admin/self-test
+curl -H "X-Atlas-Admin-Token: $env:ATLAS_ADMIN_TOKEN" -X POST http://127.0.0.1:18080/admin/self-test
 ```
 
 ## Dify

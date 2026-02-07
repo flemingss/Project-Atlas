@@ -47,7 +47,7 @@ services:
       ATLAS_DB_URL: postgresql+psycopg://atlas:atlas@postgres:5432/atlas
       ATLAS_QDRANT_URL: http://qdrant:6333
     ports:
-      - "8080:8080"
+      - "18080:8080"
     volumes:
       - ./artifacts:/app/artifacts
 

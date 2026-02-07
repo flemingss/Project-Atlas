@@ -32,6 +32,17 @@ def create_app() -> FastAPI:
     async def health() -> dict:
         return {"status": "ok", "env": settings.atlas_env}
 
+    @app.get("/")
+    async def root() -> dict:
+        return {
+            "name": "Project Atlas",
+            "status": "ok",
+            "health": "/health",
+            "docs": "/docs",
+            "rag": "/rag",
+            "admin": "/admin",
+        }
+
     app.include_router(make_admin_router(config_manager=config_manager, session_factory=session_factory))
     app.include_router(make_rag_router(config_manager=config_manager, session_factory=session_factory))
 

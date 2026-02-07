@@ -54,7 +54,7 @@ def _pick_free_port(preferred: int) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Project Atlas full E2E runner")
-    ap.add_argument("--api-url", default=os.environ.get("ATLAS_API_URL", "http://127.0.0.1:8080"))
+    ap.add_argument("--api-url", default=os.environ.get("ATLAS_API_URL", "http://127.0.0.1:18080"))
     ap.add_argument("--api-port", type=int, default=int(os.environ.get("ATLAS_PORT", "8080")))
     ap.add_argument("--compose-file", default=os.environ.get("ATLAS_E2E_COMPOSE_FILE", "docker-compose.e2e.yml"))
     ap.add_argument("--skip-docker", action="store_true")

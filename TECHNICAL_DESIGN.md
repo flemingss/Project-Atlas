@@ -293,7 +293,7 @@ This is sequenced to maximize repeatability and minimize fantasy risk.
 **How to run:**
 
 - Example golden set: eval/retrieval_golden.example.json
-- Command: python scripts/retrieval_eval.py --api-url http://127.0.0.1:8080 --golden eval/retrieval_golden.example.json --out retrieval_report.json
+- Command: python scripts/retrieval_eval.py --api-url http://127.0.0.1:18080 --golden eval/retrieval_golden.example.json --out retrieval_report.json
 
 ---
 
