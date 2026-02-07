@@ -277,6 +277,24 @@ This is sequenced to maximize repeatability and minimize fantasy risk.
 
 - 🛠 Decision: stay **vector-only** for v1; hybrid/BM25/rerank are out of scope unless a measured failure mode requires them
 
+**Gate (evidence required before hybrid/rerank work):**
+
+- Define a small “golden set” of queries that represent suspected weak spots for dense-only retrieval:
+  - exact term / identifier queries (invoice IDs, part numbers)
+  - numeric/string matches
+  - short queries with rare proper nouns
+- Run the harness in scripts/retrieval_eval.py against a representative corpus and record metrics:
+  - HitRate@K (did any expected doc appear in the top K?)
+  - MRR@K
+- Threshold to open hybrid/rerank work (v1 rule of thumb):
+  - If HitRate@10 < 0.90 on the golden set for a stable corpus, open a retrieval-upgrade issue.
+  - Otherwise, treat failures as ingest/chunking/metadata tuning first.
+
+**How to run:**
+
+- Example golden set: eval/retrieval_golden.example.json
+- Command: python scripts/retrieval_eval.py --api-url http://127.0.0.1:8080 --golden eval/retrieval_golden.example.json --out retrieval_report.json
+
 ---
 
 ## 7) Adjudicated “hard items” (decisions landed)
