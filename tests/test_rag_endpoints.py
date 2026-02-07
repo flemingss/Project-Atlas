@@ -38,6 +38,7 @@ def _write_minimal_yaml_config(root_dir: Path) -> None:
 class _FakeQdrantStore:
     last_points: list[Any] = []
     last_search_must: list[Any] = []
+    last_set_payload_calls: list[dict[str, Any]] = []
 
     def __init__(self, *, url: str, api_key: str | None, collection: str):
         self._collection = collection
@@ -51,6 +52,12 @@ class _FakeQdrantStore:
 
     def upsert_points(self, *, points: list[Any]) -> None:
         _FakeQdrantStore.last_points = points
+
+    def set_payload(self, *, payload: dict[str, Any], must: list[Any]) -> None:
+        _FakeQdrantStore.last_set_payload_calls.append({"payload": payload, "must": must})
+
+    def scroll_points(self, *, must: list[Any], limit: int = 256, max_points: int = 10_000) -> list[Any]:
+        return []
 
     def search(self, *, query_vector: list[float], limit: int, must: list[Any]) -> list[QdrantHit]:
         _FakeQdrantStore.last_search_must = must
@@ -74,6 +81,9 @@ def _make_test_app(tmp_root: Path, monkeypatch: Any) -> FastAPI:
     session_factory = make_sessionmaker(engine)
 
     # Mock Qdrant store to avoid docker dependency.
+    _FakeQdrantStore.last_points = []
+    _FakeQdrantStore.last_search_must = []
+    _FakeQdrantStore.last_set_payload_calls = []
     monkeypatch.setattr(api_rag, "QdrantStore", _FakeQdrantStore)
     monkeypatch.setattr("atlas.pipeline.runner.QdrantStore", _FakeQdrantStore)
 
@@ -111,4 +121,4 @@ def test_rag_search_returns_hits_and_applies_filters(tmp_path: Path, monkeypatch
     assert data["hits"]
 
     # Sanity check: we pass tenant/project/finalized filter to the store.
-    assert len(_FakeQdrantStore.last_search_must) == 3
+    assert len(_FakeQdrantStore.last_search_must) == 4

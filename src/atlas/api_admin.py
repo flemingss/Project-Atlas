@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import io
 from typing import Any
 
 from fastapi import APIRouter, Depends
 from fastapi import Query, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+from qdrant_client.http import models as qm
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
+from starlette.concurrency import run_in_threadpool
 
 from atlas.auth import require_admin_token
 from atlas.config_manager import ConfigManager
@@ -54,6 +59,13 @@ from atlas.hitl_ledger import (
 )
 from atlas.models import HitlTaskRow, NodeRun, WorkflowRun
 from atlas.pipeline.runner import resume_completed_hitl_task
+from atlas.vectorstore.qdrant_store import QdrantStore
+
+
+class SetActiveDocVersionRequest(BaseModel):
+    doc_version: str
+    tenant_id: str | None = None
+    project_id: str | None = None
 
 
 def make_admin_router(*, config_manager: ConfigManager, session_factory: sessionmaker[Session]) -> APIRouter:
@@ -701,5 +713,92 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
             "id": str(p.get("id")),
             "payload": p.get("payload") or {},
         }
+
+    @r.get("/docs/{doc_id}/active-version")
+    def doc_active_version(
+        doc_id: str,
+        tenant_id: str | None = Query(default=None),
+        project_id: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        from atlas.doc_versions import get_active_doc_version, get_latest_doc_version_from_runs
+
+        t_id = tenant_id or settings.atlas_default_tenant_id
+        p_id = project_id or settings.atlas_default_project_id
+
+        with session_factory() as session:
+            active = get_active_doc_version(session, tenant_id=t_id, project_id=p_id, doc_id=doc_id)
+            latest = get_latest_doc_version_from_runs(session, tenant_id=t_id, project_id=p_id, doc_id=doc_id)
+
+        return {
+            "tenant_id": t_id,
+            "project_id": p_id,
+            "doc_id": doc_id,
+            "active_doc_version": active,
+            "latest_doc_version": latest,
+        }
+
+    @r.post("/docs/{doc_id}/active-version")
+    async def set_doc_active_version(doc_id: str, req: SetActiveDocVersionRequest) -> dict[str, Any]:
+        from atlas.doc_versions import set_active_doc_version
+
+        t_id = req.tenant_id or settings.atlas_default_tenant_id
+        p_id = req.project_id or settings.atlas_default_project_id
+        version = str(req.doc_version)
+
+        with session_factory() as session:
+            row = set_active_doc_version(session, tenant_id=t_id, project_id=p_id, doc_id=doc_id, doc_version=version)
+
+        # Best-effort: update Qdrant payload flags for global search filtering.
+        store = QdrantStore(url=settings.atlas_qdrant_url, api_key=None, collection=_qdrant_collection())
+        base_must = [
+            qm.FieldCondition(key="tenant_id", match=qm.MatchValue(value=t_id)),
+            qm.FieldCondition(key="project_id", match=qm.MatchValue(value=p_id)),
+            qm.FieldCondition(key="doc_id", match=qm.MatchValue(value=doc_id)),
+        ]
+        version_must = [
+            *base_must,
+            qm.FieldCondition(key="doc_version", match=qm.MatchValue(value=version)),
+        ]
+        try:
+            await run_in_threadpool(store.set_payload, payload={"is_active_version": False}, must=base_must)
+            await run_in_threadpool(store.set_payload, payload={"is_active_version": True}, must=version_must)
+        except Exception:
+            pass
+
+        return {
+            "ok": True,
+            "tenant_id": t_id,
+            "project_id": p_id,
+            "doc_id": doc_id,
+            "active_doc_version": str(row.active_doc_version),
+        }
+
+    @r.get("/docs/{doc_id}/export")
+    async def export_doc(
+        doc_id: str,
+        tenant_id: str | None = Query(default=None),
+        project_id: str | None = Query(default=None),
+        doc_version: str | None = Query(default=None),
+    ) -> Any:
+        from atlas.export_package import export_doc_package
+
+        t_id = tenant_id or settings.atlas_default_tenant_id
+        p_id = project_id or settings.atlas_default_project_id
+
+        blob = await export_doc_package(
+            session_factory=session_factory,
+            tenant_id=t_id,
+            project_id=p_id,
+            doc_id=doc_id,
+            doc_version=doc_version,
+        )
+
+        name_version = (doc_version or "active").replace("/", "_")
+        filename = f"atlas_export_{doc_id}_{name_version}.zip"
+        return StreamingResponse(
+            io.BytesIO(blob),
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     return r

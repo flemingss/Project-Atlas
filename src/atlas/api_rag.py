@@ -170,6 +170,7 @@ def make_rag_router(*, config_manager: ConfigManager, session_factory: sessionma
             qm.FieldCondition(key="tenant_id", match=qm.MatchValue(value=tenant_id)),
             qm.FieldCondition(key="project_id", match=qm.MatchValue(value=project_id)),
             qm.FieldCondition(key="is_finalized", match=qm.MatchValue(value=True)),
+            qm.FieldCondition(key="is_active_version", match=qm.MatchValue(value=True)),
         ]
         hits: list[QdrantHit] = await run_in_threadpool(
             store.search,

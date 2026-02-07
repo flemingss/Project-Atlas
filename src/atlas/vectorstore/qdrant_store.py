@@ -75,3 +75,42 @@ class QdrantStore:
         for r in res.points:
             hits.append(QdrantHit(id=str(r.id), score=float(r.score), payload=r.payload or {}))
         return hits
+
+    def set_payload(self, *, payload: dict[str, Any], must: list[qm.FieldCondition]) -> None:
+        """Update payload for points matching a filter."""
+        self._client.set_payload(
+            collection_name=self._collection,
+            payload=payload,
+            points=None,
+            filter=qm.Filter(must=must),
+            wait=True,
+        )
+
+    def scroll_points(
+        self,
+        *,
+        must: list[qm.FieldCondition],
+        limit: int = 256,
+        max_points: int = 10_000,
+    ) -> list[Any]:
+        """Return all points matching filter (best-effort) for export/debug."""
+        out: list[Any] = []
+        offset: str | int | None = None
+
+        while True:
+            points, next_offset = self._client.scroll(
+                collection_name=self._collection,
+                scroll_filter=qm.Filter(must=must),
+                limit=int(limit),
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            out.extend(points)
+            if next_offset is None:
+                break
+            offset = next_offset
+            if len(out) >= int(max_points):
+                break
+
+        return out

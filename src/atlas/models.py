@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -145,3 +145,27 @@ class HitlTaskRow(Base):
     reason_for_edit: Mapped[str] = mapped_column(Text, default="")
 
     meta: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class ActiveDocVersion(Base):
+    __tablename__ = "active_doc_versions"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "project_id", "doc_id", name="uq_active_doc_versions_scope"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: dt.datetime.now(dt.timezone.utc),
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: dt.datetime.now(dt.timezone.utc),
+        onupdate=lambda: dt.datetime.now(dt.timezone.utc),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(120), index=True)
+    project_id: Mapped[str] = mapped_column(String(120), index=True)
+    doc_id: Mapped[str] = mapped_column(String(256), index=True)
+
+    active_doc_version: Mapped[str] = mapped_column(String(64), default="1")

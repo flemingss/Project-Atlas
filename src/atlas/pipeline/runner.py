@@ -29,6 +29,53 @@ from atlas.workflow_ledger import ArtifactRefCreateRequest, WorkflowRunCreateReq
 from atlas.workflow_ledger import NodeRunCreateRequest, create_node_run
 
 
+async def _activate_doc_version(
+    *,
+    session_factory: sessionmaker[Session],
+    store: QdrantStore,
+    tenant_id: str,
+    project_id: str,
+    doc_id: str,
+    doc_version: str,
+) -> None:
+    """Set the active doc version in DB and in Qdrant payload flags (best-effort).
+
+    Rollback semantics are implemented by filtering search on `is_active_version == True`.
+    """
+
+    try:
+        from atlas.doc_versions import set_active_doc_version
+
+        with session_factory() as session:
+            set_active_doc_version(
+                session,
+                tenant_id=tenant_id,
+                project_id=project_id,
+                doc_id=doc_id,
+                doc_version=doc_version,
+            )
+    except Exception:
+        # If DB update fails, we still try to set Qdrant payloads.
+        pass
+
+    base_must = [
+        qm.FieldCondition(key="tenant_id", match=qm.MatchValue(value=tenant_id)),
+        qm.FieldCondition(key="project_id", match=qm.MatchValue(value=project_id)),
+        qm.FieldCondition(key="doc_id", match=qm.MatchValue(value=doc_id)),
+    ]
+    version_must = [
+        *base_must,
+        qm.FieldCondition(key="doc_version", match=qm.MatchValue(value=doc_version)),
+    ]
+
+    try:
+        # Mark all versions inactive, then mark the selected version active.
+        await run_in_threadpool(store.set_payload, payload={"is_active_version": False}, must=base_must)
+        await run_in_threadpool(store.set_payload, payload={"is_active_version": True}, must=version_must)
+    except Exception:
+        pass
+
+
 def _artifact_ext(*, mime_type: str, filename: str | None) -> str:
     if filename and "." in filename:
         ext = "." + filename.rsplit(".", 1)[-1].lower()
@@ -334,6 +381,7 @@ async def ingest_text_via_pipeline(
             "content_hash": content_hash,
             "is_finalized": bool(is_finalized),
             "is_sensitive": bool(is_sensitive),
+            "is_active_version": True,
             "source_mime_type": source_mime_type,
             "embedding_provider": resolved_embed.provider_name,
             "embedding_model": resolved_embed.model_name,
@@ -349,6 +397,16 @@ async def ingest_text_via_pipeline(
         points.append(qm.PointStruct(id=pid, vector=v, payload=payload))
 
     await run_in_threadpool(store.upsert_points, points=points)
+
+    # Activate this doc_version for the doc (best-effort).
+    await _activate_doc_version(
+        session_factory=session_factory,
+        store=store,
+        tenant_id=tenant_id,
+        project_id=project_id,
+        doc_id=doc_id,
+        doc_version=doc_version,
+    )
 
     with session_factory() as session:
         from atlas.models import WorkflowRun
@@ -622,6 +680,7 @@ async def ingest_file_via_pipeline(
             "content_hash": content_hash,
             "is_finalized": bool(is_finalized),
             "is_sensitive": bool(is_sensitive),
+            "is_active_version": True,
             "source_mime_type": source_mime_type,
             "source_filename": filename or "",
             "embedding_provider": resolved_embed.provider_name,
@@ -638,6 +697,16 @@ async def ingest_file_via_pipeline(
         points.append(qm.PointStruct(id=pid, vector=v, payload=payload))
 
     await run_in_threadpool(store.upsert_points, points=points)
+
+    # Activate this doc_version for the doc (best-effort).
+    await _activate_doc_version(
+        session_factory=session_factory,
+        store=store,
+        tenant_id=tenant_id,
+        project_id=project_id,
+        doc_id=doc_id,
+        doc_version=doc_version,
+    )
 
     with session_factory() as session:
         from atlas.models import WorkflowRun
