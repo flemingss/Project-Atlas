@@ -6,10 +6,17 @@ Handles document ingestion and conversion to DoclingDocument format.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
+from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any
 
 from atlas.diagnostics import ErrorCode, get_diagnostics
+from atlas.ingest.docling_adapter import (
+    DoclingParseError,
+    DoclingUnavailableError,
+    parse_document_path,
+)
 from atlas.schemas import ParseProfile
 
 
@@ -56,7 +63,7 @@ class IngestNode:
         docling_json = {
             "content": text,
             "mime_type": mime_type,
-            "parsed_at": datetime.utcnow().isoformat() + "Z",
+            "parsed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
 
         return IngestResult(
@@ -67,30 +74,66 @@ class IngestNode:
             docling_schema_version="1.0",
         )
 
-    async def process_pdf(self, *, pdf_path: str) -> IngestResult:
-        """Process PDF document using Docling.
+    async def process_doc_bytes(
+        self,
+        *,
+        doc_bytes: bytes,
+        source_mime_type: str,
+        filename: str | None = None,
+    ) -> IngestResult:
+        """Process document bytes via Docling (PDF/Office).
 
-        NOTE: This is a scaffold. Full implementation requires:
-        - Docling library integration
-        - PDF parsing with OCR support
-        - Table and figure extraction
-        - Layout analysis
+        Stores full Docling JSON as ground truth (returned in result; caller may persist to artifact store).
         """
-        self.diagnostics.log_warning(
-            component="ingest",
-            message="PDF processing not yet implemented - placeholder scaffold",
-            context={"pdf_path": pdf_path},
-        )
+        try:
+            with NamedTemporaryFile(delete=True, suffix=".pdf") as tmp:
+                tmp.write(doc_bytes)
+                tmp.flush()
+                parsed = parse_document_path(doc_path=Path(tmp.name), source_mime_type=source_mime_type)
+        except DoclingUnavailableError as e:
+            return IngestResult(
+                success=False,
+                markdown_projection="",
+                docling_json={},
+                parse_profile=ParseProfile.PDF_TEXT,
+                docling_schema_version="unknown",
+                error_code=ErrorCode.DOC_PARSE_DEPENDENCY_MISSING,
+                error_message=str(e),
+            )
+        except DoclingParseError as e:
+            return IngestResult(
+                success=False,
+                markdown_projection="",
+                docling_json={},
+                parse_profile=ParseProfile.PDF_TEXT,
+                docling_schema_version="unknown",
+                error_code=ErrorCode.DOC_PARSE_FAILED,
+                error_message=str(e),
+            )
+        except Exception as e:  # noqa: BLE001
+            self.diagnostics.log_error(
+                component="ingest",
+                error_code=ErrorCode.DOC_PARSE_FAILED,
+                message="Document processing failed",
+                context={"filename": filename or "", "source_mime_type": source_mime_type},
+                exception=e,
+            )
+            return IngestResult(
+                success=False,
+                markdown_projection="",
+                docling_json={},
+                parse_profile=ParseProfile.PDF_TEXT,
+                docling_schema_version="unknown",
+                error_code=ErrorCode.DOC_PARSE_FAILED,
+                error_message=str(e),
+            )
 
-        # Placeholder return
         return IngestResult(
-            success=False,
-            markdown_projection="",
-            docling_json={},
-            parse_profile=ParseProfile.PDF_TEXT,
-            docling_schema_version="1.0",
-            error_code=ErrorCode.DOC_PARSE_FAILED,
-            error_message="PDF processing not yet implemented",
+            success=True,
+            markdown_projection=parsed.markdown_projection,
+            docling_json=parsed.docling_json,
+            parse_profile=parsed.parse_profile,
+            docling_schema_version=parsed.docling_schema_version,
         )
 
     async def process_document(
@@ -104,20 +147,18 @@ class IngestNode:
             if mime_type == "text/plain" and isinstance(content, str):
                 return await self.process_text(text=content, mime_type=mime_type)
 
-            if mime_type == "application/pdf":
-                self.diagnostics.log_error(
-                    component="ingest",
-                    error_code=ErrorCode.DOC_PARSE_FAILED,
-                    message="PDF processing not yet implemented",
-                )
-                return IngestResult(
-                    success=False,
-                    markdown_projection="",
-                    docling_json={},
-                    parse_profile=ParseProfile.PDF_TEXT,
-                    docling_schema_version="1.0",
-                    error_code=ErrorCode.DOC_PARSE_FAILED,
-                    error_message="PDF processing not yet implemented",
+            if isinstance(content, (bytes, bytearray)) and mime_type in {
+                "application/pdf",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "application/msword",
+                "application/vnd.ms-powerpoint",
+                "application/vnd.ms-excel",
+            }:
+                return await self.process_doc_bytes(
+                    doc_bytes=bytes(content),
+                    source_mime_type=mime_type,
                 )
 
             # Unknown type

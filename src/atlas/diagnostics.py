@@ -1,4 +1,4 @@
-"""Diagnostics and structured error handling for Project Atlas (HLD section 5).
+"""Diagnostics and structured error handling for Project Atlas (HLD section 5: Diagnostics).
 
 Provides structured error codes, trace-level logging, and performance metrics
 for comprehensive diagnosability.
@@ -10,9 +10,13 @@ import logging
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Iterator
+
+
+def _utc_now_iso_z() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 class ErrorCode(str, Enum):
@@ -21,6 +25,7 @@ class ErrorCode(str, Enum):
     # Ingest errors
     DOC_PARSE_TIMEOUT = "DOC_PARSE_TIMEOUT"
     DOC_PARSE_FAILED = "DOC_PARSE_FAILED"
+    DOC_PARSE_DEPENDENCY_MISSING = "DOC_PARSE_DEPENDENCY_MISSING"
     INVALID_MIME_TYPE = "INVALID_MIME_TYPE"
 
     # Judge errors
@@ -125,7 +130,7 @@ class DiagnosticsManager:
     ) -> None:
         """Log a structured diagnostic event."""
         event = DiagnosticEvent(
-            timestamp=datetime.utcnow().isoformat() + "Z",
+            timestamp=_utc_now_iso_z(),
             level=level,
             component=component,
             event_type=event_type,
@@ -216,86 +221,51 @@ class DiagnosticsManager:
             operation=operation,
             duration_ms=duration_ms,
             success=success,
-            timestamp=datetime.utcnow().isoformat() + "Z",
+            timestamp=_utc_now_iso_z(),
             metadata=metadata or {},
         )
         self.metrics.append(metric)
 
-        if self.trace_level in (TraceLevel.DETAILED, TraceLevel.FULL):
-            self.logger.debug(f"Metric: {operation} took {duration_ms:.2f}ms (success={success})")
-
     @contextmanager
-    def trace_operation(
-        self,
-        operation: str,
-        metadata: dict[str, Any] | None = None,
-    ) -> Iterator[dict[str, Any]]:
-        """Context manager to trace an operation and record metrics.
-
-        Usage:
-            with diagnostics.trace_operation("embed_chunks", {"count": 10}) as ctx:
-                ctx["chunks_processed"] = process_chunks()
-        """
-        start_time = time.time()
-        context: dict[str, Any] = {}
-        success = False
+    def trace_operation(self, operation: str, metadata: dict[str, Any] | None = None) -> Iterator[None]:
+        """Context manager for tracing operations with performance metrics."""
+        start = time.time()
+        success = True
 
         try:
-            yield context
-            success = True
+            yield
         except Exception:
             success = False
             raise
         finally:
-            duration_ms = (time.time() - start_time) * 1000
-            final_metadata = {**(metadata or {}), **context}
+            duration_ms = (time.time() - start) * 1000
             self.record_metric(
                 operation=operation,
                 duration_ms=duration_ms,
                 success=success,
-                metadata=final_metadata,
+                metadata=metadata,
             )
 
-    def get_summary(self) -> dict[str, Any]:
-        """Get a summary of diagnostics and metrics."""
-        errors = [e for e in self.events if e.level == "ERROR"]
-        warnings = [e for e in self.events if e.level == "WARNING"]
 
-        return {
-            "total_events": len(self.events),
-            "errors": len(errors),
-            "warnings": len(warnings),
-            "metrics_count": len(self.metrics),
-            "recent_errors": [
-                {"code": e.error_code, "message": e.message, "component": e.component}
-                for e in errors[-5:]
-            ],
-            "performance_summary": {
-                "total_operations": len(self.metrics),
-                "successful_operations": sum(1 for m in self.metrics if m.success),
-                "avg_duration_ms": (
-                    sum(m.duration_ms for m in self.metrics) / len(self.metrics)
-                    if self.metrics
-                    else 0
-                ),
-            },
-        }
+# Global diagnostics manager instance
+_diagnostics = DiagnosticsManager()
 
 
-# Global diagnostics instance
-_global_diagnostics: DiagnosticsManager | None = None
+def get_diagnostics() -> DiagnosticsManager:
+    """Get the global diagnostics manager."""
+    return _diagnostics
 
 
-def get_diagnostics(trace_level: TraceLevel = TraceLevel.BASIC) -> DiagnosticsManager:
-    """Get or create the global diagnostics manager.
+def set_trace_level(level: TraceLevel) -> None:
+    """Set the global trace level."""
+    _diagnostics.trace_level = level
 
-    If an instance already exists and a non-default trace_level is requested,
-    update the existing instance's trace_level.
-    """
-    global _global_diagnostics
-    if _global_diagnostics is None:
-        _global_diagnostics = DiagnosticsManager(trace_level=trace_level)
-    elif trace_level != TraceLevel.BASIC:
-        # Allow callers to elevate or adjust trace level after initial creation
-        _global_diagnostics.trace_level = trace_level
-    return _global_diagnostics
+
+def get_events() -> list[DiagnosticEvent]:
+    """Get all logged diagnostic events."""
+    return _diagnostics.events
+
+
+def get_metrics() -> list[PerformanceMetrics]:
+    """Get all recorded performance metrics."""
+    return _diagnostics.metrics
