@@ -54,6 +54,7 @@ services:
   redis:
     image: redis:7
     container_name: atlas-redis
+    profiles: ["dify"]
     ports:
       - "6379:6379"
     volumes:
@@ -66,9 +67,12 @@ services:
       retries: 20
 
   # -------------------- Dify (optional / experimental) --------------------
+  # Dify services are behind the `dify` profile so Atlas boots cleanly by default.
+  # To start Dify too: `docker compose --profile dify up -d`
   dify-api:
     image: langgenius/dify-api:1.12.1
     container_name: atlas-dify-api
+    profiles: ["dify"]
     restart: unless-stopped
     depends_on:
       postgres:
@@ -118,6 +122,7 @@ services:
   dify-worker:
     image: langgenius/dify-api:1.12.1
     container_name: atlas-dify-worker
+    profiles: ["dify"]
     restart: unless-stopped
     depends_on:
       dify-api:
@@ -154,6 +159,7 @@ services:
   dify-worker-beat:
     image: langgenius/dify-api:1.12.1
     container_name: atlas-dify-worker-beat
+    profiles: ["dify"]
     restart: unless-stopped
     depends_on:
       dify-api:
@@ -190,6 +196,7 @@ services:
   dify-web:
     image: langgenius/dify-web:1.12.1
     container_name: atlas-dify-web
+    profiles: ["dify"]
     restart: unless-stopped
     depends_on:
       dify-api:
@@ -205,6 +212,7 @@ services:
   dify-plugin-daemon:
     image: langgenius/dify-plugin-daemon:0.5.3-local
     container_name: atlas-dify-plugin-daemon
+    profiles: ["dify"]
     restart: unless-stopped
     depends_on:
       postgres:
