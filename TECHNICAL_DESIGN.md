@@ -65,8 +65,13 @@ Ops:
 ### 3.1 Core service
 
 - ✅ FastAPI app with health/admin/rag routes (`src/atlas/api.py` + routers)
+- ✅ Root endpoint `GET /` for service info (links to health/docs/admin/rag)
 - ✅ Settings via `pydantic-settings` (`src/atlas/settings.py`, `.env.example`)
-- ✅ Postgres connection + schema creation (SQLAlchemy) for config versions only
+- ✅ Postgres connection + schema creation (SQLAlchemy) for:
+  - config versions
+  - durable run ledger (workflow runs / node runs / artifact refs)
+  - HITL tasks
+  - active doc versions
 
 ### 3.2 Config management
 
@@ -81,10 +86,17 @@ Notes:
 ### 3.3 RAG MVP (current runtime path)
 
 - ✅ `POST /rag/ingest/text`
-  - chunk via `atlas.rag.chunking.chunk_text` (simple paragraph chunking)
+  - runs through the pipeline runner (`ingest_text_via_pipeline`)
+  - chunk via `atlas.rag.chunking.chunk_text` (simple paragraph chunking; max size driven by pipeline config)
   - embed via `ModelRegistry.resolve('embed_model')` + provider `embed()`
   - upsert to Qdrant collection `atlas_chunks`
+  - writes a durable run ledger row + node runs + artifact refs
   - deterministic chunk IDs (doc_id + doc_version + content_hash + chunk_index)
+
+- ✅ `POST /rag/ingest/file`
+  - stores the original file as an artifact
+  - attempts Docling parse/projection when available (optional dependency)
+  - persists Docling JSON + markdown projection as artifacts (best-effort)
 
 - ✅ `POST /rag/search`
   - embed query via same embed provider
@@ -92,6 +104,7 @@ Notes:
     - `tenant_id`
     - `project_id`
     - `is_finalized == true`
+    - `is_active_version == true` (doc_version rollback/activation)
 
 ### 3.4 LLM provider abstraction
 
@@ -108,15 +121,15 @@ Notes:
 ### 3.6 Pipeline modules (scaffold)
 
 - 🟨 Pipeline state machine and nodes exist under `src/atlas/pipeline/*`
-- 🟨 Node logic is mostly placeholder (judge/refine/metadata do not call providers yet)
-- 🟨 Pipeline orchestrator is not wired into the `/rag/*` endpoints
+- 🟨 Judge/refine/metadata nodes call providers, but are still a simplified v1 implementation (prompts/parsing/caps will evolve)
+- ✅ Pipeline runner is wired into `/rag/ingest/*` endpoints (text + file)
 - ✅ No LangGraph dependency exists today
 
 ### 3.7 HITL
 
-- 🟨 In-memory HITL task queue with priority logic exists (`src/atlas/hitl.py`)
-- 🟨 No persistence; no API endpoints; no UI
-- 🟨 “Push to Dify” is explicitly a placeholder
+- ✅ Durable HITL tasks are persisted in Postgres (`hitl_tasks`) with a small CRUD/queue API under `/admin/hitl/*`
+- 🟨 In-memory HITL queue exists (`src/atlas/hitl.py`) but is no longer the primary runtime path
+- 🟨 “Push to Dify” remains explicitly a placeholder/optional experiment
 
 ### 3.8 E2E and repeatability
 
@@ -239,19 +252,19 @@ This is sequenced to maximize repeatability and minimize fantasy risk.
 
 - ✅ Add DB tables for:
   - ingest runs/jobs + node runs + artifact refs
-- 🛠 Add DB tables for:
+- ✅ Add DB tables for:
   - HITL tasks
-  - optional trace events (or references to artifact files)
-- 🛠 Add API endpoints:
+- 🛠 Optional trace events (or references to artifact files)
+- ✅ Add API endpoints:
   - create/list/get/resolve HITL tasks
   - list job/runs + status
-  - extend Looking Glass queries to be driven off the durable ledger (jobs/node_runs) instead of ad-hoc inspection
+- 🟨 Extend Looking Glass queries to be driven primarily off the durable ledger (jobs/node_runs) instead of ad-hoc inspection
 
 **Definition of done:** you can force a HITL task in tests, resolve it, and see the resulting committed chunks.
 
 ### Phase 3 — Wire the pipeline into the ingest path
 
-- 🛠 Replace the current `/rag/ingest/text` “direct path” with a pipeline run (even if ingest is text-only initially)
+- ✅ Replace the `/rag/ingest/*` “direct path” with a pipeline-backed run (text + file)
 - 🛠 Implement judge/refine/metadata nodes to actually call configured providers
 - 🛠 Update E2E scenarios to cover:
   - “low score triggers refine then passes”
@@ -261,15 +274,15 @@ This is sequenced to maximize repeatability and minimize fantasy risk.
 
 ### Phase 4 — Docling ingestion for PDFs/Office
 
-- 🛠 Implement Docling parsing and store ground truth
+- 🟨 Implement Docling parsing and store ground truth (optional dependency; best-effort)
 - 🛠 Build deterministic regression tests on sample documents
 
 **Definition of done:** PDF ingestion is reliable enough for shakedown; failures produce actionable diagnostics.
 
 ### Phase 5 — Professional output + rollback
 
-- 🛠 Export pipeline artifacts (manifest + enriched markdown)
-- 🛠 Implement rollback at **doc_version granularity** (no supersedes chains in v1)
+- ✅ Export pipeline artifacts as a zip “RAG package” (manifest + enriched markdown + index)
+- ✅ Implement rollback at **doc_version granularity** (via an active-version record + Qdrant payload flag)
 
 **Definition of done:** operators can export a consistent package and recover a prior version.
 
@@ -305,7 +318,7 @@ This section resolves the previously flagged “fantasy” items into explicit s
 
 **Decision (v1/end-state staging):**
 
-- ✅ v1 uses **vector-only retrieval + metadata filters** (tenant/project/is_finalized, plus future fidelity filters).
+- ✅ v1 uses **vector-only retrieval + metadata filters** (tenant/project/is_finalized/is_active_version, plus future fidelity filters).
 - 🛠 Hybrid keyword search and rerank are **explicitly deferred** until we have a measured failure mode that cannot be fixed by better chunking/metadata.
 
 **Rationale:** hybrid/rerank turns Atlas into a search stack with tuning + eval + ops overhead. It is a great upgrade *when needed*, not a baseline requirement for an appliance RC.
