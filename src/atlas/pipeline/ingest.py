@@ -114,8 +114,8 @@ class IngestNode:
             self.diagnostics.log_error(
                 component="ingest",
                 error_code=ErrorCode.DOC_PARSE_FAILED,
-                message="Document processing failed",
-                context={"filename": filename or "", "source_mime_type": source_mime_type},
+                message="PDF processing failed",
+                context={"filename": filename or ""},
                 exception=e,
             )
             return IngestResult(
