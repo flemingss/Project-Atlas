@@ -5,6 +5,7 @@ Manages HITL workflow with Dify integration and priority queue.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import asdict
 from datetime import datetime
 from typing import Any
@@ -49,7 +50,7 @@ class HITLManager:
         priority_score = base_priority * sensitivity_multiplier
 
         task = HITLTask(
-            task_id=f"{doc_id}_{chunk_id}_{datetime.utcnow().timestamp()}",
+            task_id=str(uuid.uuid4()),
             doc_id=doc_id,
             chunk_id=chunk_id,
             tenant_id=tenant_id,

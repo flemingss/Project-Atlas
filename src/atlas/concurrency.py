@@ -43,25 +43,31 @@ class ConcurrencyGuard:
         queue_depth_threshold: int = 2,
     ):
         self.heavy_semaphore = asyncio.Semaphore(heavy_task_limit)
+        self.heavy_task_limit = heavy_task_limit
         self.vram_threshold = vram_threshold_percent
         self.queue_depth_threshold = queue_depth_threshold
         self.queue_depth = 0
+        self.active_tasks = 0  # Track active tasks explicitly
         self.logger = logging.getLogger("atlas.concurrency")
         self.diagnostics = get_diagnostics()
 
     async def acquire_heavy_task(self) -> None:
         """Acquire semaphore for a heavy task (e.g., local LLM inference)."""
         self.queue_depth += 1
-        self.diagnostics.log_info(
-            component="concurrency",
-            message=f"Acquiring heavy task slot (queue_depth={self.queue_depth})",
-        )
-        await self.heavy_semaphore.acquire()
-        self.queue_depth -= 1
+        try:
+            self.diagnostics.log_info(
+                component="concurrency",
+                message=f"Acquiring heavy task slot (queue_depth={self.queue_depth})",
+            )
+            await self.heavy_semaphore.acquire()
+            self.active_tasks += 1
+        finally:
+            self.queue_depth -= 1
 
     def release_heavy_task(self) -> None:
         """Release semaphore for a heavy task."""
         self.heavy_semaphore.release()
+        self.active_tasks -= 1
         self.diagnostics.log_info(
             component="concurrency",
             message="Released heavy task slot",
@@ -79,7 +85,7 @@ class ConcurrencyGuard:
         metrics = ResourceMetrics(
             vram_percent=vram_percent,
             queue_depth=self.queue_depth,
-            active_heavy_tasks=self.heavy_semaphore._value,  # noqa: SLF001
+            active_heavy_tasks=self.active_tasks,
             timestamp=datetime.utcnow().isoformat() + "Z",
         )
         return metrics

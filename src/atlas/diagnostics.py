@@ -50,6 +50,15 @@ class ErrorCode(str, Enum):
     CONFIG_INVALID = "CONFIG_INVALID"
     CONFIG_VERSION_NOT_FOUND = "CONFIG_VERSION_NOT_FOUND"
 
+    # Pipeline errors
+    PIPELINE_FAILED = "PIPELINE_FAILED"
+    PIPELINE_INVALID_TRANSITION = "PIPELINE_INVALID_TRANSITION"
+    INGEST_FAILED = "INGEST_FAILED"
+
+    # Metadata errors
+    METADATA_TIER1_FAILED = "METADATA_TIER1_FAILED"
+    METADATA_TIER2_FAILED = "METADATA_TIER2_FAILED"
+
     # General errors
     UNKNOWN_ERROR = "UNKNOWN_ERROR"
 
@@ -278,8 +287,15 @@ _global_diagnostics: DiagnosticsManager | None = None
 
 
 def get_diagnostics(trace_level: TraceLevel = TraceLevel.BASIC) -> DiagnosticsManager:
-    """Get or create the global diagnostics manager."""
+    """Get or create the global diagnostics manager.
+
+    If an instance already exists and a non-default trace_level is requested,
+    update the existing instance's trace_level.
+    """
     global _global_diagnostics
     if _global_diagnostics is None:
         _global_diagnostics = DiagnosticsManager(trace_level=trace_level)
+    elif trace_level != TraceLevel.BASIC:
+        # Allow callers to elevate or adjust trace level after initial creation
+        _global_diagnostics.trace_level = trace_level
     return _global_diagnostics

@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass, field
 
 
-@dataclass(frozen=True)
+@dataclass
 class TextChunk:
     index: int
     text: str
@@ -152,11 +152,13 @@ def chunk_text_hierarchical(
             )
             chunks.append(chunk)
 
-    # Update sibling IDs
+    # Update sibling indices (note: these are indices, not UUIDs)
+    # In a full implementation, these would be replaced with deterministic chunk IDs
     for parent_id, sibling_indices in section_siblings.items():
         for idx in sibling_indices:
-            # Convert to string IDs
-            sibling_strs = [str(i) for i in sibling_indices if i != idx]
-            object.__setattr__(chunks[idx], "sibling_ids", sibling_strs)
+            # Store sibling indices for now; integration with deterministic IDs
+            # happens during the commit phase when UUIDs are generated
+            chunk = chunks[idx]
+            chunk.sibling_ids = [str(i) for i in sibling_indices if i != idx]
 
     return chunks

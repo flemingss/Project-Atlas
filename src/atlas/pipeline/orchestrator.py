@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from atlas.diagnostics import get_diagnostics
+from atlas.diagnostics import ErrorCode, get_diagnostics
 from atlas.pipeline.ingest import IngestNode
 from atlas.pipeline.judge import JudgeNode
 from atlas.pipeline.metadata import MetadataNode
@@ -86,7 +86,7 @@ class PipelineOrchestrator:
             elif current_node == PipelineNode.FAILED:
                 self.diagnostics.log_error(
                     component="pipeline",
-                    error_code=None,
+                    error_code=ErrorCode.PIPELINE_FAILED,
                     message="Pipeline failed",
                     context={"doc_id": context.state.doc_id},
                 )
@@ -108,7 +108,7 @@ class PipelineOrchestrator:
             if not self.state_manager.transition(context, next_node):
                 self.diagnostics.log_error(
                     component="pipeline",
-                    error_code=None,
+                    error_code=ErrorCode.PIPELINE_INVALID_TRANSITION,
                     message=f"Invalid transition from {current_node} to {next_node}",
                 )
                 break
@@ -122,8 +122,8 @@ class PipelineOrchestrator:
         # For now, assume markdown is already in state
         # Full implementation would call ingest_node.process_document()
         if not context.state.markdown_projection:
-            context.state.error_code = "INGEST_FAILED"
-            context.state.current_node = PipelineNode.FAILED.value
+            context.state.error_code = ErrorCode.INGEST_FAILED.value
+            self.state_manager.transition(context, PipelineNode.FAILED)
 
     async def _process_judge(self, context: PipelineContext) -> None:
         """Process judge node."""

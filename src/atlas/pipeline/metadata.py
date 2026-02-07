@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from atlas.diagnostics import get_diagnostics
+from atlas.diagnostics import ErrorCode, get_diagnostics
 from atlas.llm.provider import ILlmProvider
 from atlas.schemas import MetadataResult
 
@@ -146,7 +146,7 @@ class MetadataNode:
         except Exception as e:
             self.diagnostics.log_error(
                 component="metadata",
-                error_code=None,
+                error_code=ErrorCode.METADATA_TIER1_FAILED,
                 message="Tier 1 metadata generation failed",
                 exception=e,
             )
@@ -185,7 +185,7 @@ class MetadataNode:
         except Exception as e:
             self.diagnostics.log_error(
                 component="metadata",
-                error_code=None,
+                error_code=ErrorCode.METADATA_TIER2_FAILED,
                 message="Tier 2 metadata generation failed, falling back to tier 1",
                 exception=e,
             )
