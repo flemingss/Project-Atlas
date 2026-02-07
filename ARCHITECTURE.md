@@ -12,11 +12,11 @@ Source of truth: `TECHNICAL_DESIGN.md` (current reality, explicit scope decision
 
 Pipeline scaffold implementing the intended flow: **Ingest → Judge → Refine → Metadata → Embeddings → Chunking → Commit**.
 
-Status note (Feb 2026): the running RAG MVP uses the API path (`/rag/ingest/text`) + chunking + embeddings provider abstraction + Qdrant commit. The judge/refine/metadata nodes exist as scaffolding and are not yet the default ingest path.
+Status note (Feb 2026): `/rag/ingest/*` is pipeline-backed (text + file). The judge/refine/metadata nodes call providers, but remain a simplified v1 implementation (prompts/parsing/caps will evolve).
 
 - **`ingest.py`** - Document ingestion node
   - Scaffold for ingest orchestration
-  - Docling-based parsing is planned (see `TECHNICAL_DESIGN.md` Phase 4)
+  - Docling-based parsing is supported as an optional dependency (best-effort; see `TECHNICAL_DESIGN.md` Phase 4)
 
 - **`judge.py`** - Quality grading node
   - Scaffold for quality grading (provider calls + rubric/versioning planned)
@@ -119,13 +119,14 @@ Human-in-the-Loop workflow:
   - Reason for edit documentation
 
 - **Integration surface** (scaffold)
-  - Current: in-memory queue semantics
+  - Current: Postgres-backed HITL tasks + admin endpoints under `/admin/hitl/*`
+  - In-memory queue remains present but is no longer the primary runtime path
   - Dify integration remains optional/experimental
   - Primary direction is a purpose-built console (“Control Center”) per `TECHNICAL_DESIGN.md`
 
 ### Enhanced Chunking (`atlas.rag.chunking`)
 
-Heading-aware hierarchical chunking:
+Default chunking is simple paragraph chunking (`chunk_text`). A heading-aware variant exists (`chunk_text_hierarchical`) but is not the default path today.
 
 - **Hierarchical Structure**
   - Extract markdown headings (# through ######)
@@ -178,8 +179,9 @@ Current automated coverage:
 - Qdrant integration
 
 Status (as of Feb 2026):
-- Unit/breadcrumb tests: 49 passing
-- Integration tests: 1 passing (requires Docker Qdrant)
+
+- Unit/breadcrumb tests: run `pytest -q`
+- Integration tests: run `pytest -m integration`
 
 Run tests:
 ```bash
@@ -198,10 +200,6 @@ The current implementation provides a solid scaffold with:
 
 Still needed for full HLD implementation:
 - 🔄 Docling integration for PDF/Office parsing
-- 🔄 Actual LLM calls in judge/refine nodes
-- 🔄 Embeddings node implementation
-- 🔄 Commit node with vector store integration
-- 🔄 Durable HITL model + operator UX (Dify optional; purpose-built console planned)
-- 🔄 Repo “Looking Glass” (corpus inspection) API/UX per `TECHNICAL_DESIGN.md`
+- 🔄 Improve prompts/parsing/guardrails for judge/refine/metadata nodes
 - 🔄 Retrieval upgrades (hybrid/rerank) are explicitly deferred unless a measured failure mode requires them
 - 🔄 Semantic cache implementation

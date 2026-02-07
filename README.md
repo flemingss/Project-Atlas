@@ -52,14 +52,35 @@ python -m atlas
 Backend endpoints:
 - `GET /` (service info)
 - `GET /health`
+
+Admin / ops:
 - `GET /admin/config/effective`
 - `POST /admin/reload-yaml`
 - `POST /admin/self-test`
+- `GET /admin/runs`
+- `GET /admin/runs/{run_id}`
+
+Looking Glass:
 - `GET /admin/looking-glass/qdrant`
 - `GET /admin/looking-glass/inventory`
 - `GET /admin/looking-glass/docs`
 - `GET /admin/looking-glass/docs/{doc_id}`
 - `GET /admin/looking-glass/docs/{doc_id}/chunks/{chunk_index}`
+
+HITL:
+- `GET /admin/hitl/tasks`
+- `POST /admin/hitl/tasks`
+- `POST /admin/hitl/tasks/next`
+- `GET /admin/hitl/tasks/{task_id}`
+- `POST /admin/hitl/tasks/{task_id}/complete`
+- `POST /admin/hitl/tasks/{task_id}/resume`
+- `POST /admin/hitl/tasks/{task_id}/skip`
+- `POST /admin/hitl/tasks/{task_id}/reject`
+
+Doc versioning + export:
+- `GET /admin/docs/{doc_id}/active-version`
+- `POST /admin/docs/{doc_id}/active-version`
+- `GET /admin/docs/{doc_id}/export`
 
 Admin auth:
 - If `ATLAS_ADMIN_TOKEN` is set, `/admin/*` requires header `X-Atlas-Admin-Token: <token>`.
@@ -72,6 +93,7 @@ Tuning endpoints (Postgres-backed config versions):
 
 RAG MVP endpoints (Qdrant-backed):
 - `POST /rag/ingest/text`
+- `POST /rag/ingest/file`
 - `POST /rag/search`
 
 ## Tests
