@@ -1,0 +1,3 @@
+[browser]
+# Prevent Streamlit frontend metrics/usage beacons (reduces noisy console errors in offline / DNS-blocked envs).
+gatherUsageStats = false

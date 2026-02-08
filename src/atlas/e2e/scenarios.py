@@ -69,6 +69,56 @@ def qdrant_count_points(client: httpx.Client, *, qdrant_url: str, collection: st
         raise RuntimeError(f"Unexpected qdrant count shape: {data}") from e
 
 
+def _openai_compat_v1(base_url: str) -> str:
+    base = base_url.rstrip("/")
+    return base if base.endswith("/v1") else f"{base}/v1"
+
+
+def scenario_local_llm_preflight(client: httpx.Client, *, api_url: str) -> None:
+    """Verify an OpenAI-compatible server is reachable for the configured models.
+
+    This is intentionally a lightweight smoke check to fail fast with a clear message
+    when running `--mode local_llm`.
+    """
+
+    base_url = os.environ.get("ATLAS_OPENAI_BASE_URL")
+    if not base_url:
+        raise RuntimeError("ATLAS_OPENAI_BASE_URL is required for local_llm mode")
+
+    eff = _require_ok(client.get(f"{api_url}/admin/config/effective"), label="effective config")
+    roles = (eff.get("models") or {}).get("roles") or {}
+
+    judge_model = (roles.get("judge_model") or {}).get("model_name")
+    embed_model = (roles.get("embed_model") or {}).get("model_name")
+    if not judge_model or not embed_model:
+        raise RuntimeError(f"Unexpected effective config roles shape: {roles}")
+
+    v1 = _openai_compat_v1(base_url)
+
+    # Chat preflight
+    chat_payload = {
+        "model": judge_model,
+        "messages": [
+            {"role": "system", "content": "You are a test harness."},
+            {"role": "user", "content": "Reply with 'ok'"},
+        ],
+        "temperature": 0.0,
+    }
+    r1 = client.post(f"{v1}/chat/completions", json=chat_payload)
+    if r1.status_code >= 400:
+        raise RuntimeError(
+            f"OpenAI-compatible chat preflight failed ({r1.status_code}) at {v1} for model={judge_model}: {r1.text}"
+        )
+
+    # Embeddings preflight
+    emb_payload = {"model": embed_model, "input": ["hello"]}
+    r2 = client.post(f"{v1}/embeddings", json=emb_payload)
+    if r2.status_code >= 400:
+        raise RuntimeError(
+            f"OpenAI-compatible embeddings preflight failed ({r2.status_code}) at {v1} for model={embed_model}: {r2.text}"
+        )
+
+
 def activate_deterministic_pipeline_models(client: httpx.Client, *, api_url: str, dim: int) -> None:
     payload = {
         "name": f"e2e: deterministic pipeline models (dim {dim})",
@@ -116,6 +166,23 @@ def activate_deterministic_pipeline_models(client: httpx.Client, *, api_url: str
         role = roles.get(role_name) or {}
         if role.get("provider") != "deterministic":
             raise RuntimeError(f"{role_name} provider not deterministic: {role}")
+
+
+def activate_local_llm_pipeline_guardrails(client: httpx.Client, *, api_url: str) -> None:
+    """Apply pipeline config guardrails to reduce flakiness in local-LLM E2E runs.
+
+    - Disable refine loop by setting judge_cutoff_refine=1 (since scores are 1-5)
+      so we don't require a vision-capable refine model.
+    """
+
+    payload = {
+        "name": "e2e: local LLM guardrails",
+        "notes": "E2E local_llm: disable refine loop for stability and to avoid vision dependencies.",
+        "base": "current",
+        "patch": {"pipeline": {"thresholds": {"judge_cutoff_refine": 1}}},
+        "activate": True,
+    }
+    _require_ok(client.post(f"{api_url}/admin/config-versions", json=payload), label="activate local LLM guardrails")
 
 
 def scenario_admin_endpoints(client: httpx.Client, *, api_url: str) -> None:
@@ -362,6 +429,7 @@ def run_scenarios(
     api_url: str,
     qdrant_url: str,
     collection: str = "atlas_chunks",
+    mode: str = "deterministic",
     timeout_s: float = 20.0,
     admin_token: str | None = None,
 ) -> RunSummary:
@@ -395,11 +463,19 @@ def run_scenarios(
                 lambda: scenario_config_version_activation(client, api_url=api),
             )
 
+        if results[-1].ok and mode == "local_llm":
+            _run_one("local_llm_preflight", lambda: scenario_local_llm_preflight(client, api_url=api))
+        if results[-1].ok and mode == "local_llm":
+            _run_one(
+                "activate_local_llm_pipeline_guardrails",
+                lambda: activate_local_llm_pipeline_guardrails(client, api_url=api),
+            )
+
         dim = qdrant_collection_dim(client, qdrant_url=qdrant, collection=collection)
         if dim is None:
             dim = 768
 
-        if results[-1].ok:
+        if results[-1].ok and mode == "deterministic":
             _run_one(
                 "activate_deterministic_pipeline_models",
                 lambda: activate_deterministic_pipeline_models(client, api_url=api, dim=dim),
@@ -419,9 +495,9 @@ def run_scenarios(
                 ),
             )
 
-        if results[-1].ok:
+        if results[-1].ok and mode == "deterministic":
             _run_one("pipeline_refine_then_pass", lambda: scenario_pipeline_refine_then_pass(client, api_url=api))
-        if results[-1].ok:
+        if results[-1].ok and mode == "deterministic":
             _run_one(
                 "pipeline_hitl_escalation_and_resume",
                 lambda: scenario_pipeline_hitl_escalation_and_resume(client, api_url=api),

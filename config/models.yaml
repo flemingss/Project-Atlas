@@ -19,13 +19,13 @@ providers:
 roles:
   judge_model:
     provider: lmstudio
-    model_name: "llama-3.2-3b"
+    model_name: "openai/gpt-oss-20b"
     params:
       temperature: 0.0
 
   refine_model:
     provider: lmstudio
-    model_name: "llama-3.2-vision"
+    model_name: "qwen/qwen3-vl-8b"
     params:
       temperature: 0.2
 
@@ -36,13 +36,13 @@ roles:
 
   metadata_tier1_model:
     provider: lmstudio
-    model_name: "llama-3.2-3b"
+    model_name: "openai/gpt-oss-20b"
     params:
       temperature: 0.0
 
   metadata_tier2_model:
-    provider: openai_frontier
-    model_name: "gpt-4o-mini"
+    provider: lmstudio
+    model_name: "openai/gpt-oss-20b"
     params:
       temperature: 0.0
 

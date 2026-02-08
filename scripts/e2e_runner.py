@@ -57,6 +57,12 @@ def main() -> int:
     ap.add_argument("--api-url", default=os.environ.get("ATLAS_API_URL", "http://127.0.0.1:18080"))
     ap.add_argument("--api-port", type=int, default=int(os.environ.get("ATLAS_PORT", "8080")))
     ap.add_argument("--compose-file", default=os.environ.get("ATLAS_E2E_COMPOSE_FILE", "docker-compose.e2e.yml"))
+    ap.add_argument(
+        "--mode",
+        choices=["deterministic", "local_llm"],
+        default=os.environ.get("ATLAS_E2E_MODE", "deterministic"),
+        help="Which scenario mode to run. deterministic is CI-safe; local_llm requires a reachable OpenAI-compatible server.",
+    )
     ap.add_argument("--skip-docker", action="store_true")
     ap.add_argument("--skip-api", action="store_true")
     ap.add_argument("--leave-docker-up", action="store_true")
@@ -98,7 +104,17 @@ def main() -> int:
         _wait_for_health(api_url, timeout_s=args.timeout)
 
         print("[e2e] running scenarios...")
-        scenarios = subprocess.run([sys.executable, "scripts/e2e_scenarios.py", "--api-url", api_url], text=True)
+        scenarios = subprocess.run(
+            [
+                sys.executable,
+                "scripts/e2e_scenarios.py",
+                "--api-url",
+                api_url,
+                "--mode",
+                args.mode,
+            ],
+            text=True,
+        )
         return scenarios.returncode
 
     finally:

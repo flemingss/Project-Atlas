@@ -3,6 +3,23 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+dist/
+build/
+
+.DS_Store
+Thumbs.db
+
+# Streamlit local secrets (never commit)
+.streamlit/secrets.toml
+
+# Editor/IDE
+.idea/
+.vscode/*.code-workspace
 .env
 artifacts/
 volumes/

@@ -1,4 +1,6 @@
 from __future__ import annotations
+import mimetypes
+
 from typing import Any
 
 from fastapi import APIRouter, File, Form, UploadFile
@@ -121,6 +123,10 @@ def make_rag_router(*, config_manager: ConfigManager, session_factory: sessionma
         try:
             body = await file.read()
             mime = source_mime_type or file.content_type or "application/octet-stream"
+            if mime == "application/octet-stream" and file.filename:
+                guessed, _ = mimetypes.guess_type(file.filename)
+                if guessed:
+                    mime = guessed
             result = await ingest_file_via_pipeline(
                 config_manager=config_manager,
                 session_factory=session_factory,

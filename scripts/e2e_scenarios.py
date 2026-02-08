@@ -29,6 +29,12 @@ def main() -> int:
     ap.add_argument("--api-url", default=os.environ.get("ATLAS_API_URL", "http://127.0.0.1:18080"))
     ap.add_argument("--qdrant-url", default=os.environ.get("ATLAS_QDRANT_URL", "http://localhost:6333"))
     ap.add_argument("--collection", default=os.environ.get("ATLAS_QDRANT_COLLECTION", "atlas_chunks"))
+    ap.add_argument(
+        "--mode",
+        choices=["deterministic", "local_llm"],
+        default=os.environ.get("ATLAS_E2E_MODE", "deterministic"),
+        help="Which scenario mode to run.",
+    )
     ap.add_argument("--timeout", type=float, default=20.0)
     args = ap.parse_args()
 
@@ -39,6 +45,7 @@ def main() -> int:
         api_url=args.api_url,
         qdrant_url=args.qdrant_url,
         collection=args.collection,
+        mode=args.mode,
         timeout_s=float(args.timeout),
     )
     if summary.ok:

@@ -86,7 +86,21 @@ class IngestNode:
         Stores full Docling JSON as ground truth (returned in result; caller may persist to artifact store).
         """
         try:
-            with NamedTemporaryFile(delete=True, suffix=".pdf") as tmp:
+            suffix = ".pdf"
+            if filename and "." in filename:
+                suffix = "." + filename.rsplit(".", 1)[-1]
+            else:
+                suffix = {
+                    "application/pdf": ".pdf",
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+                    "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+                    "application/msword": ".doc",
+                    "application/vnd.ms-powerpoint": ".ppt",
+                    "application/vnd.ms-excel": ".xls",
+                }.get(source_mime_type, ".pdf")
+
+            with NamedTemporaryFile(delete=True, suffix=suffix) as tmp:
                 tmp.write(doc_bytes)
                 tmp.flush()
                 parsed = parse_document_path(doc_path=Path(tmp.name), source_mime_type=source_mime_type)
@@ -147,6 +161,23 @@ class IngestNode:
             if mime_type == "text/plain" and isinstance(content, str):
                 return await self.process_text(text=content, mime_type=mime_type)
 
+            if isinstance(content, (bytes, bytearray)) and mime_type in {"text/plain", "text/markdown"}:
+                try:
+                    text = bytes(content).decode("utf-8")
+                except Exception:  # noqa: BLE001
+                    text = bytes(content).decode("utf-8", errors="replace")
+
+                # Keep plain text/markdown lightweight and deterministic.
+                parsed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                docling_json = {"content": text, "mime_type": mime_type, "parsed_at": parsed_at}
+                return IngestResult(
+                    success=True,
+                    markdown_projection=text,
+                    docling_json=docling_json,
+                    parse_profile=ParseProfile.MARKDOWN if mime_type == "text/markdown" else ParseProfile.TEXT,
+                    docling_schema_version="1.0",
+                )
+
             if isinstance(content, (bytes, bytearray)) and mime_type in {
                 "application/pdf",
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -159,6 +190,7 @@ class IngestNode:
                 return await self.process_doc_bytes(
                     doc_bytes=bytes(content),
                     source_mime_type=mime_type,
+                    filename=None,
                 )
 
             # Unknown type

@@ -96,6 +96,26 @@ RAG MVP endpoints (Qdrant-backed):
 - `POST /rag/ingest/file`
 - `POST /rag/search`
 
+## UI (Operator Console)
+
+Atlas includes a small optional Streamlit UI that overlays the existing API (no backend changes required).
+
+```powershell
+# Install UI extras
+pip install -e .[ui]
+
+# Run the console
+streamlit run ui\app.py
+```
+
+The UI uses:
+- API: `ATLAS_API_URL` (default `http://127.0.0.1:18080`)
+- Admin auth: `ATLAS_ADMIN_TOKEN` (sent as header `X-Atlas-Admin-Token` for `/admin/*`)
+
+Notes:
+- The repo disables Streamlit usage stats by default via `.streamlit/config.toml` (reduces noisy browser console errors in restricted/offline networks).
+- If something goes wrong, use the UI sidebar **Diagnostics → Download logs (json)**.
+
 ## Tests
 
 Fast unit/breadcrumb tests (no Docker/LM Studio required):

@@ -176,3 +176,38 @@ def test_rag_ingest_office_docx_persists_artifacts(tmp_path: Path, monkeypatch: 
         assert "source" in kinds
         assert "docling_json" in kinds
         assert "markdown_projection" in kinds
+
+
+def test_rag_ingest_markdown_file_succeeds(tmp_path: Path, monkeypatch: Any) -> None:
+    app, session_factory = _make_test_app(tmp_root=tmp_path, monkeypatch=monkeypatch)
+    client = TestClient(app)
+
+    res = client.post(
+        "/rag/ingest/file",
+        data={"doc_id": "md1", "doc_version": "v1"},
+        files={"file": ("sample.md", b"# Hello\n\nThis is markdown.\n", "text/markdown")},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["ok"] is True
+    assert data["chunks_upserted"] >= 1
+
+    # Confirm we wrote artifact refs for the run.
+    from sqlalchemy import select
+
+    from atlas.models import ArtifactRef, WorkflowRun
+
+    with session_factory() as session:
+        run = session.execute(select(WorkflowRun).order_by(WorkflowRun.id.desc())).scalars().first()
+        assert run is not None
+        run_id = int(run.id)
+
+        artifacts = (
+            session.execute(select(ArtifactRef).where(ArtifactRef.run_id == run_id).order_by(ArtifactRef.id.asc()))
+            .scalars()
+            .all()
+        )
+        kinds = {a.kind for a in artifacts}
+        assert "source" in kinds
+        assert "docling_json" in kinds
+        assert "markdown_projection" in kinds
