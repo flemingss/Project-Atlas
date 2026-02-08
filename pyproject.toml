@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "project-atlas"
-version = "0.1.0"
+version = "0.2.0"
 description = "Adaptive Agentic Knowledge Runtime (Project Atlas)"
 requires-python = ">=3.11"
 authors = [{ name = "Project Atlas" }]
