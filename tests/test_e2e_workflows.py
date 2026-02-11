@@ -16,6 +16,12 @@ from atlas.db_init import ensure_schema
 from atlas.vectorstore.qdrant_store import QdrantHit
 
 
+# Test markers for triggering pipeline behaviors
+HITL_ESCALATION_MARKER = "[UNFIXABLE]"
+HITL_ESCALATION_CONTENT = "\uFFFD\uFFFD\uFFFD"  # Replacement characters that trigger HITL
+REFINE_TRIGGER_TEXT = "## Ov3rview\n\nThe syst3m c0nsists of components."  # Typos trigger judge score 3 → refine
+
+
 def _write_minimal_yaml_config(root_dir: Path) -> None:
     (root_dir / "config").mkdir(parents=True, exist_ok=True)
     (root_dir / "config" / "pipeline.yaml").write_text(
@@ -37,7 +43,12 @@ def _write_minimal_yaml_config(root_dir: Path) -> None:
 
 
 class _FakeQdrantStore:
-    """Mock QdrantStore that tracks all operations for validation."""
+    """Mock QdrantStore that tracks all operations for validation.
+    
+    Note: Uses class-level state for simplicity. Tests using this mock should not
+    run in parallel (pytest-xdist) as they share state. The reset() method ensures
+    test isolation when run sequentially.
+    """
 
     all_points: list[Any] = []
     search_calls: list[dict[str, Any]] = []
@@ -224,18 +235,20 @@ def test_e2e_pipeline_refine_loop_workflow(tmp_path: Path, monkeypatch: Any) -> 
     End-to-end test: Pipeline with refine loop (judge score < threshold → refine → re-judge)
     
     Tests the automatic refinement workflow using deterministic models that trigger refinement.
+    The text with intentional typos (Ov3rview, syst3m, c0nsists) triggers deterministic judge
+    score 3, which is below the threshold of 4, triggering the refine loop. After refinement,
+    the judge scores 5 and the content is committed.
     """
     app = _make_test_app(tmp_root=tmp_path, monkeypatch=monkeypatch)
     client = TestClient(app)
 
-    # This text triggers deterministic judge score 3 → refine → judge score 5
     doc_id = f"refine-test-{uuid.uuid4()}"
     response = client.post(
         "/rag/ingest/text",
         json={
             "doc_id": doc_id,
             "doc_version": "1",
-            "text": "## Ov3rview\n\nThe syst3m c0nsists of components.",
+            "text": REFINE_TRIGGER_TEXT,
             "tenant_id": "refine_tenant",
             "project_id": "refine_project",
             "is_finalized": True,
@@ -259,18 +272,19 @@ def test_e2e_hitl_escalation_workflow(tmp_path: Path, monkeypatch: Any) -> None:
     End-to-end test: HITL escalation workflow (unfixable content → HITL → human fix → resume)
     
     Tests the complete human-in-the-loop workflow from escalation through resolution.
+    Content containing HITL_ESCALATION_MARKER and replacement characters triggers
+    automatic escalation to human review.
     """
     app = _make_test_app(tmp_root=tmp_path, monkeypatch=monkeypatch)
     client = TestClient(app)
 
-    # This text triggers HITL escalation (contains [UNFIXABLE] marker)
     doc_id = f"hitl-test-{uuid.uuid4()}"
     ingest_response = client.post(
         "/rag/ingest/text",
         json={
             "doc_id": doc_id,
             "doc_version": "1",
-            "text": "[UNFIXABLE]\n\n\uFFFD\uFFFD\uFFFD corrupted data",
+            "text": f"{HITL_ESCALATION_MARKER}\n\n{HITL_ESCALATION_CONTENT} corrupted data",
             "tenant_id": "hitl_tenant",
             "project_id": "hitl_project",
             "is_finalized": True,
