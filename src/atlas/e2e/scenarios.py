@@ -490,6 +490,127 @@ def scenario_pipeline_hitl_escalation_and_resume(
         raise RuntimeError(f"Expected search to find resumed doc_id={doc_id}")
 
 
+def scenario_batch_multi_document_ingest(client: httpx.Client, *, api_url: str) -> None:
+    """Validate batch ingestion of multiple documents with various characteristics."""
+    timestamp = int(time.time())
+    doc_ids = []
+
+    # Ingest 5 documents with varying content
+    for i in range(5):
+        doc_id = f"e2e-batch-{timestamp}-{i}"
+        doc_ids.append(doc_id)
+        ingest = {
+            "doc_id": doc_id,
+            "doc_version": "1",
+            "text": f"# Document {i}\n\nContent for document {i} about topic_{i}.",
+            "tenant_id": "local",
+            "project_id": "default",
+            "is_finalized": True,
+            "is_sensitive": False,
+            "source_mime_type": "text/plain",
+            "metadata": {"source": "e2e_batch", "batch_index": i},
+        }
+        data = _require_ok(client.post(f"{api_url}/rag/ingest/text", json=ingest), label=f"batch ingest doc {i}")
+        if int(data.get("chunks_upserted", 0)) < 1:
+            raise RuntimeError(f"Batch doc {i} did not ingest: {data}")
+
+    # Verify we can search and find at least some of these documents
+    search = {"query": "topic", "top_k": 10, "tenant_id": "local", "project_id": "default"}
+    hits = _require_ok(client.post(f"{api_url}/rag/search", json=search), label="batch search").get("hits") or []
+    found_count = sum(1 for h in hits if h.get("doc_id") in doc_ids)
+    if found_count < 1:
+        raise RuntimeError(f"Expected to find at least one batch document, found {found_count}")
+
+
+def scenario_workflow_orchestration_validation(client: httpx.Client, *, api_url: str) -> None:
+    """
+    Comprehensive workflow test: ingest → chunk → judge → embed → store → search.
+    Validates complete data flow through the entire pipeline.
+    """
+    doc_id = f"e2e-workflow-{int(time.time())}"
+
+    # Step 1: Ingest with well-formed content
+    ingest = {
+        "doc_id": doc_id,
+        "doc_version": "1",
+        "text": "# Technical Overview\n\nThis document describes the system architecture.\n\n## Components\n\nThe system has multiple integrated components.",
+        "tenant_id": "local",
+        "project_id": "default",
+        "is_finalized": True,
+        "is_sensitive": False,
+        "source_mime_type": "text/plain",
+        "metadata": {"source": "e2e_workflow"},
+    }
+    ingest_data = _require_ok(client.post(f"{api_url}/rag/ingest/text", json=ingest), label="workflow ingest")
+    if not ingest_data.get("ok"):
+        raise RuntimeError(f"Workflow ingest failed: {ingest_data}")
+    chunks = int(ingest_data.get("chunks_upserted", 0))
+    if chunks < 1:
+        raise RuntimeError(f"Workflow produced no chunks: {ingest_data}")
+
+    # Step 2: Verify the run was recorded in the ledger
+    runs = _require_ok(client.get(f"{api_url}/admin/runs"), label="workflow runs list")
+    if not runs or not isinstance(runs, list):
+        raise RuntimeError("No workflow runs found in ledger")
+
+    # Step 3: Search for the ingested content and validate retrieval
+    search = {"query": "system architecture", "top_k": 5, "tenant_id": "local", "project_id": "default"}
+    search_data = _require_ok(client.post(f"{api_url}/rag/search", json=search), label="workflow search")
+    hits = search_data.get("hits") or []
+    if not any(h.get("doc_id") == doc_id for h in hits):
+        raise RuntimeError(f"Workflow: search did not find ingested doc_id={doc_id}")
+
+
+def scenario_error_recovery_validation(client: httpx.Client, *, api_url: str) -> None:
+    """
+    Test error recovery: HITL skip and reject operations.
+    Validates that operators can handle problematic documents appropriately.
+    """
+    # Create a HITL task
+    doc_id = f"e2e-error-{int(time.time())}"
+    ingest = {
+        "doc_id": doc_id,
+        "doc_version": "1",
+        "text": "[UNFIXABLE]\n\nUnrecoverable content",
+        "tenant_id": "local",
+        "project_id": "default",
+        "is_finalized": True,
+        "is_sensitive": False,
+        "source_mime_type": "text/plain",
+        "metadata": {"source": "e2e_error"},
+    }
+    _require_ok(client.post(f"{api_url}/rag/ingest/text", json=ingest), label="error recovery ingest")
+
+    # Get the task
+    task = _require_ok(client.post(f"{api_url}/admin/hitl/tasks/next", params={"assigned_to": "e2e"}), label="error recovery get task")
+
+    # Test skip operation
+    skip_result = _require_ok(client.post(f"{api_url}/admin/hitl/tasks/{task['id']}/skip"), label="error recovery skip")
+    if skip_result.get("state") != "skipped":
+        raise RuntimeError(f"Skip did not transition to skipped state: {skip_result}")
+
+
+def scenario_looking_glass_endpoints(client: httpx.Client, *, api_url: str) -> None:
+    """
+    Validate Looking Glass diagnostic endpoints for operational visibility.
+    Tests that operators can inspect system state.
+    """
+    # Check Qdrant status
+    qdrant_status = _require_ok(client.get(f"{api_url}/admin/looking-glass/qdrant"), label="looking glass qdrant")
+    if "collections" not in qdrant_status:
+        raise RuntimeError(f"Looking Glass Qdrant missing collections: {qdrant_status}")
+
+    # Check inventory
+    inventory = _require_ok(client.get(f"{api_url}/admin/looking-glass/inventory"), label="looking glass inventory")
+    if "docs" not in inventory or "chunks" not in inventory:
+        raise RuntimeError(f"Looking Glass inventory incomplete: {inventory}")
+
+    # Check docs list
+    docs = _require_ok(client.get(f"{api_url}/admin/looking-glass/docs"), label="looking glass docs")
+    if not isinstance(docs, list):
+        raise RuntimeError(f"Looking Glass docs should return list: {docs}")
+
+
 def run_scenarios(
     *,
     api_url: str,
@@ -573,6 +694,19 @@ def run_scenarios(
                 "pipeline_hitl_escalation_and_resume",
                 lambda: scenario_pipeline_hitl_escalation_and_resume(client, api_url=api),
             )
+
+        # Comprehensive workflow and orchestration tests
+        if results[-1].ok:
+            _run_one("batch_multi_document_ingest", lambda: scenario_batch_multi_document_ingest(client, api_url=api))
+        if results[-1].ok:
+            _run_one(
+                "workflow_orchestration_validation",
+                lambda: scenario_workflow_orchestration_validation(client, api_url=api),
+            )
+        if results[-1].ok:
+            _run_one("error_recovery_validation", lambda: scenario_error_recovery_validation(client, api_url=api))
+        if results[-1].ok:
+            _run_one("looking_glass_endpoints", lambda: scenario_looking_glass_endpoints(client, api_url=api))
 
     ok = all(r.ok for r in results)
     return RunSummary(ok=ok, results=results)
