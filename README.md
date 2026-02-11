@@ -124,6 +124,8 @@ Notes:
 
 ## Tests
 
+**For comprehensive testing documentation, see [`E2E_TEST_GUIDE.md`](E2E_TEST_GUIDE.md).**
+
 Fast unit/breadcrumb tests (no Docker/LM Studio required):
 
 ```powershell
@@ -135,6 +137,12 @@ Integration breadcrumbs (hit live external services like Docker Qdrant):
 ```powershell
 # Ensure docker compose is up and Qdrant is reachable at ATLAS_QDRANT_URL (defaults to http://localhost:6333)
 & ".\.venv\Scripts\python.exe" -m pytest -m integration -q
+```
+
+E2E workflow tests (comprehensive pipeline validation with mocked services):
+
+```powershell
+& ".\.venv\Scripts\python.exe" -m pytest tests/test_e2e_workflows.py -v
 ```
 
 ## Release Candidate Verification
@@ -162,6 +170,8 @@ curl -H "X-Atlas-Admin-Token: $env:ATLAS_ADMIN_TOKEN" -X POST http://127.0.0.1:1
 
 ## E2E Scenario Tests
 
+**For comprehensive testing documentation, see [`E2E_TEST_GUIDE.md`](E2E_TEST_GUIDE.md).**
+
 Black-box E2E scenario runner (talks to a running API + Qdrant):
 
 ```powershell
@@ -175,9 +185,27 @@ docker compose -f docker-compose.e2e.yml up -d
 & ".\.venv\Scripts\python.exe" scripts\e2e_runner.py
 ```
 
+**Deterministic mode** (CI-safe, uses mock LLM providers):
+
+```powershell
+# Dockerized full stack
+docker compose -f docker-compose.optest.yml --profile deterministic up --abort-on-container-exit
+```
+
+**Local LLM mode** (validates real AI behavior with Ollama or LM Studio):
+
+```powershell
+# With Ollama (auto-pulls models)
+docker compose -f docker-compose.optest.yml --profile local_llm up --abort-on-container-exit
+
+# With LM Studio on host
+docker compose -f docker-compose.optest.yml --profile lmstudio up --abort-on-container-exit
+```
+
 Notes:
 - If LM Studio isn’t running, the runner will activate a deterministic embeddings config version automatically.
 - If the Qdrant collection already exists, the runner matches its vector dimension.
+- See `E2E_TEST_GUIDE.md` for detailed scenario descriptions and test strategies.
 
 You can also run the built-in self-test against a running appliance:
 
