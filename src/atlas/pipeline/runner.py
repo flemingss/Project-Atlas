@@ -21,8 +21,9 @@ from atlas.pipeline.metadata import MetadataNode
 from atlas.pipeline.orchestrator import PipelineOrchestrator
 from atlas.pipeline.refine import RefineNode
 from atlas.pipeline.state import PipelineNode, create_pipeline_context
-from atlas.rag.chunking import chunk_text
+from atlas.rag.chunking import chunk_markdown_semantic, chunk_text, infer_chunk_features
 from atlas.rag.deterministic import deterministic_chunk_id, sha256_hex
+from atlas.rag.normalize import normalize_markdown
 from atlas.settings import Settings
 from atlas.vectorstore.qdrant_store import QdrantStore
 from atlas.workflow_ledger import ArtifactRefCreateRequest, WorkflowRunCreateRequest, add_artifact_ref, create_workflow_run
@@ -35,6 +36,7 @@ async def _activate_doc_version(
     store: QdrantStore,
     tenant_id: str,
     project_id: str,
+    corpus_id: str,
     doc_id: str,
     doc_version: str,
 ) -> None:
@@ -53,6 +55,7 @@ async def _activate_doc_version(
                 project_id=project_id,
                 doc_id=doc_id,
                 doc_version=doc_version,
+                corpus_id=corpus_id,
             )
     except Exception:
         # If DB update fails, we still try to set Qdrant payloads.
@@ -61,6 +64,7 @@ async def _activate_doc_version(
     base_must = [
         qm.FieldCondition(key="tenant_id", match=qm.MatchValue(value=tenant_id)),
         qm.FieldCondition(key="project_id", match=qm.MatchValue(value=project_id)),
+        qm.FieldCondition(key="corpus_id", match=qm.MatchValue(value=corpus_id)),
         qm.FieldCondition(key="doc_id", match=qm.MatchValue(value=doc_id)),
     ]
     version_must = [
@@ -136,14 +140,24 @@ def _build_orchestrator(*, settings: Settings, models_cfg: dict[str, Any], pipel
         provider=refine_provider,
         model_name=refine.model_name,
         model_params=refine.params,
-        max_retries=int(pipeline_cfg.get("thresholds", {}).get("refine_max_retries", 2)),
+        max_retries=int(
+            (pipeline_cfg.get("limits", {}) or {}).get(
+                "refine_max_retries",
+                (pipeline_cfg.get("thresholds", {}) or {}).get("refine_max_retries", 2),
+            )
+        ),
     )
     metadata_node = MetadataNode(
         tier1_provider=tier1_provider,
         tier1_model=meta1.model_name,
         tier2_provider=tier2_provider,
         tier2_model=tier2_model,
-        tier2_cap_per_doc=int(pipeline_cfg.get("limits", {}).get("metadata_tier2_cap_per_doc", 25)),
+        tier2_cap_per_doc=int(
+            (pipeline_cfg.get("limits", {}) or {}).get(
+                "tier2_chunk_cap_per_document",
+                (pipeline_cfg.get("limits", {}) or {}).get("metadata_tier2_cap_per_doc", 25),
+            )
+        ),
     )
 
     orch = PipelineOrchestrator(
@@ -172,6 +186,7 @@ async def ingest_text_via_pipeline(
     doc_version: str,
     tenant_id: str,
     project_id: str,
+    corpus_id: str,
     text: str,
     source_mime_type: str,
     is_finalized: bool,
@@ -185,6 +200,14 @@ async def ingest_text_via_pipeline(
 
     limits = (pipeline_cfg.get("limits", {}) or {})
     max_chars = int(limits.get("chunk_max_chars", 1000))
+
+    normalize_cfg = (pipeline_cfg.get("normalize", {}) or {})
+    normalize_enabled = bool(normalize_cfg.get("enabled", True))
+
+    chunking_cfg = (pipeline_cfg.get("chunking", {}) or {})
+    chunk_strategy = str(chunking_cfg.get("strategy", "semantic"))
+    target_tokens = int(chunking_cfg.get("target_tokens", 320))
+    max_tokens = int(chunking_cfg.get("max_tokens", 400))
 
     orch, registry = _build_orchestrator(settings=settings, models_cfg=models_cfg, pipeline_cfg=pipeline_cfg)
 
@@ -205,6 +228,7 @@ async def ingest_text_via_pipeline(
                         "source_mime_type": source_mime_type,
                         "is_finalized": bool(is_finalized),
                         "is_sensitive": bool(is_sensitive),
+                        "corpus_id": corpus_id,
                         "config": source_info,
                         "request_metadata": metadata or {},
                     },
@@ -223,6 +247,7 @@ async def ingest_text_via_pipeline(
                 # Keep existing meta but refresh config snapshot.
                 m = w.meta or {}
                 m["config"] = source_info
+                m.setdefault("corpus_id", corpus_id)
                 w.meta = m
                 session.commit()
 
@@ -240,6 +265,33 @@ async def ingest_text_via_pipeline(
     ctx.state.markdown_projection = ingest_res.markdown_projection
 
     ctx = await orch.process_document(ctx)
+
+    # Normalize final markdown before chunking/embedding.
+    if normalize_enabled:
+        ctx.state.markdown_projection = normalize_markdown(ctx.state.markdown_projection)
+
+    # Persist markdown projection as an artifact (best-effort).
+    try:
+        md_art = write_text(
+            artifacts_dir=Path(settings.atlas_artifacts_dir),
+            rel_path=f"runs/{run_id}/ingest/markdown.md",
+            text=ctx.state.markdown_projection,
+            mime_type="text/markdown",
+        )
+        with session_factory() as session:
+            add_artifact_ref(
+                session,
+                run_id=run_id,
+                req=ArtifactRefCreateRequest(
+                    kind="markdown_projection",
+                    path=md_art.rel_path,
+                    sha256=md_art.sha256,
+                    mime_type=md_art.mime_type,
+                    meta={},
+                ),
+            )
+    except Exception:
+        pass
 
     # Record node runs best-effort (durable trace)
     try:
@@ -322,7 +374,7 @@ async def ingest_text_via_pipeline(
                     is_sensitive=bool(is_sensitive),
                     judge_score=judge_score,
                     before_md=ctx.state.markdown_projection,
-                    meta={"source": "pipeline", "config": source_info},
+                    meta={"source": "pipeline", "config": source_info, "corpus_id": corpus_id},
                 ),
             )
 
@@ -352,7 +404,14 @@ async def ingest_text_via_pipeline(
     resolved_embed = registry.resolve("embed_model")
     embed_provider = registry.provider_for(resolved_embed.provider_name)
 
-    chunks = chunk_text(text=ctx.state.markdown_projection, max_chars=max_chars)
+    if chunk_strategy == "paragraph":
+        chunks = chunk_text(text=ctx.state.markdown_projection, max_chars=max_chars)
+    else:
+        chunks = chunk_markdown_semantic(
+            text=ctx.state.markdown_projection,
+            target_tokens=target_tokens,
+            max_tokens=max_tokens,
+        )
     texts = [c.text for c in chunks]
     if not texts:
         return {"ok": True, "run_id": run_id, "collection": "atlas_chunks", "chunks_upserted": 0}
@@ -368,12 +427,23 @@ async def ingest_text_via_pipeline(
     meta = ctx.results.get("metadata") or {}
 
     points: list[qm.PointStruct] = []
+    manifest_lines: list[str] = []
     for c, v in zip(chunks, vectors, strict=True):
         content_hash = sha256_hex(c.text)
-        pid = deterministic_chunk_id(doc_id=doc_id, doc_version=doc_version, content_hash=content_hash, chunk_index=c.index)
+        pid = deterministic_chunk_id(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            corpus_id=corpus_id,
+            doc_id=doc_id,
+            doc_version=doc_version,
+            content_hash=content_hash,
+            chunk_index=c.index,
+        )
+        feats = infer_chunk_features(c.text)
         payload: dict[str, Any] = {
             "tenant_id": tenant_id,
             "project_id": project_id,
+            "corpus_id": corpus_id,
             "doc_id": doc_id,
             "doc_version": doc_version,
             "chunk_index": c.index,
@@ -383,6 +453,12 @@ async def ingest_text_via_pipeline(
             "is_sensitive": bool(is_sensitive),
             "is_active_version": True,
             "source_mime_type": source_mime_type,
+            "section_path": getattr(c, "section_path", []) or [],
+            "parent_header_id": getattr(c, "parent_header_id", None),
+            "sibling_ids": getattr(c, "sibling_ids", []) or [],
+            "has_table": bool(feats.has_table),
+            "is_procedure": bool(feats.is_procedure),
+            "has_code": bool(feats.has_code),
             "embedding_provider": resolved_embed.provider_name,
             "embedding_model": resolved_embed.model_name,
             "embedding_params": resolved_embed.params,
@@ -396,7 +472,57 @@ async def ingest_text_via_pipeline(
         }
         points.append(qm.PointStruct(id=pid, vector=v, payload=payload))
 
+        manifest_lines.append(
+            json.dumps(
+                {
+                    "chunk_id": pid,
+                    "doc_id": doc_id,
+                    "doc_version": doc_version,
+                    "chunk_index": c.index,
+                    "heading_path": payload.get("section_path") or [],
+                    "text": c.text,
+                    "metadata": {
+                        "tenant_id": tenant_id,
+                        "project_id": project_id,
+                        "corpus_id": corpus_id,
+                        "source_mime_type": source_mime_type,
+                        "has_table": bool(feats.has_table),
+                        "is_procedure": bool(feats.is_procedure),
+                        "has_code": bool(feats.has_code),
+                        "embedding_model": resolved_embed.model_name,
+                        "embedding_provider": resolved_embed.provider_name,
+                        "embedding_params": resolved_embed.params,
+                        "metadata_tags": meta.get("tags"),
+                    },
+                },
+                ensure_ascii=False,
+            )
+        )
+
     await run_in_threadpool(store.upsert_points, points=points)
+
+    # Persist chunk manifest as an artifact (best-effort).
+    try:
+        mf_art = write_text(
+            artifacts_dir=Path(settings.atlas_artifacts_dir),
+            rel_path=f"runs/{run_id}/chunks/manifest.jsonl",
+            text="\n".join(manifest_lines) + "\n",
+            mime_type="application/x-ndjson",
+        )
+        with session_factory() as session:
+            add_artifact_ref(
+                session,
+                run_id=run_id,
+                req=ArtifactRefCreateRequest(
+                    kind="chunk_manifest",
+                    path=mf_art.rel_path,
+                    sha256=mf_art.sha256,
+                    mime_type=mf_art.mime_type,
+                    meta={"chunks": len(points)},
+                ),
+            )
+    except Exception:
+        pass
 
     # Activate this doc_version for the doc (best-effort).
     await _activate_doc_version(
@@ -404,6 +530,7 @@ async def ingest_text_via_pipeline(
         store=store,
         tenant_id=tenant_id,
         project_id=project_id,
+        corpus_id=corpus_id,
         doc_id=doc_id,
         doc_version=doc_version,
     )
@@ -442,6 +569,7 @@ async def ingest_file_via_pipeline(
     doc_version: str,
     tenant_id: str,
     project_id: str,
+    corpus_id: str,
     file_bytes: bytes,
     filename: str | None,
     source_mime_type: str,
@@ -457,6 +585,14 @@ async def ingest_file_via_pipeline(
 
     limits = (pipeline_cfg.get("limits", {}) or {})
     max_chars = int(limits.get("chunk_max_chars", 1000))
+
+    normalize_cfg = (pipeline_cfg.get("normalize", {}) or {})
+    normalize_enabled = bool(normalize_cfg.get("enabled", True))
+
+    chunking_cfg = (pipeline_cfg.get("chunking", {}) or {})
+    chunk_strategy = str(chunking_cfg.get("strategy", "semantic"))
+    target_tokens = int(chunking_cfg.get("target_tokens", 320))
+    max_tokens = int(chunking_cfg.get("max_tokens", 400))
 
     orch, registry = _build_orchestrator(settings=settings, models_cfg=models_cfg, pipeline_cfg=pipeline_cfg)
 
@@ -476,6 +612,7 @@ async def ingest_file_via_pipeline(
                     "source_filename": filename or "",
                     "is_finalized": bool(is_finalized),
                     "is_sensitive": bool(is_sensitive),
+                    "corpus_id": corpus_id,
                     "config": source_info,
                     "request_metadata": metadata or {},
                 },
@@ -526,9 +663,10 @@ async def ingest_file_via_pipeline(
                         {
                             "parse_profile": str(ingest_res.parse_profile),
                             "docling_schema_version": ingest_res.docling_schema_version,
+                            "meta": ingest_res.meta or {},
                         }
                     ),
-                    error_code="" if ingest_res.error_code is None else str(ingest_res.error_code),
+                    error_code="" if ingest_res.error_code is None else ingest_res.error_code.value,
                     error_message=ingest_res.error_message or "",
                 ),
             )
@@ -568,7 +706,7 @@ async def ingest_file_via_pipeline(
                     node_run_id=ingest_node_run_id,
                     sha256=md_art.sha256,
                     mime_type=md_art.mime_type,
-                    meta={},
+                    meta={"ingest_meta": ingest_res.meta or {}},
                 ),
             )
     except Exception:
@@ -582,10 +720,17 @@ async def ingest_file_via_pipeline(
             if w is not None:
                 w.status = "failed"
                 w.current_node = "ingest"
-                w.error_code = "" if ingest_res.error_code is None else str(ingest_res.error_code)
+                w.error_code = "" if ingest_res.error_code is None else ingest_res.error_code.value
                 w.error_message = ingest_res.error_message or ""
                 session.commit()
-        return {"ok": False, "run_id": run_id, "collection": "atlas_chunks", "chunks_upserted": 0}
+            return {
+                "ok": False,
+                "run_id": run_id,
+                "collection": "atlas_chunks",
+                "chunks_upserted": 0,
+                "error_code": "" if ingest_res.error_code is None else ingest_res.error_code.value,
+                "error_message": ingest_res.error_message or "",
+            }
 
     ctx = create_pipeline_context(
         doc_id=doc_id,
@@ -597,6 +742,10 @@ async def ingest_file_via_pipeline(
     )
     ctx.state.markdown_projection = ingest_res.markdown_projection
     ctx = await orch.process_document(ctx)
+
+    # Normalize final markdown before chunking/embedding.
+    if normalize_enabled:
+        ctx.state.markdown_projection = normalize_markdown(ctx.state.markdown_projection)
 
     # If HITL, create task and pause.
     if PipelineNode(ctx.state.current_node) == PipelineNode.HITL:
@@ -622,7 +771,7 @@ async def ingest_file_via_pipeline(
                     is_sensitive=bool(is_sensitive),
                     judge_score=judge_score,
                     before_md=ctx.state.markdown_projection,
-                    meta={"source": "pipeline", "config": source_info},
+                    meta={"source": "pipeline", "config": source_info, "corpus_id": corpus_id},
                 ),
             )
             try:
@@ -651,7 +800,14 @@ async def ingest_file_via_pipeline(
     resolved_embed = registry.resolve("embed_model")
     embed_provider = registry.provider_for(resolved_embed.provider_name)
 
-    chunks = chunk_text(text=ctx.state.markdown_projection, max_chars=max_chars)
+    if chunk_strategy == "paragraph":
+        chunks = chunk_text(text=ctx.state.markdown_projection, max_chars=max_chars)
+    else:
+        chunks = chunk_markdown_semantic(
+            text=ctx.state.markdown_projection,
+            target_tokens=target_tokens,
+            max_tokens=max_tokens,
+        )
     texts = [c.text for c in chunks]
     if not texts:
         return {"ok": True, "run_id": run_id, "collection": "atlas_chunks", "chunks_upserted": 0}
@@ -667,12 +823,23 @@ async def ingest_file_via_pipeline(
     meta = ctx.results.get("metadata") or {}
 
     points: list[qm.PointStruct] = []
+    manifest_lines: list[str] = []
     for c, v in zip(chunks, vectors, strict=True):
         content_hash = sha256_hex(c.text)
-        pid = deterministic_chunk_id(doc_id=doc_id, doc_version=doc_version, content_hash=content_hash, chunk_index=c.index)
+        pid = deterministic_chunk_id(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            corpus_id=corpus_id,
+            doc_id=doc_id,
+            doc_version=doc_version,
+            content_hash=content_hash,
+            chunk_index=c.index,
+        )
+        feats = infer_chunk_features(c.text)
         payload: dict[str, Any] = {
             "tenant_id": tenant_id,
             "project_id": project_id,
+            "corpus_id": corpus_id,
             "doc_id": doc_id,
             "doc_version": doc_version,
             "chunk_index": c.index,
@@ -683,6 +850,12 @@ async def ingest_file_via_pipeline(
             "is_active_version": True,
             "source_mime_type": source_mime_type,
             "source_filename": filename or "",
+            "section_path": getattr(c, "section_path", []) or [],
+            "parent_header_id": getattr(c, "parent_header_id", None),
+            "sibling_ids": getattr(c, "sibling_ids", []) or [],
+            "has_table": bool(feats.has_table),
+            "is_procedure": bool(feats.is_procedure),
+            "has_code": bool(feats.has_code),
             "embedding_provider": resolved_embed.provider_name,
             "embedding_model": resolved_embed.model_name,
             "embedding_params": resolved_embed.params,
@@ -696,7 +869,58 @@ async def ingest_file_via_pipeline(
         }
         points.append(qm.PointStruct(id=pid, vector=v, payload=payload))
 
+        manifest_lines.append(
+            json.dumps(
+                {
+                    "chunk_id": pid,
+                    "doc_id": doc_id,
+                    "doc_version": doc_version,
+                    "chunk_index": c.index,
+                    "heading_path": payload.get("section_path") or [],
+                    "text": c.text,
+                    "metadata": {
+                        "tenant_id": tenant_id,
+                        "project_id": project_id,
+                        "corpus_id": corpus_id,
+                        "source_mime_type": source_mime_type,
+                        "source_filename": filename or "",
+                        "has_table": bool(feats.has_table),
+                        "is_procedure": bool(feats.is_procedure),
+                        "has_code": bool(feats.has_code),
+                        "embedding_model": resolved_embed.model_name,
+                        "embedding_provider": resolved_embed.provider_name,
+                        "embedding_params": resolved_embed.params,
+                        "metadata_tags": meta.get("tags"),
+                    },
+                },
+                ensure_ascii=False,
+            )
+        )
+
     await run_in_threadpool(store.upsert_points, points=points)
+
+    # Persist chunk manifest as an artifact (best-effort).
+    try:
+        mf_art = write_text(
+            artifacts_dir=Path(settings.atlas_artifacts_dir),
+            rel_path=f"runs/{run_id}/chunks/manifest.jsonl",
+            text="\n".join(manifest_lines) + "\n",
+            mime_type="application/x-ndjson",
+        )
+        with session_factory() as session:
+            add_artifact_ref(
+                session,
+                run_id=run_id,
+                req=ArtifactRefCreateRequest(
+                    kind="chunk_manifest",
+                    path=mf_art.rel_path,
+                    sha256=mf_art.sha256,
+                    mime_type=mf_art.mime_type,
+                    meta={"chunks": len(points)},
+                ),
+            )
+    except Exception:
+        pass
 
     # Activate this doc_version for the doc (best-effort).
     await _activate_doc_version(
@@ -704,6 +928,7 @@ async def ingest_file_via_pipeline(
         store=store,
         tenant_id=tenant_id,
         project_id=project_id,
+        corpus_id=corpus_id,
         doc_id=doc_id,
         doc_version=doc_version,
     )
@@ -755,8 +980,10 @@ async def resume_completed_hitl_task(
         if run is None:
             raise KeyError("run not found")
 
+        settings = Settings()
         is_finalized = bool((run.meta or {}).get("is_finalized", True))
         source_mime_type = str((run.meta or {}).get("source_mime_type", "text/plain"))
+        corpus_id = str((run.meta or {}).get("corpus_id") or settings.atlas_default_corpus_id)
         req_meta = (run.meta or {}).get("request_metadata", {})
         if not isinstance(req_meta, dict):
             req_meta = {}
@@ -778,6 +1005,7 @@ async def resume_completed_hitl_task(
         doc_version=str(task.doc_version),
         tenant_id=str(task.tenant_id),
         project_id=str(task.project_id),
+        corpus_id=corpus_id,
         text=markdown,
         source_mime_type=source_mime_type,
         is_finalized=is_finalized,

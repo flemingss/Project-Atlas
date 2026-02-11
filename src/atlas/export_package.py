@@ -65,6 +65,7 @@ async def export_doc_package(
     session_factory: sessionmaker[Session],
     tenant_id: str,
     project_id: str,
+    corpus_id: str | None = None,
     doc_id: str,
     doc_version: str | None = None,
 ) -> bytes:
@@ -88,6 +89,7 @@ async def export_doc_package(
                 tenant_id=tenant_id,
                 project_id=project_id,
                 doc_id=doc_id,
+                corpus_id=corpus_id,
             )
         if resolved_version is None:
             resolved_version = get_latest_doc_version_from_runs(
@@ -117,6 +119,7 @@ async def export_doc_package(
 
     # Pull markdown projection from artifacts (best-effort).
     markdown_projection = ""
+    chunk_manifest = ""
     for r in refs:
         if str(r.kind) == "markdown_projection":
             try:
@@ -124,6 +127,16 @@ async def export_doc_package(
                 markdown_projection = p.read_text(encoding="utf-8")
             except Exception:
                 markdown_projection = ""
+            break
+
+    # Pull chunk manifest if present.
+    for r in refs:
+        if str(r.kind) == "chunk_manifest":
+            try:
+                p = (artifacts_dir / str(r.path)).resolve()
+                chunk_manifest = p.read_text(encoding="utf-8")
+            except Exception:
+                chunk_manifest = ""
             break
 
     # Build index from Qdrant.
@@ -135,6 +148,8 @@ async def export_doc_package(
         qm.FieldCondition(key="doc_version", match=qm.MatchValue(value=resolved_version)),
         qm.FieldCondition(key="is_finalized", match=qm.MatchValue(value=True)),
     ]
+    if corpus_id is not None:
+        must.insert(2, qm.FieldCondition(key="corpus_id", match=qm.MatchValue(value=corpus_id)))
     points = await run_in_threadpool(store.scroll_points, must=must, limit=256, max_points=50_000)
 
     chunks: list[dict[str, Any]] = []
@@ -158,6 +173,7 @@ async def export_doc_package(
         "exported_at": exported_at,
         "tenant_id": tenant_id,
         "project_id": project_id,
+        "corpus_id": corpus_id,
         "doc_id": doc_id,
         "doc_version": resolved_version,
         "run_id": int(run.id),
@@ -175,11 +191,56 @@ async def export_doc_package(
         "qdrant": {"collection": store.collection, "chunks": len(chunks)},
     }
 
+    index_config: dict[str, Any] = {
+        "schema_version": 1,
+        "tenant_id": tenant_id,
+        "project_id": project_id,
+        "corpus_id": corpus_id,
+        "doc_id": doc_id,
+        "doc_version": resolved_version,
+        "qdrant_collection": store.collection,
+        "embedding": {
+            # Best-effort: derive from one of the points if present.
+            "model": None,
+            "provider": None,
+            "params": None,
+        },
+        "metadata_fields": [
+            "tenant_id",
+            "project_id",
+            "corpus_id",
+            "doc_id",
+            "doc_version",
+            "chunk_index",
+            "section_path",
+            "has_table",
+            "is_procedure",
+            "has_code",
+            "source_mime_type",
+            "is_finalized",
+            "is_sensitive",
+            "is_active_version",
+        ],
+    }
+
+    # Infer embedding info from first payload if possible.
+    if points:
+        try:
+            payload0 = _as_point_payload(points[0])
+            index_config["embedding"] = {
+                "model": payload0.get("embedding_model"),
+                "provider": payload0.get("embedding_provider"),
+                "params": payload0.get("embedding_params"),
+            }
+        except Exception:
+            pass
+
     frontmatter = _frontmatter_yaml(
         {
             "exported_at": exported_at,
             "tenant_id": tenant_id,
             "project_id": project_id,
+            "corpus_id": corpus_id,
             "doc_id": doc_id,
             "doc_version": resolved_version,
             "run_id": int(run.id),
@@ -192,6 +253,9 @@ async def export_doc_package(
         z.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
         z.writestr("index.json", json.dumps({"chunks": chunks}, ensure_ascii=False, indent=2, sort_keys=True))
         z.writestr("document.md", enriched_markdown)
+        z.writestr("index_config.json", json.dumps(index_config, ensure_ascii=False, indent=2, sort_keys=True))
+        if chunk_manifest.strip():
+            z.writestr("chunk_manifest.jsonl", chunk_manifest)
 
         # Include artifacts as stored on disk (best-effort).
         for r in refs:

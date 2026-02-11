@@ -22,6 +22,9 @@ dependencies = [
   "sqlalchemy>=2.0",
   "psycopg[binary]>=3.1",
   "qdrant-client>=1.9.0",
+  "docling",
+  "onnxruntime>=1.17",
+  "PyMuPDF>=1.24.0",
 ]
 
 [project.optional-dependencies]
@@ -35,10 +38,10 @@ ui = [
   "streamlit>=1.31",
 ]
 
-# Phase 4 (Docling ingestion) is an optional dependency.
-# Unit tests patch the adapter to keep CI deterministic.
-docling = [
-  "docling",
+# Optional: lightweight HTML -> Markdown conversion for text/html ingestion
+# when Docling is not installed.
+html = [
+  "markdownify>=0.13.1",
 ]
 
 [tool.setuptools]

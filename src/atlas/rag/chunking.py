@@ -4,6 +4,253 @@ import re
 from dataclasses import dataclass, field
 
 
+def _approx_tokens(text: str) -> int:
+    # Cheap approximation good enough for chunk sizing without tokenizer deps.
+    # Roughly 4 chars/token for English-ish text.
+    t = (text or "").strip()
+    if not t:
+        return 0
+    return max(1, len(t) // 4)
+
+
+def _is_heading(line: str) -> tuple[int, str] | None:
+    m = re.match(r"^(#{1,6})\s+(.+?)\s*$", line)
+    if not m:
+        return None
+    return len(m.group(1)), m.group(2).strip()
+
+
+def _looks_like_table_line(line: str) -> bool:
+    s = line.strip()
+    if "|" not in s:
+        return False
+    # Avoid treating inline pipes as tables.
+    return s.startswith("|") or s.endswith("|")
+
+
+def _looks_like_table_sep(line: str) -> bool:
+    s = line.strip()
+    if "|" not in s:
+        return False
+    # Basic markdown table separator: | --- | :---: |
+    parts = [p.strip() for p in s.strip("|").split("|")]
+    if not parts:
+        return False
+    for p in parts:
+        if not p:
+            continue
+        if not re.fullmatch(r":?-{3,}:?", p):
+            return False
+    return True
+
+
+def _is_list_item(line: str) -> bool:
+    s = line.lstrip()
+    return bool(re.match(r"^(?:[-*+]\s+|\d+\.\s+)", s))
+
+
+def _is_indented_continuation(line: str) -> bool:
+    # Continuation line for a list item.
+    return bool(re.match(r"^\s{2,}\S+", line))
+
+
+@dataclass(frozen=True)
+class ChunkFeatures:
+    has_table: bool
+    is_procedure: bool
+    has_code: bool
+
+
+def infer_chunk_features(text: str) -> ChunkFeatures:
+    t = text or ""
+    has_code = "```" in t
+    has_table = any(_looks_like_table_line(ln) for ln in t.split("\n")) and any(_looks_like_table_sep(ln) for ln in t.split("\n"))
+    # Procedure heuristic: numbered list items are present.
+    is_procedure = bool(re.search(r"^\s*\d+\.\s+", t, flags=re.MULTILINE))
+    return ChunkFeatures(has_table=bool(has_table), is_procedure=bool(is_procedure), has_code=bool(has_code))
+
+
+def chunk_markdown_semantic(
+    *,
+    text: str,
+    target_tokens: int = 320,
+    max_tokens: int = 400,
+) -> list[TextChunk]:
+    """Structure-aware chunking for Markdown.
+
+    - Prefers splitting by headings + paragraphs
+    - Never splits inside a code fence
+    - Keeps markdown tables as atomic blocks
+    - Keeps list/procedure blocks together
+    - Tracks section_path based on heading stack
+    """
+    cleaned = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not cleaned:
+        return []
+
+    lines = cleaned.split("\n")
+
+    # Convert to blocks: heading, code, table, list, paragraph.
+    blocks: list[tuple[str, str, list[str]]] = []  # (kind, raw_text, section_path)
+
+    heading_stack: list[tuple[int, str]] = []
+    section_path: list[str] = []
+
+    i = 0
+    in_code = False
+    code_buf: list[str] = []
+    para_buf: list[str] = []
+
+    def flush_para() -> None:
+        nonlocal para_buf
+        if not para_buf:
+            return
+        raw = "\n".join(para_buf).strip("\n")
+        if raw.strip():
+            blocks.append(("paragraph", raw, section_path.copy()))
+        para_buf = []
+
+    while i < len(lines):
+        ln = lines[i]
+
+        # Code fence blocks.
+        if ln.strip().startswith("```"):
+            if in_code:
+                code_buf.append(ln)
+                blocks.append(("code", "\n".join(code_buf), section_path.copy()))
+                code_buf = []
+                in_code = False
+                i += 1
+                continue
+
+            flush_para()
+            in_code = True
+            code_buf = [ln]
+            i += 1
+            continue
+
+        if in_code:
+            code_buf.append(ln)
+            i += 1
+            continue
+
+        # Heading.
+        h = _is_heading(ln)
+        if h is not None:
+            flush_para()
+            level, title = h
+            while heading_stack and heading_stack[-1][0] >= level:
+                heading_stack.pop()
+            heading_stack.append((level, title))
+            section_path = [x[1] for x in heading_stack]
+            blocks.append(("heading", ln.strip(), section_path.copy()))
+            i += 1
+            continue
+
+        # Table: require header row + separator line.
+        if _looks_like_table_line(ln) and (i + 1) < len(lines) and _looks_like_table_sep(lines[i + 1]):
+            flush_para()
+            tbuf = [ln, lines[i + 1]]
+            i += 2
+            while i < len(lines) and _looks_like_table_line(lines[i]):
+                tbuf.append(lines[i])
+                i += 1
+            blocks.append(("table", "\n".join(tbuf), section_path.copy()))
+            continue
+
+        # List/procedure blocks.
+        if _is_list_item(ln):
+            flush_para()
+            lbuf = [ln]
+            i += 1
+            while i < len(lines):
+                nxt = lines[i]
+                if nxt.strip() == "":
+                    # Keep a single blank line inside list block if followed by continuation.
+                    # We'll stop list block if next non-blank is not list/continuation.
+                    j = i + 1
+                    while j < len(lines) and lines[j].strip() == "":
+                        j += 1
+                    if j < len(lines) and (_is_list_item(lines[j]) or _is_indented_continuation(lines[j])):
+                        lbuf.append("")
+                        i = j
+                        continue
+                    break
+                if _is_list_item(nxt) or _is_indented_continuation(nxt):
+                    lbuf.append(nxt)
+                    i += 1
+                    continue
+                break
+            blocks.append(("list", "\n".join(lbuf).strip("\n"), section_path.copy()))
+            continue
+
+        # Paragraph accumulation (including single lines).
+        if ln.strip() == "":
+            flush_para()
+            i += 1
+            continue
+        para_buf.append(ln)
+        i += 1
+
+    flush_para()
+    if in_code and code_buf:
+        blocks.append(("code", "\n".join(code_buf), section_path.copy()))
+
+    # Assemble blocks into chunks.
+    chunks: list[TextChunk] = []
+    current_parts: list[str] = []
+    current_tokens = 0
+    current_path: list[str] = []
+
+    def flush_chunk() -> None:
+        nonlocal current_parts, current_tokens, current_path
+        if not current_parts:
+            return
+        txt = "\n\n".join(p for p in current_parts if p is not None).strip()
+        if txt:
+            chunks.append(TextChunk(index=len(chunks), text=txt, section_path=current_path.copy()))
+        current_parts = []
+        current_tokens = 0
+        current_path = []
+
+    for kind, raw, path in blocks:
+        block_text = raw.strip("\n")
+        btoks = _approx_tokens(block_text)
+
+        # Headings are context carriers; allow them to start new chunks.
+        if kind == "heading":
+            flush_chunk()
+            current_parts = [block_text]
+            current_tokens = btoks
+            current_path = path
+            continue
+
+        # If path changes (new section), flush.
+        if current_parts and current_path != path and path:
+            flush_chunk()
+
+        if not current_parts:
+            current_parts = [block_text]
+            current_tokens = btoks
+            current_path = path
+            continue
+
+        # Add block if it fits, else flush and start new chunk.
+        if current_tokens + btoks <= max_tokens or current_tokens < target_tokens:
+            current_parts.append(block_text)
+            current_tokens += btoks
+            if not current_path:
+                current_path = path
+        else:
+            flush_chunk()
+            current_parts = [block_text]
+            current_tokens = btoks
+            current_path = path
+
+    flush_chunk()
+    return chunks
+
+
 @dataclass
 class TextChunk:
     index: int

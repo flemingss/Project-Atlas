@@ -8,6 +8,18 @@ thresholds:
 limits:
   refine_max_retries: 2
   tier2_chunk_cap_per_document: 25
+  # Back-compat: older configs used chunk_max_chars. Kept as a safety valve.
+  chunk_max_chars: 1000
+
+normalize:
+  enabled: true
+
+chunking:
+  # semantic: heading/table/list aware (recommended)
+  # paragraph: legacy paragraph splitter (max_chars)
+  strategy: semantic
+  target_tokens: 320
+  max_tokens: 400
 
 frontier_fallback:
   enabled: false

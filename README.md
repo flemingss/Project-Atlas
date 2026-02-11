@@ -25,6 +25,12 @@ This starts:
 
 By default, this repo’s compose stack brings up the **baseline appliance** only.
 
+### PDF/Office ingestion (Docling)
+
+PDF/Office parsing requires Docling.
+
+If PDF ingest fails because Docling is missing, treat it as a build/deploy problem (the container should include Docling).
+
 Optional / experimental (profile-gated) Dify stack:
 
 ```powershell

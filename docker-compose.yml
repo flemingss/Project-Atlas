@@ -30,19 +30,27 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        ATLAS_PIP_EXTRAS: ${ATLAS_PIP_EXTRAS:-}
     container_name: atlas-api
     depends_on:
       postgres:
         condition: service_healthy
+      qdrant:
+        condition: service_started
     environment:
       ATLAS_ENV: ${ATLAS_ENV:-dev}
       ATLAS_LOG_LEVEL: ${ATLAS_LOG_LEVEL:-INFO}
+      # OpenAI-compatible base URL (LM Studio on the host). Use host.docker.internal on Docker Desktop.
+      ATLAS_OPENAI_BASE_URL: ${ATLAS_OPENAI_BASE_URL:-http://host.docker.internal:1234}
       # Admin auth. Leave blank for dev; required for non-dev.
       ATLAS_ADMIN_TOKEN: ${ATLAS_ADMIN_TOKEN:-}
       ATLAS_HOST: 0.0.0.0
       ATLAS_PORT: 8080
       ATLAS_CONFIG_DIR: /app/config
       ATLAS_ARTIFACTS_DIR: /app/artifacts
+      # PDF guardrails
+      ATLAS_PDF_MAX_BYTES: ${ATLAS_PDF_MAX_BYTES:-209715200}
       # Use service hostnames inside the compose network (do not inherit host .env localhost URLs).
       ATLAS_DB_URL: postgresql+psycopg://atlas:atlas@postgres:5432/atlas
       ATLAS_QDRANT_URL: http://qdrant:6333

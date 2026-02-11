@@ -1,0 +1,161 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: atlas-postgres
+    environment:
+      POSTGRES_DB: atlas
+      POSTGRES_USER: atlas
+      POSTGRES_PASSWORD: atlas
+    volumes:
+      - atlas_postgres:/var/lib/postgresql/data
+      - ./docker/postgres/init-multi-db.sql:/docker-entrypoint-initdb.d/01-init-multi-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atlas -d atlas"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  qdrant:
+    image: qdrant/qdrant:v1.11.5
+    container_name: atlas-qdrant
+    volumes:
+      - atlas_qdrant:/qdrant/storage
+
+  atlas:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        ATLAS_PIP_EXTRAS: ${ATLAS_PIP_EXTRAS:-}
+    container_name: atlas-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ATLAS_ENV: ${ATLAS_ENV:-dev}
+      ATLAS_LOG_LEVEL: ${ATLAS_LOG_LEVEL:-INFO}
+      ATLAS_ADMIN_TOKEN: ${ATLAS_ADMIN_TOKEN:-}
+      ATLAS_HOST: 0.0.0.0
+      ATLAS_PORT: 8080
+      ATLAS_CONFIG_DIR: /app/config
+      ATLAS_ARTIFACTS_DIR: /app/artifacts
+      ATLAS_DB_URL: postgresql+psycopg://atlas:atlas@postgres:5432/atlas
+      ATLAS_QDRANT_URL: http://qdrant:6333
+      # Only used when running local_llm E2E (OpenAI-compatible server)
+      ATLAS_OPENAI_BASE_URL: ${ATLAS_OPENAI_BASE_URL:-http://ollama:11434}
+      # Optional: emit OpenAI-compatible request traces
+      ATLAS_OPENAI_TRACE: ${ATLAS_OPENAI_TRACE:-}
+    ports:
+      - "18080:8080"
+    volumes:
+      - atlas_artifacts:/app/artifacts
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health').read(); print('ok')\"" ]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  e2e:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: atlas-e2e
+    depends_on:
+      atlas:
+        condition: service_healthy
+    profiles: ["deterministic"]
+    environment:
+      ATLAS_API_URL: http://atlas:8080
+      ATLAS_QDRANT_URL: http://qdrant:6333
+      ATLAS_E2E_MODE: deterministic
+      ATLAS_ADMIN_TOKEN: ${ATLAS_ADMIN_TOKEN:-}
+    command: ["python", "scripts/e2e_scenarios.py", "--api-url", "http://atlas:8080", "--qdrant-url", "http://qdrant:6333", "--timeout", "60"]
+
+  # Optional: Streamlit operator console.
+  atlas-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.ui
+    container_name: atlas-ui
+    profiles: ["ui"]
+    depends_on:
+      atlas:
+        condition: service_healthy
+    environment:
+      ATLAS_API_URL: http://atlas:8080
+      ATLAS_UI_UPLOAD_TIMEOUT_S: ${ATLAS_UI_UPLOAD_TIMEOUT_S:-600}
+    ports:
+      - "18501:8501"
+
+  # Optional: local OpenAI-compatible server for end-to-end validation.
+  # Uses Ollama's OpenAI compatibility layer.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: atlas-ollama
+    profiles: ["local_llm"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - atlas_ollama:/root/.ollama
+
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: atlas-ollama-init
+    profiles: ["local_llm"]
+    depends_on:
+      ollama:
+        condition: service_started
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      ATLAS_E2E_LLM_MODEL: ${ATLAS_E2E_LLM_MODEL:-llama3.2:1b}
+      ATLAS_E2E_EMBED_MODEL: ${ATLAS_E2E_EMBED_MODEL:-nomic-embed-text}
+    entrypoint: ["sh", "-lc", "ollama pull \"$$ATLAS_E2E_LLM_MODEL\"; ollama pull \"$$ATLAS_E2E_EMBED_MODEL\"" ]
+    restart: "no"
+
+  e2e-local-llm:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: atlas-e2e-local-llm
+    profiles: ["local_llm"]
+    depends_on:
+      atlas:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    environment:
+      ATLAS_API_URL: http://atlas:8080
+      ATLAS_QDRANT_URL: http://qdrant:6333
+      ATLAS_E2E_MODE: local_llm
+      ATLAS_OPENAI_BASE_URL: http://ollama:11434
+      ATLAS_E2E_LLM_MODEL: ${ATLAS_E2E_LLM_MODEL:-llama3.2:1b}
+      ATLAS_E2E_EMBED_MODEL: ${ATLAS_E2E_EMBED_MODEL:-nomic-embed-text}
+      ATLAS_ADMIN_TOKEN: ${ATLAS_ADMIN_TOKEN:-}
+    command: ["python", "scripts/e2e_scenarios.py", "--api-url", "http://atlas:8080", "--qdrant-url", "http://qdrant:6333", "--timeout", "120", "--mode", "local_llm"]
+
+  e2e-lmstudio:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: atlas-e2e-lmstudio
+    profiles: ["lmstudio"]
+    depends_on:
+      atlas:
+        condition: service_healthy
+    environment:
+      ATLAS_API_URL: http://atlas:8080
+      ATLAS_QDRANT_URL: http://qdrant:6333
+      ATLAS_E2E_MODE: local_llm
+      # Point to LM Studio on the host; override in your shell or .env as needed.
+      ATLAS_OPENAI_BASE_URL: ${ATLAS_OPENAI_BASE_URL:-http://host.docker.internal:1234}
+      ATLAS_E2E_LLM_MODEL: ${ATLAS_E2E_LLM_MODEL:-openai/gpt-oss-20b}
+      ATLAS_E2E_EMBED_MODEL: ${ATLAS_E2E_EMBED_MODEL:-text-embedding-nomic-embed-text-v1.5}
+      ATLAS_OPENAI_TRACE: ${ATLAS_OPENAI_TRACE:-1}
+      ATLAS_ADMIN_TOKEN: ${ATLAS_ADMIN_TOKEN:-}
+    command: ["python", "scripts/e2e_scenarios.py", "--api-url", "http://atlas:8080", "--qdrant-url", "http://qdrant:6333", "--timeout", "180", "--mode", "local_llm"]
+
+volumes:
+  atlas_postgres:
+  atlas_qdrant:
+  atlas_artifacts:
+  atlas_ollama:

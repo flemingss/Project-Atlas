@@ -24,3 +24,22 @@ def require_admin_token(
 
     if not x_atlas_admin_token or x_atlas_admin_token != configured:
         raise HTTPException(status_code=403, detail="Invalid admin token")
+
+
+def require_admin_token_strict(
+    x_atlas_admin_token: str | None = Header(default=None, alias=ADMIN_TOKEN_HEADER),
+) -> None:
+    """Require a configured admin token and a matching header.
+
+    Unlike `require_admin_token`, this does NOT allow open admin endpoints in dev.
+    Use for destructive operations (e.g., DB resets).
+    """
+
+    settings = Settings()
+    configured = (settings.atlas_admin_token or "").strip()
+
+    if not configured:
+        raise HTTPException(status_code=401, detail="Admin token not configured")
+
+    if not x_atlas_admin_token or x_atlas_admin_token != configured:
+        raise HTTPException(status_code=403, detail="Invalid admin token")

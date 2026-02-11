@@ -15,8 +15,24 @@ def test_chunk_text_respects_max_chars() -> None:
 
 def test_deterministic_chunk_id_is_stable() -> None:
     content_hash = sha256_hex("hello")
-    a = deterministic_chunk_id(doc_id="d", doc_version="1", content_hash=content_hash, chunk_index=0)
-    b = deterministic_chunk_id(doc_id="d", doc_version="1", content_hash=content_hash, chunk_index=0)
+    a = deterministic_chunk_id(
+        tenant_id="t",
+        project_id="p",
+        corpus_id="c",
+        doc_id="d",
+        doc_version="1",
+        content_hash=content_hash,
+        chunk_index=0,
+    )
+    b = deterministic_chunk_id(
+        tenant_id="t",
+        project_id="p",
+        corpus_id="c",
+        doc_id="d",
+        doc_version="1",
+        content_hash=content_hash,
+        chunk_index=0,
+    )
     assert a == b
 
     # Qdrant point IDs must be UUID or int; we use UUID strings.

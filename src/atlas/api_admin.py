@@ -3,16 +3,17 @@ from __future__ import annotations
 import io
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, File, Form, UploadFile
 from fastapi import Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from qdrant_client.http import models as qm
+from sqlalchemy.engine import Engine
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.concurrency import run_in_threadpool
 
-from atlas.auth import require_admin_token
+from atlas.auth import require_admin_token, require_admin_token_strict
 from atlas.config_manager import ConfigManager
 from atlas.config_versions import (
     ConfigVersionCreateRequest,
@@ -62,15 +63,37 @@ from atlas.pipeline.runner import resume_completed_hitl_task
 from atlas.vectorstore.qdrant_store import QdrantStore
 
 
+class ResetDbRequest(BaseModel):
+    confirm: str = ""
+    postgres: bool = True
+    qdrant: bool = True
+    artifacts: bool = False
+
+
 class SetActiveDocVersionRequest(BaseModel):
     doc_version: str
     tenant_id: str | None = None
     project_id: str | None = None
+    corpus_id: str | None = None
 
 
 def make_admin_router(*, config_manager: ConfigManager, session_factory: sessionmaker[Session]) -> APIRouter:
     r = APIRouter(prefix="/admin", dependencies=[Depends(require_admin_token)])
     settings = Settings()
+
+    # Best-effort: reuse the application's engine if present; otherwise create one.
+    bind = None
+    try:
+        bind = getattr(session_factory, "kw", {}).get("bind")
+    except Exception:
+        bind = None
+
+    if isinstance(bind, Engine):
+        engine: Engine = bind
+    else:
+        from atlas.db import make_engine
+
+        engine = make_engine(settings.atlas_db_url)
 
     def _group_count(
         session: Session,
@@ -166,6 +189,88 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
             resp = await client.post(url, json=payload)
             resp.raise_for_status()
             return resp.json()
+
+    async def _qdrant_clear_collection_points(*, collection: str) -> dict[str, Any]:
+        import httpx
+
+        try:
+            # Delete all points but keep the collection (no vector-size knowledge required).
+            return await _qdrant_post_json(
+                f"/collections/{collection}/points/delete",
+                {"filter": {}, "wait": True},
+            )
+        except httpx.HTTPStatusError as e:
+            # If the collection doesn't exist, treat as already cleared.
+            if e.response is not None and int(e.response.status_code) == 404:
+                return {"ok": True, "detail": "collection not found"}
+            raise
+
+    def _reset_postgres_schema() -> None:
+        from atlas.models import Base
+
+        # Drop + recreate all ORM tables.
+        with engine.begin() as conn:
+            Base.metadata.drop_all(conn)
+            Base.metadata.create_all(conn)
+
+    def _clear_artifacts_dir() -> int:
+        import shutil
+        from pathlib import Path
+
+        root = Path(settings.atlas_artifacts_dir).resolve()
+        if not root.exists():
+            return 0
+
+        removed = 0
+        for child in root.iterdir():
+            # Keep common placeholders.
+            if child.name in {".gitkeep"}:
+                continue
+            try:
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink(missing_ok=True)
+                removed += 1
+            except Exception:
+                # Best-effort; don't block DB reset on filesystem permissions.
+                continue
+        return removed
+
+    @r.post("/db/reset", dependencies=[Depends(require_admin_token_strict)])
+    async def reset_db(req: ResetDbRequest) -> dict[str, Any]:
+        """Danger zone: clear state so the system can be re-imported fresh.
+
+        Requires a strict admin token (even in dev) and an explicit confirmation string.
+        """
+
+        if (req.confirm or "").strip().upper() != "RESET":
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=400, detail="confirm must be 'RESET'")
+
+        out: dict[str, Any] = {"ok": True, "postgres": None, "qdrant": None, "artifacts": None}
+
+        if bool(req.postgres):
+            await run_in_threadpool(_reset_postgres_schema)
+            out["postgres"] = {"ok": True}
+        else:
+            out["postgres"] = {"ok": True, "skipped": True}
+
+        if bool(req.qdrant):
+            collection = _qdrant_collection()
+            res = await _qdrant_clear_collection_points(collection=collection)
+            out["qdrant"] = {"ok": True, "collection": collection, "result": res.get("result"), "detail": res.get("detail")}
+        else:
+            out["qdrant"] = {"ok": True, "skipped": True}
+
+        if bool(req.artifacts):
+            removed = await run_in_threadpool(_clear_artifacts_dir)
+            out["artifacts"] = {"ok": True, "removed_entries": int(removed)}
+        else:
+            out["artifacts"] = {"ok": True, "skipped": True}
+
+        return out
 
     def _parse_cursor(cursor: str | None) -> str | int | None:
         if cursor is None or cursor == "":
@@ -719,19 +824,28 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
         doc_id: str,
         tenant_id: str | None = Query(default=None),
         project_id: str | None = Query(default=None),
+        corpus_id: str | None = Query(default=None),
     ) -> dict[str, Any]:
         from atlas.doc_versions import get_active_doc_version, get_latest_doc_version_from_runs
 
         t_id = tenant_id or settings.atlas_default_tenant_id
         p_id = project_id or settings.atlas_default_project_id
+        c_id = corpus_id or settings.atlas_default_corpus_id
 
         with session_factory() as session:
-            active = get_active_doc_version(session, tenant_id=t_id, project_id=p_id, doc_id=doc_id)
+            active = get_active_doc_version(
+                session,
+                tenant_id=t_id,
+                project_id=p_id,
+                doc_id=doc_id,
+                corpus_id=c_id,
+            )
             latest = get_latest_doc_version_from_runs(session, tenant_id=t_id, project_id=p_id, doc_id=doc_id)
 
         return {
             "tenant_id": t_id,
             "project_id": p_id,
+            "corpus_id": c_id,
             "doc_id": doc_id,
             "active_doc_version": active,
             "latest_doc_version": latest,
@@ -743,16 +857,25 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
 
         t_id = req.tenant_id or settings.atlas_default_tenant_id
         p_id = req.project_id or settings.atlas_default_project_id
+        c_id = req.corpus_id or settings.atlas_default_corpus_id
         version = str(req.doc_version)
 
         with session_factory() as session:
-            row = set_active_doc_version(session, tenant_id=t_id, project_id=p_id, doc_id=doc_id, doc_version=version)
+            row = set_active_doc_version(
+                session,
+                tenant_id=t_id,
+                project_id=p_id,
+                doc_id=doc_id,
+                doc_version=version,
+                corpus_id=c_id,
+            )
 
         # Best-effort: update Qdrant payload flags for global search filtering.
         store = QdrantStore(url=settings.atlas_qdrant_url, api_key=None, collection=_qdrant_collection())
         base_must = [
             qm.FieldCondition(key="tenant_id", match=qm.MatchValue(value=t_id)),
             qm.FieldCondition(key="project_id", match=qm.MatchValue(value=p_id)),
+            qm.FieldCondition(key="corpus_id", match=qm.MatchValue(value=c_id)),
             qm.FieldCondition(key="doc_id", match=qm.MatchValue(value=doc_id)),
         ]
         version_must = [
@@ -769,6 +892,7 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
             "ok": True,
             "tenant_id": t_id,
             "project_id": p_id,
+            "corpus_id": c_id,
             "doc_id": doc_id,
             "active_doc_version": str(row.active_doc_version),
         }
@@ -778,17 +902,20 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
         doc_id: str,
         tenant_id: str | None = Query(default=None),
         project_id: str | None = Query(default=None),
+        corpus_id: str | None = Query(default=None),
         doc_version: str | None = Query(default=None),
     ) -> Any:
         from atlas.export_package import export_doc_package
 
         t_id = tenant_id or settings.atlas_default_tenant_id
         p_id = project_id or settings.atlas_default_project_id
+        c_id = corpus_id or settings.atlas_default_corpus_id
 
         blob = await export_doc_package(
             session_factory=session_factory,
             tenant_id=t_id,
             project_id=p_id,
+            corpus_id=c_id,
             doc_id=doc_id,
             doc_version=doc_version,
         )
@@ -799,6 +926,61 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
             io.BytesIO(blob),
             media_type="application/zip",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @r.get("/corpora/{corpus_id}/export")
+    async def export_corpus(
+        corpus_id: str,
+        tenant_id: str | None = Query(default=None),
+        project_id: str | None = Query(default=None),
+        max_docs: int = Query(default=200, ge=1, le=5000),
+    ) -> Any:
+        from atlas.corpus_package import export_corpus_package
+
+        t_id = tenant_id or settings.atlas_default_tenant_id
+        p_id = project_id or settings.atlas_default_project_id
+        c_id = (corpus_id or "").strip() or settings.atlas_default_corpus_id
+
+        blob = await export_corpus_package(
+            session_factory=session_factory,
+            tenant_id=t_id,
+            project_id=p_id,
+            corpus_id=c_id,
+            max_docs=int(max_docs),
+        )
+
+        filename = f"atlas_corpus_export_{c_id}.zip"
+        return StreamingResponse(
+            io.BytesIO(blob),
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @r.post("/corpora/{corpus_id}/import")
+    async def import_corpus(
+        corpus_id: str,
+        file: UploadFile = File(...),
+        tenant_id: str | None = Form(None),
+        project_id: str | None = Form(None),
+        is_finalized: bool = Form(True),
+        is_sensitive: bool = Form(True),
+    ) -> dict[str, Any]:
+        from atlas.corpus_package import import_corpus_package
+
+        t_id = tenant_id or settings.atlas_default_tenant_id
+        p_id = project_id or settings.atlas_default_project_id
+        c_id = (corpus_id or "").strip() or settings.atlas_default_corpus_id
+
+        body = await file.read()
+        return await import_corpus_package(
+            config_manager=config_manager,
+            session_factory=session_factory,
+            tenant_id=t_id,
+            project_id=p_id,
+            corpus_id=c_id,
+            zip_bytes=body,
+            is_finalized=bool(is_finalized),
+            is_sensitive=bool(is_sensitive),
         )
 
     return r

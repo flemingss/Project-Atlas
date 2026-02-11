@@ -13,6 +13,17 @@ import httpx
 import streamlit as st
 
 
+def _ui_upload_timeout_s() -> float:
+    raw = (os.environ.get("ATLAS_UI_UPLOAD_TIMEOUT_S") or "").strip()
+    if not raw:
+        return 600.0
+    try:
+        val = float(raw)
+        return val if val > 0 else 600.0
+    except Exception:
+        return 600.0
+
+
 def _base_url(raw: str) -> str:
     return (raw or "").strip().rstrip("/")
 
@@ -33,6 +44,19 @@ def _stable_doc_id_from_name(name: str) -> str:
 def _admin_headers(token: str) -> dict[str, str]:
     token = (token or "").strip()
     return {"X-Atlas-Admin-Token": token} if token else {}
+
+
+def _default_admin_token() -> str:
+    token = (os.environ.get("ATLAS_ADMIN_TOKEN") or "").strip()
+    if token:
+        return token
+    try:
+        secret = st.secrets.get("ATLAS_ADMIN_TOKEN")  # type: ignore[attr-defined]
+        if isinstance(secret, str) and secret.strip():
+            return secret.strip()
+    except Exception:
+        pass
+    return ""
 
 
 def _is_json_response(resp: httpx.Response) -> bool:
@@ -190,15 +214,18 @@ def main() -> None:
     with st.sidebar:
         st.header("Connection")
         api_url = st.text_input("API URL", value=os.environ.get("ATLAS_API_URL", "http://127.0.0.1:18080"))
+
+        st.session_state.setdefault("admin_token", _default_admin_token())
         admin_token = st.text_input(
             "Admin Token (for /admin/*)",
-            value=os.environ.get("ATLAS_ADMIN_TOKEN", ""),
             type="password",
+            key="admin_token",
         )
 
         with st.expander("Advanced", expanded=False):
             tenant_id = st.text_input("Workspace / Tenant", value=os.environ.get("ATLAS_DEFAULT_TENANT_ID", "local"))
             project_id = st.text_input("Project", value=os.environ.get("ATLAS_DEFAULT_PROJECT_ID", "default"))
+            corpus_id = st.text_input("Corpus", value=os.environ.get("ATLAS_DEFAULT_CORPUS_ID", "default"))
 
         api = _base_url(api_url)
         admin_headers = _admin_headers(admin_token)
@@ -244,6 +271,45 @@ def main() -> None:
                         method="GET", url=f"{api}/admin/config/effective", headers=admin_headers
                     )
                 st.session_state["admin_status"] = (a_resp.status_code, a_json, a_resp.text)
+
+        if admin_headers:
+            st.divider()
+            with st.expander("Danger zone", expanded=False):
+                st.caption("Clears Postgres + Qdrant so you can re-import from scratch.")
+                st.warning("This is destructive. Existing runs/docs/chunks will be lost.")
+
+                confirm = st.text_input("Type RESET to confirm", value="", key="db_reset_confirm")
+                c1, c2, c3 = st.columns([1, 1, 1])
+                with c1:
+                    do_pg = st.checkbox("Reset Postgres", value=True, key="db_reset_pg")
+                with c2:
+                    do_qd = st.checkbox("Clear Qdrant", value=True, key="db_reset_qdrant")
+                with c3:
+                    do_art = st.checkbox("Clear artifacts", value=False, key="db_reset_artifacts")
+
+                if st.button("Reset DB", use_container_width=True, key="db_reset_btn"):
+                    with st.spinner("Resetting..."):
+                        resp, data = _request_json_diag(
+                            label="admin db reset",
+                            method="POST",
+                            url=f"{api}/admin/db/reset",
+                            headers=admin_headers,
+                            json_body={
+                                "confirm": confirm,
+                                "postgres": bool(do_pg),
+                                "qdrant": bool(do_qd),
+                                "artifacts": bool(do_art),
+                            },
+                            timeout_s=120.0,
+                        )
+                    if int(resp.status_code) < 400:
+                        st.success("Reset complete")
+                    else:
+                        st.error(f"Reset failed ({resp.status_code})")
+                    if data is not None:
+                        st.json(data)
+                    else:
+                        st.code(resp.text)
 
         hs = st.session_state.get("health_status")
         if hs:
@@ -292,7 +358,9 @@ def main() -> None:
                 key="upload_file_doc_id",
             )
         else:
-            doc_id = _stable_doc_id_from_name(doc_name or (uploaded.name if uploaded else "document"))
+            doc_id = _stable_doc_id_from_name(
+                f"{(corpus_id or '').strip()}:{doc_name or (uploaded.name if uploaded else 'document')}"
+            )
             st.caption(f"Document ID: {doc_id}")
 
         with st.expander("Advanced upload options", expanded=False):
@@ -338,6 +406,7 @@ def main() -> None:
                     "doc_version": doc_version,
                     "tenant_id": tenant_id,
                     "project_id": project_id,
+                    "corpus_id": corpus_id,
                     "is_finalized": json.dumps(bool(is_finalized)),
                     "is_sensitive": json.dumps(bool(is_sensitive)),
                 }
@@ -345,7 +414,7 @@ def main() -> None:
                     data["source_mime_type"] = source_mime_type.strip()
 
                 with st.spinner("Uploading and indexing..."):
-                    with httpx.Client(timeout=120.0) as client:
+                    with httpx.Client(timeout=_ui_upload_timeout_s()) as client:
                         start = time.perf_counter()
                         resp = client.post(f"{api}/rag/ingest/file", files=files, data=data)
                         elapsed_ms = int((time.perf_counter() - start) * 1000)
@@ -407,7 +476,9 @@ def main() -> None:
             value=st.session_state.get("last_text_doc_version", "1"),
             key="upload_text_doc_version",
         )
-        text_doc_id = _stable_doc_id_from_name((text_doc_name or "").strip() or "Quick note")
+        text_doc_id = _stable_doc_id_from_name(
+            f"{(corpus_id or '').strip()}:{((text_doc_name or '').strip() or 'Quick note')}"
+        )
         st.caption(f"Document ID: {text_doc_id}")
         text = st.text_area(
             "text",
@@ -431,6 +502,7 @@ def main() -> None:
                 "text": text,
                 "tenant_id": tenant_id,
                 "project_id": project_id,
+                "corpus_id": corpus_id,
                 "is_finalized": bool(is_finalized),
                 "is_sensitive": bool(is_sensitive),
                 "source_mime_type": text_mime,
@@ -474,6 +546,7 @@ def main() -> None:
                 "top_k": int(top_k),
                 "tenant_id": tenant_id,
                 "project_id": project_id,
+                "corpus_id": corpus_id,
             }
             with st.spinner("Searching..."):
                 resp, data = _request_json_diag(
@@ -517,7 +590,7 @@ def main() -> None:
             st.info("Admin token required for runs.")
         else:
             col1, col2 = st.columns(2)
-            limit = col1.number_input("limit", min_value=1, max_value=500, value=100)
+            limit = col1.number_input("limit", min_value=1, max_value=500, value=100, key="runs_limit")
             refresh = col2.button("Refresh")
 
             if refresh or "runs_cache" not in st.session_state:
@@ -618,7 +691,7 @@ def main() -> None:
         else:
             col1, col2, col3 = st.columns(3)
             status = col1.selectbox("status filter", options=["", "pending", "in_progress", "completed", "skipped", "rejected"], index=0)
-            limit = col2.number_input("limit", min_value=1, max_value=500, value=100)
+            limit = col2.number_input("limit", min_value=1, max_value=500, value=100, key="hitl_limit")
             assigned_to = col3.text_input("assigned_to (claim next)", value="operator")
 
             if st.button("Refresh queue", use_container_width=True):
@@ -762,7 +835,7 @@ def main() -> None:
                     method="GET",
                     url=f"{api}/admin/docs/{doc_id_s}/active-version",
                     headers=admin_headers,
-                    params={"tenant_id": tenant_id, "project_id": project_id},
+                    params={"tenant_id": tenant_id, "project_id": project_id, "corpus_id": corpus_id},
                 )
                 if resp.status_code >= 400:
                     st.error(f"{resp.status_code}: {resp.text}")
@@ -772,7 +845,12 @@ def main() -> None:
                     _render_response(resp)
 
             if c2.button("Set searchable version", use_container_width=True, disabled=not bool(doc_id_s)):
-                payload = {"doc_version": new_version, "tenant_id": tenant_id, "project_id": project_id}
+                payload = {
+                    "doc_version": new_version,
+                    "tenant_id": tenant_id,
+                    "project_id": project_id,
+                    "corpus_id": corpus_id,
+                }
                 resp, data = _request_json_diag(
                     label="admin active version set",
                     method="POST",
@@ -792,7 +870,12 @@ def main() -> None:
             st.subheader("Export package")
             exp_version = st.text_input("Version to export", value="1")
             if st.button("Generate export ZIP", use_container_width=True, disabled=not bool(doc_id_s)):
-                params = {"doc_version": exp_version, "tenant_id": tenant_id, "project_id": project_id}
+                params = {
+                    "doc_version": exp_version,
+                    "tenant_id": tenant_id,
+                    "project_id": project_id,
+                    "corpus_id": corpus_id,
+                }
                 with st.spinner("Generating export..."):
                     with httpx.Client(timeout=120.0) as client:
                         start = time.perf_counter()
@@ -823,6 +906,82 @@ def main() -> None:
                         file_name=f"export_{doc_id_s}_v{exp_version}.zip",
                         mime="application/zip",
                     )
+
+            st.divider()
+            st.subheader("Corpus export/import")
+
+            if st.button("Generate corpus export ZIP", use_container_width=True):
+                params = {"tenant_id": tenant_id, "project_id": project_id, "max_docs": 200}
+                with st.spinner("Generating corpus export..."):
+                    with httpx.Client(timeout=300.0) as client:
+                        start = time.perf_counter()
+                        resp = client.get(
+                            f"{api}/admin/corpora/{(corpus_id or '').strip() or 'default'}/export",
+                            headers=admin_headers,
+                            params=params,
+                        )
+                        elapsed_ms = int((time.perf_counter() - start) * 1000)
+                        _diag_add(
+                            {
+                                "type": "http",
+                                "label": "admin corpus export",
+                                "method": "GET",
+                                "url": f"{api}/admin/corpora/{(corpus_id or '').strip() or 'default'}/export",
+                                "status": int(resp.status_code),
+                                "elapsed_ms": elapsed_ms,
+                            }
+                        )
+                if resp.status_code >= 400:
+                    st.error(f"{resp.status_code}: {resp.text}")
+                else:
+                    zip_bytes = resp.content
+                    st.success(f"Downloaded {len(zip_bytes)} bytes")
+                    st.download_button(
+                        label="Download corpus ZIP",
+                        data=zip_bytes,
+                        file_name=f"corpus_export_{(corpus_id or '').strip() or 'default'}.zip",
+                        mime="application/zip",
+                    )
+
+            imp = st.file_uploader("Corpus import ZIP", type=["zip"], key="corpus_import_zip")
+            if st.button("Import corpus ZIP", use_container_width=True, disabled=imp is None):
+                if imp is None:
+                    st.warning("Pick a ZIP first")
+                else:
+                    files = {"file": (imp.name, imp.getvalue(), "application/zip")}
+                    data = {
+                        "tenant_id": tenant_id,
+                        "project_id": project_id,
+                        "is_finalized": json.dumps(True),
+                        "is_sensitive": json.dumps(True),
+                    }
+                    with st.spinner("Importing corpus..."):
+                        with httpx.Client(timeout=600.0) as client:
+                            start = time.perf_counter()
+                            resp = client.post(
+                                f"{api}/admin/corpora/{(corpus_id or '').strip() or 'default'}/import",
+                                headers=admin_headers,
+                                files=files,
+                                data=data,
+                            )
+                            elapsed_ms = int((time.perf_counter() - start) * 1000)
+                            _diag_add(
+                                {
+                                    "type": "http",
+                                    "label": "admin corpus import",
+                                    "method": "POST",
+                                    "url": f"{api}/admin/corpora/{(corpus_id or '').strip() or 'default'}/import",
+                                    "status": int(resp.status_code),
+                                    "elapsed_ms": elapsed_ms,
+                                }
+                            )
+                    if resp.status_code >= 400:
+                        st.error(f"{resp.status_code}: {resp.text}")
+                    else:
+                        try:
+                            st.json(resp.json())
+                        except Exception:
+                            _render_response(resp)
 
     if bool(st.session_state.get("show_diagnostics")):
         st.divider()

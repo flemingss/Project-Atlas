@@ -109,6 +109,9 @@ def test_rag_ingest_text_upserts_uuid_ids(tmp_path: Path, monkeypatch: Any) -> N
     pid = _FakeQdrantStore.last_points[0].id
     uuid.UUID(str(pid))
 
+    payload0 = _FakeQdrantStore.last_points[0].payload
+    assert payload0.get("corpus_id") == "default"
+
 
 def test_rag_search_returns_hits_and_applies_filters(tmp_path: Path, monkeypatch: Any) -> None:
     app = _make_test_app(tmp_root=tmp_path, monkeypatch=monkeypatch)
@@ -121,4 +124,4 @@ def test_rag_search_returns_hits_and_applies_filters(tmp_path: Path, monkeypatch
     assert data["hits"]
 
     # Sanity check: we pass tenant/project/finalized filter to the store.
-    assert len(_FakeQdrantStore.last_search_must) == 4
+    assert len(_FakeQdrantStore.last_search_must) == 5

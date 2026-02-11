@@ -211,3 +211,81 @@ def test_rag_ingest_markdown_file_succeeds(tmp_path: Path, monkeypatch: Any) -> 
         assert "source" in kinds
         assert "docling_json" in kinds
         assert "markdown_projection" in kinds
+
+
+def test_rag_ingest_html_file_succeeds(tmp_path: Path, monkeypatch: Any) -> None:
+    app, _session_factory = _make_test_app(tmp_root=tmp_path, monkeypatch=monkeypatch)
+    client = TestClient(app)
+
+    html = b"<html><body><h1>Title</h1><p>Hello <b>world</b>.</p></body></html>"
+    res = client.post(
+        "/rag/ingest/file",
+        data={"doc_id": "html1", "doc_version": "v1"},
+        files={"file": ("sample.html", html, "text/html")},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["ok"] is True
+    assert data["chunks_upserted"] >= 1
+
+
+def test_rag_ingest_pdf_ocr_empty_returns_error_code(tmp_path: Path, monkeypatch: Any) -> None:
+    app, _session_factory = _make_test_app(tmp_root=tmp_path, monkeypatch=monkeypatch)
+    client = TestClient(app)
+
+    # Override the patched parser to simulate an OCR-empty PDF.
+    def _fake_parse_document_path_empty(*, doc_path: Path, source_mime_type: str) -> DoclingParseResult:  # noqa: ARG001
+        return DoclingParseResult(
+            markdown_projection="\n\n   \n",
+            docling_json={"schema_version": "test", "pages": 1, "text": ""},
+            parse_profile=ParseProfile.PDF_TEXT,
+            docling_schema_version="test",
+            meta={"fake": True, "source_mime_type": source_mime_type},
+        )
+
+    monkeypatch.setattr(pipeline_ingest, "parse_document_path", _fake_parse_document_path_empty)
+
+    res = client.post(
+        "/rag/ingest/file",
+        data={"doc_id": "pdf-empty", "doc_version": "v1"},
+        files={"file": ("empty.pdf", b"%PDF-1.4\n%fake\n", "application/pdf")},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["ok"] is False
+    assert data["chunks_upserted"] == 0
+    assert data["error_code"] == "DOC_OCR_EMPTY"
+    assert data["error_message"]
+
+
+def test_rag_ingest_pdf_low_quality_returns_error_code(tmp_path: Path, monkeypatch: Any) -> None:
+    app, _session_factory = _make_test_app(tmp_root=tmp_path, monkeypatch=monkeypatch)
+    client = TestClient(app)
+
+    # Make the quality gates strict for this test.
+    monkeypatch.setenv("ATLAS_PDF_QUALITY_MIN_CHARS", "10")
+    monkeypatch.setenv("ATLAS_PDF_QUALITY_MIN_WORDS", "5")
+    monkeypatch.setenv("ATLAS_PDF_QUALITY_ALPHA_RATIO_MIN", "0.90")
+
+    def _fake_parse_document_path_low_quality(*, doc_path: Path, source_mime_type: str) -> DoclingParseResult:  # noqa: ARG001
+        return DoclingParseResult(
+            markdown_projection="@@@@@@ !!!! $$$$$ ######",  # mostly symbols
+            docling_json={"schema_version": "test", "pages": 1, "text": ""},
+            parse_profile=ParseProfile.PDF_TEXT,
+            docling_schema_version="test",
+            meta={"fake": True, "source_mime_type": source_mime_type, "extraction_method": "embedded_text"},
+        )
+
+    monkeypatch.setattr(pipeline_ingest, "parse_document_path", _fake_parse_document_path_low_quality)
+
+    res = client.post(
+        "/rag/ingest/file",
+        data={"doc_id": "pdf-lowq", "doc_version": "v1"},
+        files={"file": ("lowq.pdf", b"%PDF-1.4\n%fake\n", "application/pdf")},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["ok"] is False
+    assert data["chunks_upserted"] == 0
+    assert data["error_code"] == "DOC_EXTRACT_LOW_QUALITY"
+    assert data["error_message"]

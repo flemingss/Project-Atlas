@@ -1,0 +1,11 @@
+services:
+  atlas:
+    # Dev override: bind-mount source + reload, so you don't rebuild on every code change.
+    environment:
+      PYTHONPATH: /app/src
+    volumes:
+      - ./src:/app/src
+      - ./config:/app/config
+      - ./scripts:/app/scripts
+      - ./artifacts:/app/artifacts
+    command: ["uvicorn", "atlas.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080", "--reload", "--reload-dir", "/app/src"]

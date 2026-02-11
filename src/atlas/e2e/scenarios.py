@@ -85,19 +85,37 @@ def scenario_local_llm_preflight(client: httpx.Client, *, api_url: str) -> None:
     if not base_url:
         raise RuntimeError("ATLAS_OPENAI_BASE_URL is required for local_llm mode")
 
-    eff = _require_ok(client.get(f"{api_url}/admin/config/effective"), label="effective config")
-    roles = (eff.get("models") or {}).get("roles") or {}
+    llm_model = os.environ.get("ATLAS_E2E_LLM_MODEL")
+    embed_model = os.environ.get("ATLAS_E2E_EMBED_MODEL")
+    if not llm_model or not embed_model:
+        raise RuntimeError(
+            "ATLAS_E2E_LLM_MODEL and ATLAS_E2E_EMBED_MODEL are required for local_llm mode (set them in .env)"
+        )
 
-    judge_model = (roles.get("judge_model") or {}).get("model_name")
-    embed_model = (roles.get("embed_model") or {}).get("model_name")
-    if not judge_model or not embed_model:
-        raise RuntimeError(f"Unexpected effective config roles shape: {roles}")
+    print(f"[e2e] local_llm preflight base_url={base_url}")
 
     v1 = _openai_compat_v1(base_url)
 
+    # Optional introspection: helps LM Studio users understand what's loaded.
+    try:
+        rm = client.get(f"{v1}/models")
+        if rm.status_code < 400:
+            data = rm.json()
+            ids = [m.get("id") for m in (data.get("data") or []) if isinstance(m, dict) and m.get("id")]
+            if ids:
+                print(f"[e2e] local_llm models loaded: {', '.join(ids)}")
+                if llm_model not in ids:
+                    print(f"[e2e] WARN: ATLAS_E2E_LLM_MODEL not in /v1/models: {llm_model}")
+                if embed_model not in ids:
+                    print(f"[e2e] WARN: ATLAS_E2E_EMBED_MODEL not in /v1/models: {embed_model}")
+            else:
+                print("[e2e] local_llm models loaded: <none>")
+    except Exception:
+        pass
+
     # Chat preflight
     chat_payload = {
-        "model": judge_model,
+        "model": llm_model,
         "messages": [
             {"role": "system", "content": "You are a test harness."},
             {"role": "user", "content": "Reply with 'ok'"},
@@ -107,8 +125,9 @@ def scenario_local_llm_preflight(client: httpx.Client, *, api_url: str) -> None:
     r1 = client.post(f"{v1}/chat/completions", json=chat_payload)
     if r1.status_code >= 400:
         raise RuntimeError(
-            f"OpenAI-compatible chat preflight failed ({r1.status_code}) at {v1} for model={judge_model}: {r1.text}"
+            f"OpenAI-compatible chat preflight failed ({r1.status_code}) at {v1} for model={llm_model}: {r1.text}"
         )
+    print(f"[e2e] local_llm preflight chat ok model={llm_model}")
 
     # Embeddings preflight
     emb_payload = {"model": embed_model, "input": ["hello"]}
@@ -117,6 +136,7 @@ def scenario_local_llm_preflight(client: httpx.Client, *, api_url: str) -> None:
         raise RuntimeError(
             f"OpenAI-compatible embeddings preflight failed ({r2.status_code}) at {v1} for model={embed_model}: {r2.text}"
         )
+    print(f"[e2e] local_llm preflight embeddings ok model={embed_model}")
 
 
 def activate_deterministic_pipeline_models(client: httpx.Client, *, api_url: str, dim: int) -> None:
@@ -183,6 +203,52 @@ def activate_local_llm_pipeline_guardrails(client: httpx.Client, *, api_url: str
         "activate": True,
     }
     _require_ok(client.post(f"{api_url}/admin/config-versions", json=payload), label="activate local LLM guardrails")
+
+
+def activate_local_llm_pipeline_models(client: httpx.Client, *, api_url: str) -> None:
+    """Activate OpenAI-compatible (local) models for E2E runs.
+
+    The OpenAI-compatible base URL is sourced from ATLAS_OPENAI_BASE_URL by the
+    configured provider (see config/models.yaml).
+    """
+
+    llm_model = os.environ.get("ATLAS_E2E_LLM_MODEL", "llama3.2:1b")
+    embed_model = os.environ.get("ATLAS_E2E_EMBED_MODEL", "nomic-embed-text")
+
+    payload = {
+        "name": "e2e: local LLM pipeline models",
+        "notes": "E2E local_llm: use OpenAI-compatible provider for judge/metadata + embeddings.",
+        "base": "current",
+        "patch": {
+            "models": {
+                "roles": {
+                    "embed_model": {"provider": "lmstudio", "model_name": embed_model, "params": {}},
+                    "judge_model": {
+                        "provider": "lmstudio",
+                        "model_name": llm_model,
+                        "params": {"temperature": 0.0},
+                    },
+                    "refine_model": {
+                        "provider": "lmstudio",
+                        "model_name": llm_model,
+                        "params": {"temperature": 0.0},
+                    },
+                    "metadata_tier1_model": {
+                        "provider": "lmstudio",
+                        "model_name": llm_model,
+                        "params": {"temperature": 0.0},
+                    },
+                    "metadata_tier2_model": {
+                        "provider": "lmstudio",
+                        "model_name": llm_model,
+                        "params": {"temperature": 0.0},
+                    },
+                }
+            }
+        },
+        "activate": True,
+    }
+    _require_ok(client.post(f"{api_url}/admin/config-versions", json=payload), label="activate local LLM models")
 
 
 def scenario_admin_endpoints(client: httpx.Client, *, api_url: str) -> None:
@@ -469,6 +535,11 @@ def run_scenarios(
             _run_one(
                 "activate_local_llm_pipeline_guardrails",
                 lambda: activate_local_llm_pipeline_guardrails(client, api_url=api),
+            )
+        if results[-1].ok and mode == "local_llm":
+            _run_one(
+                "activate_local_llm_pipeline_models",
+                lambda: activate_local_llm_pipeline_models(client, api_url=api),
             )
 
         dim = qdrant_collection_dim(client, qdrant_url=qdrant, collection=collection)

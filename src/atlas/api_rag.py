@@ -18,6 +18,21 @@ from atlas.settings import Settings
 from atlas.vectorstore.qdrant_store import QdrantHit, QdrantStore
 
 
+def _normalize_error_code(code: Any) -> str | None:
+    if not code:
+        return None
+    # ErrorCode is a str Enum; `.value` is the stable wire format.
+    value = getattr(code, "value", None)
+    if isinstance(value, str) and value:
+        return value
+    if isinstance(code, str):
+        # Some callsites may have serialized Enums using `str(ErrorCode.X)`.
+        if "." in code:
+            return code.rsplit(".", 1)[-1]
+        return code
+    return str(code)
+
+
 class IngestTextRequest(BaseModel):
     doc_id: str
     doc_version: str = "1"
@@ -25,6 +40,7 @@ class IngestTextRequest(BaseModel):
 
     tenant_id: str | None = None
     project_id: str | None = None
+    corpus_id: str | None = None
 
     is_finalized: bool = True
     is_sensitive: bool = True
@@ -38,6 +54,8 @@ class IngestTextResponse(BaseModel):
     collection: str
     doc_id: str
     chunks_upserted: int
+    error_code: str | None = None
+    error_message: str | None = None
 
 
 class SearchRequest(BaseModel):
@@ -46,6 +64,7 @@ class SearchRequest(BaseModel):
 
     tenant_id: str | None = None
     project_id: str | None = None
+    corpus_id: str | None = None
 
 
 class SearchHit(BaseModel):
@@ -81,6 +100,7 @@ def make_rag_router(*, config_manager: ConfigManager, session_factory: sessionma
     async def ingest_text(req: IngestTextRequest) -> IngestTextResponse:
         tenant_id = req.tenant_id or settings.atlas_default_tenant_id
         project_id = req.project_id or settings.atlas_default_project_id
+        corpus_id = req.corpus_id or settings.atlas_default_corpus_id
 
         try:
             result = await ingest_text_via_pipeline(
@@ -90,6 +110,7 @@ def make_rag_router(*, config_manager: ConfigManager, session_factory: sessionma
                 doc_version=req.doc_version,
                 tenant_id=tenant_id,
                 project_id=project_id,
+                corpus_id=corpus_id,
                 text=req.text,
                 source_mime_type=req.source_mime_type,
                 is_finalized=bool(req.is_finalized),
@@ -104,6 +125,8 @@ def make_rag_router(*, config_manager: ConfigManager, session_factory: sessionma
             collection=str(result.get("collection", "")),
             doc_id=req.doc_id,
             chunks_upserted=int(result.get("chunks_upserted", 0)),
+            error_code=_normalize_error_code(result.get("error_code")),
+            error_message=(str(result.get("error_message")) if result.get("error_message") else None),
         )
 
     @r.post("/ingest/file", response_model=IngestTextResponse)
@@ -113,12 +136,14 @@ def make_rag_router(*, config_manager: ConfigManager, session_factory: sessionma
         doc_version: str = Form("1"),
         tenant_id: str | None = Form(None),
         project_id: str | None = Form(None),
+        corpus_id: str | None = Form(None),
         is_finalized: bool = Form(True),
         is_sensitive: bool = Form(True),
         source_mime_type: str | None = Form(None),
     ) -> IngestTextResponse:
         t_id = tenant_id or settings.atlas_default_tenant_id
         p_id = project_id or settings.atlas_default_project_id
+        c_id = corpus_id or settings.atlas_default_corpus_id
 
         try:
             body = await file.read()
@@ -134,6 +159,7 @@ def make_rag_router(*, config_manager: ConfigManager, session_factory: sessionma
                 doc_version=doc_version,
                 tenant_id=t_id,
                 project_id=p_id,
+                corpus_id=c_id,
                 file_bytes=body,
                 filename=file.filename,
                 source_mime_type=mime,
@@ -149,6 +175,8 @@ def make_rag_router(*, config_manager: ConfigManager, session_factory: sessionma
             collection=str(result.get("collection", "")),
             doc_id=doc_id,
             chunks_upserted=int(result.get("chunks_upserted", 0)),
+            error_code=_normalize_error_code(result.get("error_code")),
+            error_message=(str(result.get("error_message")) if result.get("error_message") else None),
         )
 
     @r.post("/search", response_model=SearchResponse)
@@ -158,6 +186,7 @@ def make_rag_router(*, config_manager: ConfigManager, session_factory: sessionma
 
         tenant_id = req.tenant_id or settings.atlas_default_tenant_id
         project_id = req.project_id or settings.atlas_default_project_id
+        corpus_id = req.corpus_id or settings.atlas_default_corpus_id
 
         registry = ModelRegistry(settings=settings, models_cfg=models_cfg)
         resolved = registry.resolve("embed_model")
@@ -175,6 +204,7 @@ def make_rag_router(*, config_manager: ConfigManager, session_factory: sessionma
         must = [
             qm.FieldCondition(key="tenant_id", match=qm.MatchValue(value=tenant_id)),
             qm.FieldCondition(key="project_id", match=qm.MatchValue(value=project_id)),
+            qm.FieldCondition(key="corpus_id", match=qm.MatchValue(value=corpus_id)),
             qm.FieldCondition(key="is_finalized", match=qm.MatchValue(value=True)),
             qm.FieldCondition(key="is_active_version", match=qm.MatchValue(value=True)),
         ]

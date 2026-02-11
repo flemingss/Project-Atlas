@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
+import os
+import sys
+
 import httpx
 
 from atlas.llm.provider import ChatMessage, ILlmProvider
@@ -22,6 +25,8 @@ class OpenAICompatibleProvider(ILlmProvider):
             "messages": [{"role": m.role, "content": m.content} for m in messages],
             **(params or {}),
         }
+        if os.environ.get("ATLAS_OPENAI_TRACE"):
+            print(f"[openai_compat] POST {self._v1}/chat/completions model={model}", file=sys.stderr)
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 resp = await client.post(f"{self._v1}/chat/completions", json=payload)
@@ -52,6 +57,8 @@ class OpenAICompatibleProvider(ILlmProvider):
             "input": texts,
             **(params or {}),
         }
+        if os.environ.get("ATLAS_OPENAI_TRACE"):
+            print(f"[openai_compat] POST {self._v1}/embeddings model={model} n={len(texts)}", file=sys.stderr)
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 resp = await client.post(f"{self._v1}/embeddings", json=payload)
