@@ -338,7 +338,7 @@ def test_e2e_hitl_escalation_workflow(tmp_path: Path, monkeypatch: Any) -> None:
     assert task_response.status_code == 200
     task = task_response.json()
     assert task["doc_id"] == doc_id
-    assert task["state"] == "claimed"
+    assert task["status"] == "in_progress"
 
     # Complete the HITL task with fixed content
     complete_response = client.post(

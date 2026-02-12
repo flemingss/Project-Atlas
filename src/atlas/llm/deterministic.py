@@ -68,15 +68,15 @@ class DeterministicProvider(ILlmProvider):
         if non_ascii / max(len(md), 1) > 0.15:
             return 1
 
+        # OCR-ish patterns (check before heading heuristics to catch corruption)
+        if any(tok in md for tok in ("Ov3rview", "syst3m", "c0nsists")):
+            return 3
+
         has_heading = "#" in md
         if has_heading and len(md) >= 80:
             return 5
         if has_heading:
             return 4
-
-        # OCR-ish patterns
-        if any(tok in md for tok in ("Ov3rview", "syst3m", "c0nsists")):
-            return 3
 
         return 4
 

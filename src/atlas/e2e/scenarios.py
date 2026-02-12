@@ -584,8 +584,8 @@ def scenario_error_recovery_validation(client: httpx.Client, *, api_url: str) ->
     # Get the task and test skip operation
     task_skip = _require_ok(client.post(f"{api_url}/admin/hitl/tasks/next", params={"assigned_to": "e2e"}), label="error recovery get task skip")
     skip_result = _require_ok(client.post(f"{api_url}/admin/hitl/tasks/{task_skip['id']}/skip"), label="error recovery skip")
-    if skip_result.get("state") != "skipped":
-        raise RuntimeError(f"Skip did not transition to skipped state: {skip_result}")
+    if skip_result.get("status") != "skipped":
+        raise RuntimeError(f"Skip did not transition to skipped status: {skip_result}")
 
     # Create a HITL task for reject test
     doc_id_reject = f"e2e-error-reject-{int(time.time())}"
@@ -605,8 +605,8 @@ def scenario_error_recovery_validation(client: httpx.Client, *, api_url: str) ->
     # Get the task and test reject operation
     task_reject = _require_ok(client.post(f"{api_url}/admin/hitl/tasks/next", params={"assigned_to": "e2e"}), label="error recovery get task reject")
     reject_result = _require_ok(client.post(f"{api_url}/admin/hitl/tasks/{task_reject['id']}/reject"), label="error recovery reject")
-    if reject_result.get("state") != "rejected":
-        raise RuntimeError(f"Reject did not transition to rejected state: {reject_result}")
+    if reject_result.get("status") != "rejected":
+        raise RuntimeError(f"Reject did not transition to rejected status: {reject_result}")
 
 
 def scenario_looking_glass_endpoints(client: httpx.Client, *, api_url: str) -> None:
