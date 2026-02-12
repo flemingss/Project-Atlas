@@ -566,28 +566,47 @@ def scenario_error_recovery_validation(client: httpx.Client, *, api_url: str) ->
     Test error recovery: HITL skip and reject operations.
     Validates that operators can handle problematic documents appropriately.
     """
-    # Create a HITL task
-    doc_id = f"e2e-error-{int(time.time())}"
-    ingest = {
-        "doc_id": doc_id,
+    # Create a HITL task for skip test
+    doc_id_skip = f"e2e-error-skip-{int(time.time())}"
+    ingest_skip = {
+        "doc_id": doc_id_skip,
         "doc_version": "1",
-        "text": "[UNFIXABLE]\n\nUnrecoverable content",
+        "text": "[UNFIXABLE]\n\nUnrecoverable content for skip",
         "tenant_id": "local",
         "project_id": "default",
         "is_finalized": True,
         "is_sensitive": False,
         "source_mime_type": "text/plain",
-        "metadata": {"source": "e2e_error"},
+        "metadata": {"source": "e2e_error_skip"},
     }
-    _require_ok(client.post(f"{api_url}/rag/ingest/text", json=ingest), label="error recovery ingest")
+    _require_ok(client.post(f"{api_url}/rag/ingest/text", json=ingest_skip), label="error recovery ingest skip")
 
-    # Get the task
-    task = _require_ok(client.post(f"{api_url}/admin/hitl/tasks/next", params={"assigned_to": "e2e"}), label="error recovery get task")
-
-    # Test skip operation
-    skip_result = _require_ok(client.post(f"{api_url}/admin/hitl/tasks/{task['id']}/skip"), label="error recovery skip")
+    # Get the task and test skip operation
+    task_skip = _require_ok(client.post(f"{api_url}/admin/hitl/tasks/next", params={"assigned_to": "e2e"}), label="error recovery get task skip")
+    skip_result = _require_ok(client.post(f"{api_url}/admin/hitl/tasks/{task_skip['id']}/skip"), label="error recovery skip")
     if skip_result.get("state") != "skipped":
         raise RuntimeError(f"Skip did not transition to skipped state: {skip_result}")
+
+    # Create a HITL task for reject test
+    doc_id_reject = f"e2e-error-reject-{int(time.time())}"
+    ingest_reject = {
+        "doc_id": doc_id_reject,
+        "doc_version": "1",
+        "text": "[UNFIXABLE]\n\nUnrecoverable content for reject",
+        "tenant_id": "local",
+        "project_id": "default",
+        "is_finalized": True,
+        "is_sensitive": False,
+        "source_mime_type": "text/plain",
+        "metadata": {"source": "e2e_error_reject"},
+    }
+    _require_ok(client.post(f"{api_url}/rag/ingest/text", json=ingest_reject), label="error recovery ingest reject")
+
+    # Get the task and test reject operation
+    task_reject = _require_ok(client.post(f"{api_url}/admin/hitl/tasks/next", params={"assigned_to": "e2e"}), label="error recovery get task reject")
+    reject_result = _require_ok(client.post(f"{api_url}/admin/hitl/tasks/{task_reject['id']}/reject"), label="error recovery reject")
+    if reject_result.get("state") != "rejected":
+        raise RuntimeError(f"Reject did not transition to rejected state: {reject_result}")
 
 
 def scenario_looking_glass_endpoints(client: httpx.Client, *, api_url: str) -> None:

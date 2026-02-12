@@ -4,7 +4,6 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -65,7 +64,13 @@ class _FakeQdrantStore:
         assert vector_size > 0
 
     def upsert_points(self, *, points: list[Any]) -> None:
-        _FakeQdrantStore.all_points.extend(points)
+        # Simulate Qdrant's upsert behavior: replace by ID
+        point_ids = {pt.id for pt in _FakeQdrantStore.all_points}
+        for pt in points:
+            if pt.id in point_ids:
+                # Remove existing point with same ID
+                _FakeQdrantStore.all_points = [p for p in _FakeQdrantStore.all_points if p.id != pt.id]
+            _FakeQdrantStore.all_points.append(pt)
         _FakeQdrantStore.upsert_count += len(points)
 
     def search(self, *, query_vector: list[float], limit: int, must: list[Any]) -> list[QdrantHit]:
@@ -77,9 +82,18 @@ class _FakeQdrantStore:
             # Check filter matching
             matches = True
             for condition in must:
-                if "key" in condition and "match" in condition:
+                # Handle FieldCondition objects from qdrant_client
+                if hasattr(condition, 'key') and hasattr(condition, 'match'):
+                    # FieldCondition object
+                    key = condition.key
+                    expected = condition.match.value if hasattr(condition.match, 'value') else condition.match
+                    if payload.get(key) != expected:
+                        matches = False
+                        break
+                elif isinstance(condition, dict) and "key" in condition and "match" in condition:
+                    # Dict format (for backward compatibility)
                     key = condition["key"]
-                    expected = condition["match"]["value"]
+                    expected = condition["match"]["value"] if isinstance(condition["match"], dict) else condition["match"]
                     if payload.get(key) != expected:
                         matches = False
                         break
@@ -115,6 +129,12 @@ def _make_test_app(tmp_root: Path, monkeypatch: Any) -> FastAPI:
     monkeypatch.setattr("atlas.api_rag.QdrantStore", _FakeQdrantStore)
 
     app = FastAPI()
+    
+    # Add health endpoint like the production app
+    @app.get("/health")
+    async def health() -> dict:
+        return {"status": "ok"}
+    
     app.include_router(make_admin_router(config_manager=config_manager, session_factory=session_factory))
     app.include_router(make_rag_router(config_manager=config_manager, session_factory=session_factory))
     return app
@@ -265,6 +285,11 @@ def test_e2e_pipeline_refine_loop_workflow(tmp_path: Path, monkeypatch: Any) -> 
     # Verify the refined content was stored
     refined_chunks = [pt for pt in _FakeQdrantStore.all_points if pt.payload.get("doc_id") == doc_id]
     assert len(refined_chunks) >= 1
+    
+    # Verify refinement occurred by checking for the [REFINED] marker added by deterministic refine
+    # The deterministic refine model adds "[REFINED]" prefix to refined content
+    chunk_text = refined_chunks[0].payload.get("text", "")
+    assert "[REFINED]" in chunk_text, "Refinement did not occur - [REFINED] marker not found in chunk text"
 
 
 def test_e2e_hitl_escalation_workflow(tmp_path: Path, monkeypatch: Any) -> None:
@@ -347,7 +372,7 @@ def test_e2e_tenant_isolation_workflow(tmp_path: Path, monkeypatch: Any) -> None
 
     # Ingest document for tenant A
     doc_a = f"tenant-a-{uuid.uuid4()}"
-    client.post(
+    response_a = client.post(
         "/rag/ingest/text",
         json={
             "doc_id": doc_a,
@@ -361,10 +386,13 @@ def test_e2e_tenant_isolation_workflow(tmp_path: Path, monkeypatch: Any) -> None
             "metadata": {"source": "tenant_a_data"},
         },
     )
+    assert response_a.status_code == 200
+    assert response_a.json()["ok"] is True
+    assert response_a.json()["chunks_upserted"] >= 1
 
     # Ingest document for tenant B
     doc_b = f"tenant-b-{uuid.uuid4()}"
-    client.post(
+    response_b = client.post(
         "/rag/ingest/text",
         json={
             "doc_id": doc_b,
@@ -378,8 +406,11 @@ def test_e2e_tenant_isolation_workflow(tmp_path: Path, monkeypatch: Any) -> None
             "metadata": {"source": "tenant_b_data"},
         },
     )
+    assert response_b.status_code == 200
+    assert response_b.json()["ok"] is True
+    assert response_b.json()["chunks_upserted"] >= 1
 
-    # Search as tenant A - should NOT see tenant B's data
+    # Search as tenant A - should see tenant A doc but NOT tenant B's data
     search_a = client.post(
         "/rag/search",
         json={
@@ -389,11 +420,18 @@ def test_e2e_tenant_isolation_workflow(tmp_path: Path, monkeypatch: Any) -> None
             "project_id": "project_a",
         },
     )
+    assert search_a.status_code == 200
     hits_a = search_a.json()["hits"]
+    
+    # Tenant A should see their own doc
+    tenant_a_found = any(hit["doc_id"] == doc_a for hit in hits_a)
+    assert tenant_a_found, "Tenant A cannot see their own document!"
+    
+    # Tenant A should NOT see tenant B's doc
     tenant_b_leaked = any(hit["doc_id"] == doc_b for hit in hits_a)
     assert not tenant_b_leaked, "SECURITY: Tenant A can see Tenant B's data!"
 
-    # Search as tenant B - should NOT see tenant A's data
+    # Search as tenant B - should see tenant B doc but NOT tenant A's data
     search_b = client.post(
         "/rag/search",
         json={
@@ -403,7 +441,14 @@ def test_e2e_tenant_isolation_workflow(tmp_path: Path, monkeypatch: Any) -> None
             "project_id": "project_b",
         },
     )
+    assert search_b.status_code == 200
     hits_b = search_b.json()["hits"]
+    
+    # Tenant B should see their own doc
+    tenant_b_found = any(hit["doc_id"] == doc_b for hit in hits_b)
+    assert tenant_b_found, "Tenant B cannot see their own document!"
+    
+    # Tenant B should NOT see tenant A's doc
     tenant_a_leaked = any(hit["doc_id"] == doc_a for hit in hits_b)
     assert not tenant_a_leaked, "SECURITY: Tenant B can see Tenant A's data!"
 
@@ -419,7 +464,7 @@ def test_e2e_finalized_filter_workflow(tmp_path: Path, monkeypatch: Any) -> None
 
     # Ingest finalized document
     doc_final = f"final-{uuid.uuid4()}"
-    client.post(
+    final_response = client.post(
         "/rag/ingest/text",
         json={
             "doc_id": doc_final,
@@ -433,10 +478,13 @@ def test_e2e_finalized_filter_workflow(tmp_path: Path, monkeypatch: Any) -> None
             "metadata": {},
         },
     )
+    assert final_response.status_code == 200
+    assert final_response.json()["ok"] is True
+    assert final_response.json()["chunks_upserted"] >= 1
 
     # Ingest non-finalized (draft) document
     doc_draft = f"draft-{uuid.uuid4()}"
-    client.post(
+    draft_response = client.post(
         "/rag/ingest/text",
         json={
             "doc_id": doc_draft,
@@ -450,6 +498,8 @@ def test_e2e_finalized_filter_workflow(tmp_path: Path, monkeypatch: Any) -> None
             "metadata": {},
         },
     )
+    assert draft_response.status_code == 200
+    assert draft_response.json()["ok"] is True
 
     # Search should only return finalized content
     search_response = client.post(
@@ -461,8 +511,13 @@ def test_e2e_finalized_filter_workflow(tmp_path: Path, monkeypatch: Any) -> None
             "project_id": "test",
         },
     )
+    assert search_response.status_code == 200
     hits = search_response.json()["hits"]
 
+    # Finalized document SHOULD appear in results
+    final_in_results = any(hit["doc_id"] == doc_final for hit in hits)
+    assert final_in_results, "Finalized document not found in search results!"
+    
     # Draft document should NOT appear in results
     draft_in_results = any(hit["doc_id"] == doc_draft for hit in hits)
     assert not draft_in_results, "Non-finalized document appeared in search results!"
@@ -525,22 +580,24 @@ def test_e2e_idempotent_ingest_workflow(tmp_path: Path, monkeypatch: Any) -> Non
     }
 
     # First ingest
-    initial_count = _FakeQdrantStore.upsert_count
     response1 = client.post("/rag/ingest/text", json=doc_payload)
     assert response1.status_code == 200
-    count_after_first = _FakeQdrantStore.upsert_count
+    
+    # Count points for this doc after first ingest
+    points_after_first = [pt for pt in _FakeQdrantStore.all_points if pt.payload.get("doc_id") == "idempotent-test"]
+    count_after_first = len(points_after_first)
+    assert count_after_first >= 1, "First ingest produced no points"
 
     # Second ingest (identical)
     response2 = client.post("/rag/ingest/text", json=doc_payload)
     assert response2.status_code == 200
-    count_after_second = _FakeQdrantStore.upsert_count
-
-    # The second ingest should still upsert (Qdrant handles deduplication by ID)
-    # but the point count should reflect proper ID-based deduplication
-    chunks_first = count_after_first - initial_count
-    chunks_second = count_after_second - count_after_first
-    assert chunks_first >= 1
-    assert chunks_second >= 1  # Upserts still happen, but with same IDs
+    
+    # Count points for this doc after second ingest
+    points_after_second = [pt for pt in _FakeQdrantStore.all_points if pt.payload.get("doc_id") == "idempotent-test"]
+    count_after_second = len(points_after_second)
+    
+    # Idempotency: the number of stored points should remain the same (upsert replaces by ID)
+    assert count_after_second == count_after_first, f"Idempotency violation: {count_after_first} points after first ingest, {count_after_second} after second"
 
 
 def test_e2e_admin_health_and_diagnostics(tmp_path: Path, monkeypatch: Any) -> None:
