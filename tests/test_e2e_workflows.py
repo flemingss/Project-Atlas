@@ -65,13 +65,33 @@ class _FakeQdrantStore:
 
     def upsert_points(self, *, points: list[Any]) -> None:
         # Simulate Qdrant's upsert behavior: replace by ID
-        point_ids = {pt.id for pt in _FakeQdrantStore.all_points}
+        # Build a dictionary for O(n) lookup
+        existing_by_id = {pt.id: pt for pt in _FakeQdrantStore.all_points}
+        
+        # Update with new points (replaces existing by ID)
         for pt in points:
-            if pt.id in point_ids:
-                # Remove existing point with same ID
-                _FakeQdrantStore.all_points = [p for p in _FakeQdrantStore.all_points if p.id != pt.id]
-            _FakeQdrantStore.all_points.append(pt)
+            existing_by_id[pt.id] = pt
+        
+        # Reconstruct the list
+        _FakeQdrantStore.all_points = list(existing_by_id.values())
         _FakeQdrantStore.upsert_count += len(points)
+
+    def _extract_condition_value(self, condition: Any) -> tuple[str, Any] | None:
+        """Extract key and expected value from a filter condition.
+        
+        Returns (key, expected_value) tuple or None if condition cannot be parsed.
+        """
+        # Handle FieldCondition objects from qdrant_client
+        if hasattr(condition, 'key') and hasattr(condition, 'match'):
+            key = condition.key
+            expected = condition.match.value if hasattr(condition.match, 'value') else condition.match
+            return (key, expected)
+        # Handle dict format (for backward compatibility)
+        elif isinstance(condition, dict) and "key" in condition and "match" in condition:
+            key = condition["key"]
+            expected = condition["match"]["value"] if isinstance(condition["match"], dict) else condition["match"]
+            return (key, expected)
+        return None
 
     def search(self, *, query_vector: list[float], limit: int, must: list[Any]) -> list[QdrantHit]:
         _FakeQdrantStore.search_calls.append({"query_vector": query_vector, "limit": limit, "must": must})
@@ -82,21 +102,13 @@ class _FakeQdrantStore:
             # Check filter matching
             matches = True
             for condition in must:
-                # Handle FieldCondition objects from qdrant_client
-                if hasattr(condition, 'key') and hasattr(condition, 'match'):
-                    # FieldCondition object
-                    key = condition.key
-                    expected = condition.match.value if hasattr(condition.match, 'value') else condition.match
-                    if payload.get(key) != expected:
-                        matches = False
-                        break
-                elif isinstance(condition, dict) and "key" in condition and "match" in condition:
-                    # Dict format (for backward compatibility)
-                    key = condition["key"]
-                    expected = condition["match"]["value"] if isinstance(condition["match"], dict) else condition["match"]
-                    if payload.get(key) != expected:
-                        matches = False
-                        break
+                parsed = self._extract_condition_value(condition)
+                if parsed is None:
+                    continue
+                key, expected = parsed
+                if payload.get(key) != expected:
+                    matches = False
+                    break
             if matches and len(hits) < limit:
                 hits.append(
                     QdrantHit(
