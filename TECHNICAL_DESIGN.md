@@ -372,3 +372,9 @@ The minimum “human shakedown ready” bar:
 ## 9) Known documentation deltas to fix (repo alignment)
 
 - This document should be treated as the authoritative build-continuity doc; other docs should be adjusted to match.
+
+---
+
+## 10) Capabilities Audit
+
+The per-capability status checklist (Wired / Partial / Deferred / Unknown), with code entry points and documentation sources, is maintained in **[`CAPABILITIES_AUDIT.md`](CAPABILITIES_AUDIT.md)**. That document is the central tracking location for advertised vs implemented features.
