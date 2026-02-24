@@ -4,6 +4,10 @@ Local-first RAG system with a running FastAPI service (admin + RAG MVP), config 
 
 Design source of truth: `TECHNICAL_DESIGN.md` (build-continuity plan; current reality vs target end-state). `HLD.md` is retained as historical original intent.
 
+## Capabilities Audit
+
+The authoritative checklist of all advertised capabilities (status, code entry points, and doc sources) is maintained in **[`CAPABILITIES_AUDIT.md`](CAPABILITIES_AUDIT.md)**.
+
 ## Prereqs
 
 - Windows + Docker Desktop
