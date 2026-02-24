@@ -128,9 +128,8 @@ class MetadataNode:
         try:
             prompt = METADATA_TIER1_PROMPT.format(content=content[:1000])  # Limit length
 
-            # Call tier 1 model
-            # NOTE: Placeholder - full implementation would parse JSON response
             tags = await self._call_model(self.tier1_provider, self.tier1_model, prompt)
+            tags = self._validate_metadata_schema(tags, tier=1)
 
             self.diagnostics.log_info(
                 component="metadata",
@@ -162,14 +161,18 @@ class MetadataNode:
     async def _generate_tier2(self, content: str) -> MetadataResult:
         """Generate Tier 2 metadata using frontier/70B model."""
         if not self.tier2_provider or not self.tier2_model:
-            # Fallback to tier 1
+            # Fallback to tier 1 when tier 2 is not configured.
+            self.diagnostics.log_info(
+                component="metadata",
+                message="Tier 2 model not configured; falling back to tier 1",
+            )
             return await self._generate_tier1(content)
 
         try:
             prompt = METADATA_TIER2_PROMPT.format(content=content[:2000])  # More context
 
-            # Call tier 2 model
             tags = await self._call_model(self.tier2_provider, self.tier2_model, prompt)
+            tags = self._validate_metadata_schema(tags, tier=2)
 
             self.diagnostics.log_info(
                 component="metadata",
@@ -197,13 +200,7 @@ class MetadataNode:
     async def _call_model(
         self, provider: ILlmProvider, model: str, prompt: str
     ) -> dict[str, Any]:
-        """Call model to generate metadata.
-
-        NOTE: Placeholder implementation. Full version would:
-        - Call provider.generate()
-        - Parse JSON response
-        - Validate schema
-        """
+        """Call model to generate metadata, returning a validated JSON dict."""
         messages = [
             ChatMessage(role="system", content="You extract metadata and return JSON only."),
             ChatMessage(role="user", content=prompt),
@@ -224,3 +221,46 @@ class MetadataNode:
             "density": "general",
             "raw": raw[:5000],
         }
+
+    def _validate_metadata_schema(self, tags: dict[str, Any], *, tier: int) -> dict[str, Any]:
+        """Ensure required metadata fields are present with sensible defaults.
+
+        Required fields: topic (str), keywords (list[str]), density (str).
+        Tier-2 additionally expects: concepts, complexity_score, domain.
+        """
+        _REQUIRED_TIER1 = {"topic", "keywords", "density"}
+        _REQUIRED_TIER2 = {"concepts", "complexity_score", "domain"}
+
+        defaults: dict[str, Any] = {
+            "topic": "unknown",
+            "keywords": [],
+            "density": "general",
+        }
+        if tier >= 2:
+            defaults.update({"concepts": [], "complexity_score": 5, "domain": "general"})
+
+        required = _REQUIRED_TIER1 | (_REQUIRED_TIER2 if tier >= 2 else set())
+        missing = required - tags.keys()
+        if missing:
+            self.diagnostics.log_warning(
+                component="metadata",
+                message=f"Metadata response missing required fields: {missing}; applying defaults",
+                context={"tier": tier, "missing": sorted(missing)},
+            )
+            for k in missing:
+                tags[k] = defaults[k]
+
+        # Coerce keywords/concepts to lists if present but wrong type.
+        for list_field in ("keywords", "concepts"):
+            if list_field in tags:
+                val = tags[list_field]
+                if isinstance(val, list):
+                    pass  # already correct
+                elif isinstance(val, str):
+                    # Split comma-separated strings into a list.
+                    tags[list_field] = [v.strip() for v in val.split(",") if v.strip()]
+                else:
+                    # Non-string, non-list: convert to a single-element list.
+                    tags[list_field] = [val]
+
+        return tags

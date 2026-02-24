@@ -115,6 +115,12 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
         return out
 
     def _ledger_summary(session: Session) -> dict[str, Any]:
+        import datetime as _dt
+
+        # Compute 24h cutoff once as a timezone-aware datetime so all sub-queries use a
+        # consistent value and comparisons work correctly with DateTime(timezone=True) columns.
+        cutoff_24h: _dt.datetime = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=24)
+
         run_status = _group_count(session, label_col=WorkflowRun.status, from_table=WorkflowRun)
         run_node = _group_count(session, label_col=WorkflowRun.current_node, from_table=WorkflowRun)
         run_failed_codes = _group_count(
@@ -145,9 +151,23 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
         node_total = session.execute(select(func.count()).select_from(NodeRun)).scalar_one()
         hitl_total = session.execute(select(func.count()).select_from(HitlTaskRow)).scalar_one()
 
+        # Unique docs (distinct doc_id values across all runs)
+        docs_unique = session.execute(
+            select(func.count(func.distinct(WorkflowRun.doc_id))).select_from(WorkflowRun)
+        ).scalar_one()
+
+        # Runs created in the last 24 hours (uses cutoff_24h computed at function start)
+        runs_last_24h = session.execute(
+            select(func.count())
+            .select_from(WorkflowRun)
+            .where(WorkflowRun.created_at >= cutoff_24h)
+        ).scalar_one()
+
         return {
             "workflow_runs": {
                 "total": int(run_total),
+                "docs_unique": int(docs_unique),
+                "runs_last_24h": int(runs_last_24h),
                 "by_status": run_status,
                 "by_current_node": run_node,
                 "failed_by_error_code": run_failed_codes,
@@ -546,6 +566,8 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
     @r.get("/looking-glass/ledger/in-flight", response_model=list[WorkflowRunResponse])
     def looking_glass_in_flight(
         limit: int = Query(default=50, ge=1, le=500),
+        tenant_id: str | None = Query(default=None),
+        project_id: str | None = Query(default=None),
     ) -> list[WorkflowRunResponse]:
         with session_factory() as session:
             stmt = (
@@ -554,12 +576,18 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
                 .order_by(WorkflowRun.updated_at.desc(), WorkflowRun.id.desc())
                 .limit(int(limit))
             )
+            if tenant_id:
+                stmt = stmt.where(WorkflowRun.tenant_id == tenant_id)
+            if project_id:
+                stmt = stmt.where(WorkflowRun.project_id == project_id)
             rows = list(session.execute(stmt).scalars().all())
             return [to_run_response(r) for r in rows]
 
     @r.get("/looking-glass/ledger/failures")
     def looking_glass_failures(
         limit: int = Query(default=50, ge=1, le=500),
+        tenant_id: str | None = Query(default=None),
+        project_id: str | None = Query(default=None),
     ) -> dict[str, Any]:
         with session_factory() as session:
             run_stmt = (
@@ -568,6 +596,10 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
                 .order_by(WorkflowRun.updated_at.desc(), WorkflowRun.id.desc())
                 .limit(int(limit))
             )
+            if tenant_id:
+                run_stmt = run_stmt.where(WorkflowRun.tenant_id == tenant_id)
+            if project_id:
+                run_stmt = run_stmt.where(WorkflowRun.project_id == project_id)
             runs = list(session.execute(run_stmt).scalars().all())
 
             failures: list[dict[str, Any]] = []

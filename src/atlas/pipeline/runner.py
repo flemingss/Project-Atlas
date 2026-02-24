@@ -21,9 +21,10 @@ from atlas.pipeline.metadata import MetadataNode
 from atlas.pipeline.orchestrator import PipelineOrchestrator
 from atlas.pipeline.refine import RefineNode
 from atlas.pipeline.state import PipelineNode, create_pipeline_context
-from atlas.rag.chunking import chunk_markdown_semantic, chunk_text, infer_chunk_features
+from atlas.rag.chunking import chunk_markdown_semantic, chunk_text, chunk_text_hierarchical, infer_chunk_features
 from atlas.rag.deterministic import deterministic_chunk_id, sha256_hex
 from atlas.rag.normalize import normalize_markdown
+from atlas.schemas import FidelityFlag
 from atlas.settings import Settings
 from atlas.vectorstore.qdrant_store import QdrantStore
 from atlas.workflow_ledger import ArtifactRefCreateRequest, WorkflowRunCreateRequest, add_artifact_ref, create_workflow_run
@@ -175,6 +176,20 @@ def _json_ref(obj: Any) -> str:
         return json.dumps(obj, sort_keys=True)
     except Exception:
         return ""
+
+
+def _compute_fidelity_flag(*, judge: dict[str, Any], refine_retries: int, max_retries: int) -> str:
+    """Compute fidelity flag string from judge score and refine retry count."""
+    judge_score = int(judge.get("score") or 0) if judge else 0
+    if refine_retries >= max_retries:
+        return FidelityFlag.NEEDS_REVIEW.value
+    if not judge:
+        return FidelityFlag.VERIFIED.value  # No judge ran — pass-through, treat as verified
+    if judge_score >= 4:
+        return FidelityFlag.VERIFIED.value
+    if judge_score <= 2:
+        return FidelityFlag.LOW_CONFIDENCE.value
+    return FidelityFlag.PARTIAL.value
 
 
 async def ingest_text_via_pipeline(
@@ -406,6 +421,8 @@ async def ingest_text_via_pipeline(
 
     if chunk_strategy == "paragraph":
         chunks = chunk_text(text=ctx.state.markdown_projection, max_chars=max_chars)
+    elif chunk_strategy == "hierarchical":
+        chunks = chunk_text_hierarchical(text=ctx.state.markdown_projection, max_chars=max_chars)
     else:
         chunks = chunk_markdown_semantic(
             text=ctx.state.markdown_projection,
@@ -425,6 +442,16 @@ async def ingest_text_via_pipeline(
 
     judge = ctx.results.get("judge") or {}
     meta = ctx.results.get("metadata") or {}
+    limits_cfg = pipeline_cfg.get("limits") or {}
+    thresholds_cfg = pipeline_cfg.get("thresholds") or {}
+    max_retries_cfg = int(
+        limits_cfg.get("refine_max_retries", thresholds_cfg.get("refine_max_retries", 2))
+    )
+    fidelity_flag = _compute_fidelity_flag(
+        judge=judge,
+        refine_retries=int(ctx.state.refine_retries),
+        max_retries=max_retries_cfg,
+    )
 
     points: list[qm.PointStruct] = []
     manifest_lines: list[str] = []
@@ -465,6 +492,7 @@ async def ingest_text_via_pipeline(
             "judge_score": judge.get("score"),
             "judge_version": judge.get("judge_version"),
             "confidence_rationale": judge.get("confidence_rationale"),
+            "fidelity_flag": fidelity_flag,
             "metadata_tier": meta.get("tier"),
             "metadata_tags": meta.get("tags"),
             "created_at": now,
@@ -802,6 +830,8 @@ async def ingest_file_via_pipeline(
 
     if chunk_strategy == "paragraph":
         chunks = chunk_text(text=ctx.state.markdown_projection, max_chars=max_chars)
+    elif chunk_strategy == "hierarchical":
+        chunks = chunk_text_hierarchical(text=ctx.state.markdown_projection, max_chars=max_chars)
     else:
         chunks = chunk_markdown_semantic(
             text=ctx.state.markdown_projection,
@@ -821,6 +851,16 @@ async def ingest_file_via_pipeline(
 
     judge = ctx.results.get("judge") or {}
     meta = ctx.results.get("metadata") or {}
+    limits_cfg = pipeline_cfg.get("limits") or {}
+    thresholds_cfg = pipeline_cfg.get("thresholds") or {}
+    max_retries_cfg = int(
+        limits_cfg.get("refine_max_retries", thresholds_cfg.get("refine_max_retries", 2))
+    )
+    fidelity_flag = _compute_fidelity_flag(
+        judge=judge,
+        refine_retries=int(ctx.state.refine_retries),
+        max_retries=max_retries_cfg,
+    )
 
     points: list[qm.PointStruct] = []
     manifest_lines: list[str] = []
@@ -862,6 +902,7 @@ async def ingest_file_via_pipeline(
             "judge_score": judge.get("score"),
             "judge_version": judge.get("judge_version"),
             "confidence_rationale": judge.get("confidence_rationale"),
+            "fidelity_flag": fidelity_flag,
             "metadata_tier": meta.get("tier"),
             "metadata_tags": meta.get("tags"),
             "created_at": now,
@@ -966,6 +1007,8 @@ async def resume_completed_hitl_task(
     task_id: int,
 ) -> dict[str, Any]:
     """Resume a pipeline run from a completed HITL task and commit finalized chunks."""
+    import datetime as _dt
+
     from atlas.hitl_ledger import get_hitl_task
     from atlas.models import WorkflowRun
 
@@ -980,6 +1023,11 @@ async def resume_completed_hitl_task(
         if run is None:
             raise KeyError("run not found")
 
+        # Guard against double-resume: if the run already completed (i.e. was previously
+        # resumed and committed chunks), refuse to re-run to avoid duplicate upserts.
+        if run.status == "completed":
+            raise ValueError("pipeline run already completed; cannot resume a completed run")
+
         settings = Settings()
         is_finalized = bool((run.meta or {}).get("is_finalized", True))
         source_mime_type = str((run.meta or {}).get("source_mime_type", "text/plain"))
@@ -992,8 +1040,21 @@ async def resume_completed_hitl_task(
         if markdown.strip() == "":
             raise ValueError("task has empty after_md")
 
+        resumed_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
         run.status = "running"
         run.current_node = "ingest"
+        # Record resume provenance in run metadata.
+        m = run.meta or {}
+        m["hitl_task_id"] = int(task_id)
+        m["resumed_at"] = resumed_at
+        run.meta = m
+        # Record resume timestamp on the HITL task itself (best-effort).
+        try:
+            tm = task.meta or {}
+            tm["resumed_at"] = resumed_at
+            task.meta = tm
+        except Exception:
+            pass
         session.commit()
 
     # Re-run pipeline + commit using the existing run_id.
