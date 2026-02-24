@@ -117,8 +117,9 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
     def _ledger_summary(session: Session) -> dict[str, Any]:
         import datetime as _dt
 
-        # Compute 24h cutoff once so all sub-queries use a consistent timestamp.
-        cutoff_24h = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=24)).isoformat().replace("+00:00", "Z")
+        # Compute 24h cutoff once as a timezone-aware datetime so all sub-queries use a
+        # consistent value and comparisons work correctly with DateTime(timezone=True) columns.
+        cutoff_24h: _dt.datetime = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=24)
 
         run_status = _group_count(session, label_col=WorkflowRun.status, from_table=WorkflowRun)
         run_node = _group_count(session, label_col=WorkflowRun.current_node, from_table=WorkflowRun)

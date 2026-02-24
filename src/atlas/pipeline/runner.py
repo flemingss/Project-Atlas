@@ -178,11 +178,10 @@ def _json_ref(obj: Any) -> str:
         return ""
 
 
-def _compute_fidelity_flag(*, judge: dict[str, Any], refine: dict[str, Any], max_retries: int) -> str:
-    """Compute fidelity flag string from judge + refine context results."""
-    retry_count = int(refine.get("retry_count", 0)) if refine else 0
+def _compute_fidelity_flag(*, judge: dict[str, Any], refine_retries: int, max_retries: int) -> str:
+    """Compute fidelity flag string from judge score and refine retry count."""
     judge_score = int(judge.get("score") or 0) if judge else 0
-    if retry_count >= max_retries:
+    if refine_retries >= max_retries:
         return FidelityFlag.NEEDS_REVIEW.value
     if not judge:
         return FidelityFlag.VERIFIED.value  # No judge ran — pass-through, treat as verified
@@ -443,9 +442,16 @@ async def ingest_text_via_pipeline(
 
     judge = ctx.results.get("judge") or {}
     meta = ctx.results.get("metadata") or {}
-    refine = ctx.results.get("refine") or {}
-    max_retries_cfg = int(pipeline_cfg.get("thresholds", {}).get("refine_max_retries", 2))
-    fidelity_flag = _compute_fidelity_flag(judge=judge, refine=refine, max_retries=max_retries_cfg)
+    limits_cfg = pipeline_cfg.get("limits") or {}
+    thresholds_cfg = pipeline_cfg.get("thresholds") or {}
+    max_retries_cfg = int(
+        limits_cfg.get("refine_max_retries", thresholds_cfg.get("refine_max_retries", 2))
+    )
+    fidelity_flag = _compute_fidelity_flag(
+        judge=judge,
+        refine_retries=int(ctx.state.refine_retries),
+        max_retries=max_retries_cfg,
+    )
 
     points: list[qm.PointStruct] = []
     manifest_lines: list[str] = []
@@ -845,9 +851,16 @@ async def ingest_file_via_pipeline(
 
     judge = ctx.results.get("judge") or {}
     meta = ctx.results.get("metadata") or {}
-    refine = ctx.results.get("refine") or {}
-    max_retries_cfg = int(pipeline_cfg.get("thresholds", {}).get("refine_max_retries", 2))
-    fidelity_flag = _compute_fidelity_flag(judge=judge, refine=refine, max_retries=max_retries_cfg)
+    limits_cfg = pipeline_cfg.get("limits") or {}
+    thresholds_cfg = pipeline_cfg.get("thresholds") or {}
+    max_retries_cfg = int(
+        limits_cfg.get("refine_max_retries", thresholds_cfg.get("refine_max_retries", 2))
+    )
+    fidelity_flag = _compute_fidelity_flag(
+        judge=judge,
+        refine_retries=int(ctx.state.refine_retries),
+        max_retries=max_retries_cfg,
+    )
 
     points: list[qm.PointStruct] = []
     manifest_lines: list[str] = []
