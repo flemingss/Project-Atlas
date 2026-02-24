@@ -57,18 +57,7 @@ def auth_gate(message: str = "Admin token required for this section.") -> None:
     st.info(message)
 
 
-def field_row(*labels_and_widgets: Any) -> None:
-    """
-    Helper that documents intent: always use theme.COL_HALF for two-column input rows.
-    Not a wrapper — just ensures callers use the named constant.
-    Documented in the style guide.
-    """
-    # This is a documentation-intent function.
-    # Callers should use: col1, col2 = st.columns(theme.COL_HALF)
-    pass
-
-
-def action_bar(*button_specs: dict) -> list[bool]:
+def action_bar(*button_specs: dict[str, Any]) -> list[bool]:
     """
     Renders a row of equal-width full-container-width buttons.
     Each spec is {"label": str, "disabled": bool (optional), "key": str (optional)}.
@@ -80,6 +69,8 @@ def action_bar(*button_specs: dict) -> list[bool]:
     cols = st.columns([1] * len(button_specs))
     results: list[bool] = []
     for col, spec in zip(cols, button_specs):
+        if "label" not in spec:
+            raise ValueError("Button spec must include 'label' key")
         with col:
             clicked = st.button(
                 spec["label"],
@@ -154,11 +145,11 @@ def search_hit_card(
     """
     with st.expander(title, expanded=(i == 1)):
         st.write(snippet)
-        metric_labels = list(metrics.keys())
-        metric_values = list(metrics.values())
-        cols = st.columns(theme.COL_QUARTERS)
-        for col, lbl, val in zip(cols, metric_labels, metric_values):
-            col.metric(lbl, val)
+        metric_items = list(metrics.items())
+        if metric_items:
+            cols = st.columns(len(metric_items))
+            for col, (lbl, val) in zip(cols, metric_items):
+                col.metric(lbl, val)
         detail_expander("Details (raw)", data=raw_data)
 
 

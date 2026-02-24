@@ -76,10 +76,6 @@ def _render_response(resp: httpx.Response) -> None:
     st.code(resp.text)
 
 
-def _status_badge(label: str, *, ok: bool, detail: str = "") -> None:
-    components.status_pill(label, ok=ok, detail=detail)
-
-
 def _summarize_ingest(resp_json: dict[str, Any] | None) -> tuple[str, str]:
     if not resp_json:
         return "Ingest completed", ""
@@ -746,8 +742,10 @@ def main() -> None:
 
             current = st.session_state.get("hitl_current")
             if current:
-                st.subheader(f"Review task #{int(current['id'])}")
-                st.caption(f"Document: {current.get('doc_id')}  v{current.get('doc_version')}  •  status={current.get('status')}")
+                components.section_header(
+                    f"Review task #{int(current['id'])}",
+                    caption=f"Document: {current.get('doc_id')}  v{current.get('doc_version')}  •  status={current.get('status')}",
+                )
 
                 left, right = st.columns(theme.COL_HALF)
                 with left:
@@ -811,7 +809,7 @@ def main() -> None:
                         _render_response(resp)
 
                 if action_results[2]:
-                    st.json(current)
+                    components.detail_expander("Task details (raw)", data=current)
 
     # ── Versions & Export ────────────────────────────────────────────────────
     with tabs[4]:

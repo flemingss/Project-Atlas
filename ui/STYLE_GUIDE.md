@@ -37,8 +37,11 @@ All colour constants live in `ui/theme.py`. **Never hardcode hex values** anywhe
 
 ## 3. Hard Rules — What Is Never Allowed
 
-- **No `unsafe_allow_html=True` outside `styles.py`.**
-  All CSS injection is centralised in `ui/styles.py`. Add CSS there.
+- **No `unsafe_allow_html=True` outside `styles.py` and `components.py`.**
+  All CSS injection is centralised in `ui/styles.py`. `components.py` may use
+  `unsafe_allow_html=True` only for structural HTML wrappers that apply
+  predefined CSS classes (e.g., `.atlas-page-header`, `.atlas-section-header`,
+  `.atlas-danger`) and must not wrap user-supplied content.
 
 - **No raw `st.columns([1,1])` for action button rows — use `action_bar()`.**
   `action_bar()` guarantees `use_container_width=True` on every button.

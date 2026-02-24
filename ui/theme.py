@@ -31,8 +31,8 @@ MAX_DIAG_EVENTS     = 200
 SIDEBAR_SECTION_GROUPS = ["Connection", "Status", "Tools"]
 
 # ── Tab labels ─────────────────────────────────────────────────────────────────
-TAB_UPLOAD   = "📄 Upload"
-TAB_SEARCH   = "🔍 Search"
-TAB_HISTORY  = "📋 History"
-TAB_REVIEW   = "✅ Review"
-TAB_VERSIONS = "📦 Versions & Export"
+TAB_UPLOAD   = "Upload"
+TAB_SEARCH   = "Search"
+TAB_HISTORY  = "History"
+TAB_REVIEW   = "Review"
+TAB_VERSIONS = "Versions & Export"
