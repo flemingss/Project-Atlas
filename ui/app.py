@@ -12,6 +12,9 @@ from typing import Any
 import httpx
 import streamlit as st
 
+from ui import components, theme
+from ui.styles import inject_styles
+
 
 def _ui_upload_timeout_s() -> float:
     raw = (os.environ.get("ATLAS_UI_UPLOAD_TIMEOUT_S") or "").strip()
@@ -74,12 +77,7 @@ def _render_response(resp: httpx.Response) -> None:
 
 
 def _status_badge(label: str, *, ok: bool, detail: str = "") -> None:
-    if ok:
-        st.success(f"{label}: OK")
-    else:
-        st.error(f"{label}: Not OK")
-    if detail:
-        st.caption(detail)
+    components.status_pill(label, ok=ok, detail=detail)
 
 
 def _summarize_ingest(resp_json: dict[str, Any] | None) -> tuple[str, str]:
@@ -124,7 +122,7 @@ def _diag_add(event: dict[str, Any]) -> None:
     _diag_init()
     event["ts"] = time.strftime("%Y-%m-%d %H:%M:%S")
     st.session_state["diag_events"].append(event)
-    st.session_state["diag_events"] = st.session_state["diag_events"][-200:]
+    st.session_state["diag_events"] = st.session_state["diag_events"][-theme.MAX_DIAG_EVENTS:]
 
 def _diag_ensure_session_started(api_base: str) -> None:
     _diag_init()
@@ -208,16 +206,18 @@ def _request_json_diag(
 
 def main() -> None:
     st.set_page_config(page_title="Atlas Operator Console", layout="wide")
-    st.title("Project Atlas")
-    st.caption("Operator Console")
+    inject_styles()
+
+    components.page_header("Project Atlas", subtitle="Operator Console")
 
     with st.sidebar:
+        # ── Section 1: Connection ────────────────────────────────────────────
         st.header("Connection")
         api_url = st.text_input("API URL", value=os.environ.get("ATLAS_API_URL", "http://127.0.0.1:18080"))
 
         st.session_state.setdefault("admin_token", _default_admin_token())
         admin_token = st.text_input(
-            "Admin Token (for /admin/*)",
+            "Admin Token",
             type="password",
             key="admin_token",
         )
@@ -230,35 +230,10 @@ def main() -> None:
         api = _base_url(api_url)
         admin_headers = _admin_headers(admin_token)
 
-        st.divider()
-        with st.expander("Diagnostics", expanded=False):
-            st.caption("Records recent API calls and exceptions from this UI session.")
-            _diag_init()
-            _diag_ensure_session_started(api)
+        st.markdown("---")
 
-            c1, c2, c3 = st.columns([1, 1, 1])
-            with c1:
-                if st.button("Show", use_container_width=True):
-                    st.session_state["show_diagnostics"] = True
-            with c2:
-                if st.button("Hide", use_container_width=True):
-                    st.session_state["show_diagnostics"] = False
-            with c3:
-                if st.button("Clear", use_container_width=True):
-                    st.session_state["diag_events"] = []
-                    st.session_state["diag_session_started"] = False
-                    _diag_ensure_session_started(api)
-
-            st.download_button(
-                "Download logs (json)",
-                data=_diag_bundle(api),
-                file_name="atlas_ui_diagnostics.json",
-                mime="application/json",
-                use_container_width=True,
-            )
-
-        st.divider()
-        st.subheader("Status")
+        # ── Section 2: Status ────────────────────────────────────────────────
+        st.header("Status")
         if st.button("Test connection", use_container_width=True):
             with st.spinner("Checking API..."):
                 h_resp, h_json = _request_json_diag(label="health", method="GET", url=f"{api}/health")
@@ -272,19 +247,64 @@ def main() -> None:
                     )
                 st.session_state["admin_status"] = (a_resp.status_code, a_json, a_resp.text)
 
-        if admin_headers:
-            st.divider()
-            with st.expander("Danger zone", expanded=False):
-                st.caption("Clears Postgres + Qdrant so you can re-import from scratch.")
-                st.warning("This is destructive. Existing runs/docs/chunks will be lost.")
+        hs = st.session_state.get("health_status")
+        if hs:
+            code, h_json, raw = hs
+            components.status_pill("API", ok=int(code) < 400, detail=("" if int(code) < 400 else raw))
+            if isinstance(h_json, dict):
+                st.caption(f"env={h_json.get('env')} status={h_json.get('status')}")
 
+        if not admin_headers:
+            st.info("Viewer mode: Admin features are disabled.")
+        else:
+            ads = st.session_state.get("admin_status")
+            if ads:
+                code, _, raw = ads
+                components.status_pill("Admin", ok=int(code) < 400, detail=("" if int(code) < 400 else raw))
+
+        st.markdown("---")
+
+        # ── Section 3: Tools ─────────────────────────────────────────────────
+        st.header("Tools")
+        with st.expander("Diagnostics", expanded=False):
+            st.caption("Records recent API calls and exceptions from this UI session.")
+            _diag_init()
+            _diag_ensure_session_started(api)
+
+            clicked = components.action_bar(
+                {"label": "Show", "key": "diag_show"},
+                {"label": "Hide", "key": "diag_hide"},
+                {"label": "Clear", "key": "diag_clear"},
+            )
+            if clicked[0]:
+                st.session_state["show_diagnostics"] = True
+            if clicked[1]:
+                st.session_state["show_diagnostics"] = False
+            if clicked[2]:
+                st.session_state["diag_events"] = []
+                st.session_state["diag_session_started"] = False
+                _diag_ensure_session_started(api)
+
+            st.download_button(
+                "Download logs (json)",
+                data=_diag_bundle(api),
+                file_name="atlas_ui_diagnostics.json",
+                mime="application/json",
+                use_container_width=True,
+            )
+
+        if admin_headers:
+            with components.danger_zone(
+                caption="Clears Postgres + Qdrant so you can re-import from scratch.",
+                warning="This is destructive. Existing runs/docs/chunks will be lost.",
+            ):
                 confirm = st.text_input("Type RESET to confirm", value="", key="db_reset_confirm")
-                c1, c2, c3 = st.columns([1, 1, 1])
-                with c1:
+                col1, col2, col3 = st.columns(theme.COL_THIRDS)
+                with col1:
                     do_pg = st.checkbox("Reset Postgres", value=True, key="db_reset_pg")
-                with c2:
+                with col2:
                     do_qd = st.checkbox("Clear Qdrant", value=True, key="db_reset_qdrant")
-                with c3:
+                with col3:
                     do_art = st.checkbox("Clear artifacts", value=False, key="db_reset_artifacts")
 
                 if st.button("Reset DB", use_container_width=True, key="db_reset_btn"):
@@ -311,232 +331,218 @@ def main() -> None:
                     else:
                         st.code(resp.text)
 
-        hs = st.session_state.get("health_status")
-        if hs:
-            code, h_json, raw = hs
-            _status_badge("API", ok=int(code) < 400, detail=("" if int(code) < 400 else raw))
-            if isinstance(h_json, dict):
-                st.caption(f"env={h_json.get('env')} status={h_json.get('status')}")
+    tabs = st.tabs([theme.TAB_UPLOAD, theme.TAB_SEARCH, theme.TAB_HISTORY, theme.TAB_REVIEW, theme.TAB_VERSIONS])  # type: ignore[arg-type]
 
-        if not admin_headers:
-            st.info("Viewer mode: Admin features are disabled.")
-        else:
-            ads = st.session_state.get("admin_status")
-            if ads:
-                code, _, raw = ads
-                _status_badge("Admin", ok=int(code) < 400, detail=("" if int(code) < 400 else raw))
-
-    tabs = st.tabs(["Upload", "Search", "History", "Review (HITL)", "Versions & Export"])  # type: ignore[arg-type]
-
-    # --- Upload ---
+    # ── Upload ──────────────────────────────────────────────────────────────
     with tabs[0]:
-        st.subheader("Upload a document")
-        st.caption("Upload a file to index it for search.")
+        components.section_header("Upload a document", caption="Index a file or paste text for search.")
 
-        uploaded = st.file_uploader("File", type=None)
-        default_name = ""
-        if uploaded is not None:
-            default_name = os.path.splitext(uploaded.name)[0]
-
-        col1, col2 = st.columns(2)
-        doc_name = col1.text_input(
-            "Document name",
-            value=st.session_state.get("last_doc_name", default_name),
-            key="upload_file_doc_name",
-        )
-        doc_version = col2.text_input(
-            "Version",
-            value=st.session_state.get("last_doc_version", "1"),
-            key="upload_file_doc_version",
+        upload_mode = st.radio(
+            "Source",
+            options=["📁 Upload File", "📝 Paste Text"],
+            horizontal=True,
+            label_visibility="collapsed",
         )
 
-        use_custom_id = st.checkbox("Use custom document ID", value=False, key="upload_file_use_custom_id")
-        if use_custom_id:
-            doc_id = st.text_input(
-                "Document ID",
-                value=st.session_state.get("last_doc_id", ""),
-                key="upload_file_doc_id",
-            )
-        else:
-            doc_id = _stable_doc_id_from_name(
-                f"{(corpus_id or '').strip()}:{doc_name or (uploaded.name if uploaded else 'document')}"
-            )
-            st.caption(f"Document ID: {doc_id}")
+        if upload_mode == "📁 Upload File":
+            uploaded = st.file_uploader("File", type=None)
+            default_name = ""
+            if uploaded is not None:
+                default_name = os.path.splitext(uploaded.name)[0]
 
-        with st.expander("Advanced upload options", expanded=False):
-            source_mime_type = st.text_input(
-                "MIME type override (optional)",
-                value="",
-                key="upload_file_mime_override",
+            col1, col2 = st.columns(theme.COL_HALF)
+            doc_name = col1.text_input(
+                "Document name",
+                value=st.session_state.get("last_doc_name", default_name),
+                key="upload_file_doc_name",
             )
-            col4, col5 = st.columns(2)
-            is_finalized = col4.checkbox(
-                "Searchable",
-                value=bool(st.session_state.get("last_is_finalized", True)),
-                help="If enabled, this document can appear in search results.",
-                key="upload_file_is_finalized",
-            )
-            is_sensitive = col5.checkbox(
-                "Sensitive",
-                value=bool(st.session_state.get("last_is_sensitive", True)),
-                help="If enabled, the pipeline may route content to human review depending on thresholds.",
-                key="upload_file_is_sensitive",
+            doc_version = col2.text_input(
+                "Version",
+                value=st.session_state.get("last_doc_version", "1"),
+                key="upload_file_doc_version",
             )
 
-        can_upload = uploaded is not None and bool((doc_name or "").strip())
-        if st.button("Upload & index", disabled=not can_upload, use_container_width=True):
-            if uploaded is None:
-                st.warning("Pick a file first")
+            use_custom_id = st.checkbox("Use custom document ID", value=False, key="upload_file_use_custom_id")
+            if use_custom_id:
+                doc_id = st.text_input(
+                    "Document ID",
+                    value=st.session_state.get("last_doc_id", ""),
+                    key="upload_file_doc_id",
+                )
             else:
-                st.session_state["last_doc_name"] = doc_name
-                st.session_state["last_doc_id"] = doc_id
-                st.session_state["last_doc_version"] = doc_version
-                st.session_state["last_is_finalized"] = bool(is_finalized)
-                st.session_state["last_is_sensitive"] = bool(is_sensitive)
+                doc_id = _stable_doc_id_from_name(
+                    f"{(corpus_id or '').strip()}:{doc_name or (uploaded.name if uploaded else 'document')}"
+                )
+                st.caption(f"Document ID: {doc_id}")
 
-                files = {
-                    "file": (
-                        uploaded.name,
-                        uploaded.getvalue(),
-                        uploaded.type or "application/octet-stream",
-                    )
-                }
-                data = {
-                    "doc_id": doc_id,
-                    "doc_version": doc_version,
+            with st.expander("Advanced upload options", expanded=False):
+                source_mime_type = st.text_input(
+                    "MIME type override (optional)",
+                    value="",
+                    key="upload_file_mime_override",
+                )
+                col4, col5 = st.columns(theme.COL_HALF)
+                is_finalized = col4.checkbox(
+                    "Searchable",
+                    value=bool(st.session_state.get("last_is_finalized", True)),
+                    help="If enabled, this document can appear in search results.",
+                    key="upload_file_is_finalized",
+                )
+                is_sensitive = col5.checkbox(
+                    "Sensitive",
+                    value=bool(st.session_state.get("last_is_sensitive", True)),
+                    help="If enabled, the pipeline may route content to human review depending on thresholds.",
+                    key="upload_file_is_sensitive",
+                )
+
+            can_upload = uploaded is not None and bool((doc_name or "").strip())
+            if st.button("Upload & index", disabled=not can_upload, use_container_width=True):
+                if uploaded is None:
+                    st.warning("Pick a file first")
+                else:
+                    st.session_state["last_doc_name"] = doc_name
+                    st.session_state["last_doc_id"] = doc_id
+                    st.session_state["last_doc_version"] = doc_version
+                    st.session_state["last_is_finalized"] = bool(is_finalized)
+                    st.session_state["last_is_sensitive"] = bool(is_sensitive)
+
+                    files = {
+                        "file": (
+                            uploaded.name,
+                            uploaded.getvalue(),
+                            uploaded.type or "application/octet-stream",
+                        )
+                    }
+                    data = {
+                        "doc_id": doc_id,
+                        "doc_version": doc_version,
+                        "tenant_id": tenant_id,
+                        "project_id": project_id,
+                        "corpus_id": corpus_id,
+                        "is_finalized": json.dumps(bool(is_finalized)),
+                        "is_sensitive": json.dumps(bool(is_sensitive)),
+                    }
+                    if source_mime_type.strip():
+                        data["source_mime_type"] = source_mime_type.strip()
+
+                    with st.spinner("Uploading and indexing..."):
+                        with httpx.Client(timeout=_ui_upload_timeout_s()) as client:
+                            start = time.perf_counter()
+                            resp = client.post(f"{api}/rag/ingest/file", files=files, data=data)
+                            elapsed_ms = int((time.perf_counter() - start) * 1000)
+                            _diag_add(
+                                {
+                                    "type": "http",
+                                    "label": "ingest/file",
+                                    "method": "POST",
+                                    "url": f"{api}/rag/ingest/file",
+                                    "status": int(resp.status_code),
+                                    "elapsed_ms": elapsed_ms,
+                                }
+                            )
+
+                    if resp.status_code >= 400:
+                        st.error(f"{resp.status_code}: {resp.text}")
+                        st.stop()
+
+                    payload = resp.json() if _is_json_response(resp) else {}
+                    title, detail = _summarize_ingest(payload if isinstance(payload, dict) else None)
+                    components.ingest_result(title, detail)
+
+                    if admin_headers:
+                        try:
+                            r_resp, r_data = _request_json_diag(
+                                label="admin runs",
+                                method="GET",
+                                url=f"{api}/admin/runs",
+                                headers=admin_headers,
+                                params={"limit": 50},
+                            )
+                            if r_resp.status_code < 400 and isinstance(r_data, list):
+                                match = None
+                                for r in r_data:
+                                    if str(r.get("doc_id")) == str(doc_id) and str(r.get("doc_version")) == str(doc_version):
+                                        match = r
+                                        break
+                                if match and match.get("id") is not None:
+                                    st.info(f"Latest run: #{int(match['id'])}")
+                                    st.session_state["last_run_id"] = int(match["id"])
+                        except Exception:
+                            pass
+
+                    with st.expander("Details (raw)", expanded=False):
+                        _render_response(resp)
+
+        else:  # Paste Text
+            col_t1, col_t2 = st.columns(theme.COL_HALF)
+            text_doc_name = col_t1.text_input(
+                "Document name",
+                value=st.session_state.get("last_text_doc_name", "Quick note"),
+                key="upload_text_doc_name",
+            )
+            text_doc_version = col_t2.text_input(
+                "Version",
+                value=st.session_state.get("last_text_doc_version", "1"),
+                key="upload_text_doc_version",
+            )
+            text_doc_id = _stable_doc_id_from_name(
+                f"{(corpus_id or '').strip()}:{((text_doc_name or '').strip() or 'Quick note')}"
+            )
+            st.caption(f"Document ID: {text_doc_id}")
+            text = st.text_area(
+                "Content",
+                height=theme.TEXT_AREA_SM,
+                value="# Hello\n\nPaste content here.",
+                key="upload_text_body",
+            )
+            text_mime = st.selectbox(
+                "Format",
+                options=["text/plain", "text/markdown"],
+                index=1,
+                key="upload_text_mime",
+            )
+
+            # Re-use finalized/sensitive from file upload section defaults
+            is_finalized = bool(st.session_state.get("last_is_finalized", True))
+            is_sensitive = bool(st.session_state.get("last_is_sensitive", True))
+
+            if st.button("Index text", use_container_width=True):
+                st.session_state["last_text_doc_name"] = text_doc_name
+                st.session_state["last_text_doc_version"] = text_doc_version
+                payload = {
+                    "doc_id": text_doc_id,
+                    "doc_version": text_doc_version,
+                    "text": text,
                     "tenant_id": tenant_id,
                     "project_id": project_id,
                     "corpus_id": corpus_id,
-                    "is_finalized": json.dumps(bool(is_finalized)),
-                    "is_sensitive": json.dumps(bool(is_sensitive)),
+                    "is_finalized": is_finalized,
+                    "is_sensitive": is_sensitive,
+                    "source_mime_type": text_mime,
+                    "metadata": {},
                 }
-                if source_mime_type.strip():
-                    data["source_mime_type"] = source_mime_type.strip()
-
-                with st.spinner("Uploading and indexing..."):
-                    with httpx.Client(timeout=_ui_upload_timeout_s()) as client:
-                        start = time.perf_counter()
-                        resp = client.post(f"{api}/rag/ingest/file", files=files, data=data)
-                        elapsed_ms = int((time.perf_counter() - start) * 1000)
-                        _diag_add(
-                            {
-                                "type": "http",
-                                "label": "ingest/file",
-                                "method": "POST",
-                                "url": f"{api}/rag/ingest/file",
-                                "status": int(resp.status_code),
-                                "elapsed_ms": elapsed_ms,
-                            }
-                        )
-
+                with st.spinner("Indexing..."):
+                    resp, data = _request_json_diag(
+                        label="ingest/text",
+                        method="POST",
+                        url=f"{api}/rag/ingest/text",
+                        json_body=payload,
+                        timeout_s=120.0,
+                    )
                 if resp.status_code >= 400:
                     st.error(f"{resp.status_code}: {resp.text}")
                     st.stop()
 
-                payload = resp.json() if _is_json_response(resp) else {}
-                title, detail = _summarize_ingest(payload if isinstance(payload, dict) else None)
-                st.success(title)
-                if detail:
-                    st.caption(detail)
+                title, detail = _summarize_ingest(data if isinstance(data, dict) else None)
+                components.ingest_result(title, detail)
+                components.detail_expander("Details (raw)", data=data)
 
-                if admin_headers:
-                    try:
-                        r_resp, r_data = _request_json_diag(
-                            label="admin runs",
-                            method="GET",
-                            url=f"{api}/admin/runs",
-                            headers=admin_headers,
-                            params={"limit": 50},
-                        )
-                        if r_resp.status_code < 400 and isinstance(r_data, list):
-                            match = None
-                            for r in r_data:
-                                if str(r.get("doc_id")) == str(doc_id) and str(r.get("doc_version")) == str(doc_version):
-                                    match = r
-                                    break
-                            if match and match.get("id") is not None:
-                                st.info(f"Latest run: #{int(match['id'])}")
-                                st.session_state["last_run_id"] = int(match["id"])
-                    except Exception:
-                        pass
-
-                with st.expander("Details (raw)", expanded=False):
-                    _render_response(resp)
-
-        st.divider()
-        st.subheader("Paste text")
-        col_t1, col_t2 = st.columns(2)
-        text_doc_name = col_t1.text_input(
-            "Document name",
-            value=st.session_state.get("last_text_doc_name", "Quick note"),
-            key="upload_text_doc_name",
-        )
-        text_doc_version = col_t2.text_input(
-            "Version",
-            value=st.session_state.get("last_text_doc_version", "1"),
-            key="upload_text_doc_version",
-        )
-        text_doc_id = _stable_doc_id_from_name(
-            f"{(corpus_id or '').strip()}:{((text_doc_name or '').strip() or 'Quick note')}"
-        )
-        st.caption(f"Document ID: {text_doc_id}")
-        text = st.text_area(
-            "text",
-            height=180,
-            value="# Hello\n\nPaste content here.",
-            key="upload_text_body",
-        )
-        text_mime = st.selectbox(
-            "source_mime_type",
-            options=["text/plain", "text/markdown"],
-            index=1,
-            key="upload_text_mime",
-        )
-
-        if st.button("Index text", use_container_width=True):
-            st.session_state["last_text_doc_name"] = text_doc_name
-            st.session_state["last_text_doc_version"] = text_doc_version
-            payload = {
-                "doc_id": text_doc_id,
-                "doc_version": text_doc_version,
-                "text": text,
-                "tenant_id": tenant_id,
-                "project_id": project_id,
-                "corpus_id": corpus_id,
-                "is_finalized": bool(is_finalized),
-                "is_sensitive": bool(is_sensitive),
-                "source_mime_type": text_mime,
-                "metadata": {},
-            }
-            with st.spinner("Indexing..."):
-                resp, data = _request_json_diag(
-                    label="ingest/text",
-                    method="POST",
-                    url=f"{api}/rag/ingest/text",
-                    json_body=payload,
-                    timeout_s=120.0,
-                )
-            if resp.status_code >= 400:
-                st.error(f"{resp.status_code}: {resp.text}")
-                st.stop()
-
-            title, detail = _summarize_ingest(data if isinstance(data, dict) else None)
-            st.success(title)
-            if detail:
-                st.caption(detail)
-            with st.expander("Details (raw)", expanded=False):
-                if data is not None:
-                    st.json(data)
-                else:
-                    _render_response(resp)
-
-    # --- Search ---
+    # ── Search ──────────────────────────────────────────────────────────────
     with tabs[1]:
-        st.subheader("Search")
-        st.caption("Ask a question and see matching snippets.")
-        col1, col2 = st.columns(2)
+        components.section_header("Search", caption="Ask a question and see matching snippets.")
+        col1, col2 = st.columns(theme.COL_HALF)
         query = col1.text_input("Question", value=st.session_state.get("last_query", ""))
-        top_k = col2.number_input("top_k", min_value=1, max_value=50, value=5)
+        top_k = col2.number_input("Max results", min_value=1, max_value=50, value=5)
 
         query_s = (query or "").strip()
         if st.button("Search", disabled=not bool(query_s), use_container_width=True):
@@ -561,7 +567,7 @@ def main() -> None:
                 _render_response(resp)
             else:
                 hits = (data or {}).get("hits") or []
-                st.caption(f"hits: {len(hits)}")
+                components.section_header(f"{len(hits)} results found")
                 for i, h in enumerate(hits, start=1):
                     payload_h = h.get("payload") or {}
                     doc_id_h = h.get("doc_id")
@@ -569,28 +575,25 @@ def main() -> None:
                     filename_h = payload_h.get("source_filename") or ""
                     score = h.get("score")
                     snippet = (h.get("text") or "").strip().replace("\n", " ")
-                    if len(snippet) > 280:
-                        snippet = snippet[:280] + "…"
-                    title = f"#{i}  {filename_h or doc_id_h}  (v{doc_ver_h})  score={score}"
-                    with st.expander(title, expanded=(i == 1)):
-                        st.write(snippet)
-                        cols = st.columns(4)
-                        cols[0].metric("Version", str(doc_ver_h))
-                        cols[1].metric("Chunk", str(h.get("chunk_index")))
-                        cols[2].metric("Score", f"{float(score or 0.0):.3f}")
-                        cols[3].metric("Doc", str(doc_id_h))
-                        with st.expander("Details (raw)", expanded=False):
-                            st.json(h)
+                    if len(snippet) > theme.MAX_SNIPPET_CHARS:
+                        snippet = snippet[:theme.MAX_SNIPPET_CHARS] + "…"
+                    card_title = f"#{i} — {filename_h or doc_id_h}"
+                    metrics = {
+                        "Version": str(doc_ver_h),
+                        "Chunk": str(h.get("chunk_index")),
+                        "Score": f"{float(score or 0.0):.3f}",
+                        "Doc": str(doc_id_h),
+                    }
+                    components.search_hit_card(i, card_title, snippet, metrics, h)
 
-    # --- History ---
+    # ── History ─────────────────────────────────────────────────────────────
     with tabs[2]:
-        st.subheader("Processing history")
-        st.caption("See what the system has processed and any errors.")
+        components.section_header("Processing history", caption="See what the system has processed and any errors.")
         if not admin_headers:
-            st.info("Admin token required for runs.")
+            components.auth_gate("Admin token required for runs.")
         else:
-            col1, col2 = st.columns(2)
-            limit = col1.number_input("limit", min_value=1, max_value=500, value=100, key="runs_limit")
+            col1, col2 = st.columns(theme.COL_HALF)
+            limit = col1.number_input("Row limit", min_value=1, max_value=500, value=100, key="runs_limit")
             refresh = col2.button("Refresh")
 
             if refresh or "runs_cache" not in st.session_state:
@@ -620,7 +623,7 @@ def main() -> None:
                             "error": r.get("error_code") or "",
                         }
                     )
-                st.dataframe(rows, use_container_width=True, hide_index=True)
+                components.data_table(rows)
 
                 run_ids: list[int] = []
                 for r in runs_list:
@@ -641,7 +644,7 @@ def main() -> None:
                     else:
                         default_idx = 0
 
-                    selected_run_id = st.selectbox("Open run", options=run_ids, index=default_idx)
+                    selected_run_id = st.selectbox("Select run", options=run_ids, index=default_idx)
 
                     if st.button("Load details", use_container_width=True):
                         run_id = int(selected_run_id)
@@ -665,34 +668,26 @@ def main() -> None:
                         if r1.status_code >= 400:
                             st.error(f"{r1.status_code}: {r1.text}")
                         else:
-                            st.subheader("Run")
-                            st.json(d1)
-
-                        st.subheader("Steps")
-                        if r2.status_code >= 400:
-                            st.error(f"{r2.status_code}: {r2.text}")
-                        else:
-                            st.dataframe(d2 or [], use_container_width=True, hide_index=True)
-
-                        st.subheader("Files & outputs")
-                        if r3.status_code >= 400:
-                            st.error(f"{r3.status_code}: {r3.text}")
-                        else:
-                            st.dataframe(d3 or [], use_container_width=True, hide_index=True)
+                            if r2.status_code >= 400:
+                                st.error(f"{r2.status_code}: {r2.text}")
+                                d2 = []
+                            if r3.status_code >= 400:
+                                st.error(f"{r3.status_code}: {r3.text}")
+                                d3 = []
+                            components.run_detail_card(d1 or {}, d2 or [], d3 or [])
             else:
                 st.caption("No runs returned.")
 
-    # --- Review (HITL) ---
+    # ── Review (HITL) ────────────────────────────────────────────────────────
     with tabs[3]:
-        st.subheader("Review queue")
-        st.caption("If a document needs review, it appears here.")
+        components.section_header("Review queue", caption="If a document needs review, it appears here.")
         if not admin_headers:
-            st.info("Admin token required for HITL.")
+            components.auth_gate("Admin token required for HITL.")
         else:
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col3 = st.columns(theme.COL_THIRDS)
             status = col1.selectbox("status filter", options=["", "pending", "in_progress", "completed", "skipped", "rejected"], index=0)
-            limit = col2.number_input("limit", min_value=1, max_value=500, value=100, key="hitl_limit")
-            assigned_to = col3.text_input("assigned_to (claim next)", value="operator")
+            limit = col2.number_input("Row limit", min_value=1, max_value=500, value=100, key="hitl_limit")
+            assigned_to = col3.text_input("Assign to", value="operator")
 
             if st.button("Refresh queue", use_container_width=True):
                 params: dict[str, Any] = {"limit": int(limit)}
@@ -726,11 +721,14 @@ def main() -> None:
                             "updated": t.get("updated_at"),
                         }
                     )
-                st.dataframe(rows, use_container_width=True, hide_index=True)
+                components.data_table(rows)
 
             st.divider()
-            cols = st.columns(2)
-            if cols[0].button("Claim next task", use_container_width=True):
+            clicked = components.action_bar(
+                {"label": "Claim next task", "key": "hitl_claim"},
+                {"label": "Clear current", "key": "hitl_clear"},
+            )
+            if clicked[0]:
                 resp, data = _request_json_diag(
                     label="admin hitl next",
                     method="POST",
@@ -742,8 +740,7 @@ def main() -> None:
                     st.error(f"{resp.status_code}: {resp.text}")
                 else:
                     st.session_state["hitl_current"] = data
-
-            if cols[1].button("Clear current", use_container_width=True):
+            if clicked[1]:
                 st.session_state.pop("hitl_current", None)
 
             current = st.session_state.get("hitl_current")
@@ -751,23 +748,25 @@ def main() -> None:
                 st.subheader(f"Review task #{int(current['id'])}")
                 st.caption(f"Document: {current.get('doc_id')}  v{current.get('doc_version')}  •  status={current.get('status')}")
 
-                left, right = st.columns(2)
+                left, right = st.columns(theme.COL_HALF)
                 with left:
-                    st.markdown("**Before**")
-                    st.text_area("before_md", height=260, value=current.get("before_md") or "", disabled=True)
+                    st.text_area("Before (read-only)", height=theme.TEXT_AREA_MD, value=current.get("before_md") or "", disabled=True)
                     with st.expander("Before (preview)", expanded=False):
                         st.markdown(current.get("before_md") or "")
 
                 with right:
-                    st.markdown("**After**")
-                    after_md = st.text_area("after_md", height=260, value=current.get("after_md") or "")
+                    after_md = st.text_area("After", height=theme.TEXT_AREA_MD, value=current.get("after_md") or "")
                     with st.expander("After (preview)", expanded=False):
                         st.markdown(after_md or "")
 
                 reason = st.text_input("Reason", value="review")
 
-                c1, c2, c3 = st.columns(3)
-                if c1.button("Save review", use_container_width=True):
+                action_results = components.action_bar(
+                    {"label": "Save review", "key": "hitl_save"},
+                    {"label": "Resume indexing", "key": "hitl_resume"},
+                    {"label": "Show raw task", "key": "hitl_raw"},
+                )
+                if action_results[0]:
                     tid = int(current["id"])
                     payload = {"after_md": after_md, "reason_for_edit": reason}
                     with st.spinner("Saving..."):
@@ -784,10 +783,9 @@ def main() -> None:
                     else:
                         st.success("Review saved")
                         st.session_state["hitl_current"] = data
-                        with st.expander("Details (raw)", expanded=False):
-                            st.json(data)
+                        components.detail_expander("Details (raw)", data=data)
 
-                if c2.button("Resume indexing", use_container_width=True):
+                if action_results[1]:
                     tid = int(current["id"])
                     with st.spinner("Resuming..."):
                         with httpx.Client(timeout=120.0) as client:
@@ -811,25 +809,27 @@ def main() -> None:
                     with st.expander("Details (raw)", expanded=False):
                         _render_response(resp)
 
-                if c3.button("Show raw task", use_container_width=True):
+                if action_results[2]:
                     st.json(current)
 
-    # --- Versions & Export ---
+    # ── Versions & Export ────────────────────────────────────────────────────
     with tabs[4]:
-        st.subheader("Versions and export")
-        st.caption("Switch which version is searchable, and export a package.")
+        components.section_header("Versions and export", caption="Switch which version is searchable, and export a package.")
         if not admin_headers:
-            st.info("Admin token required for docs/export.")
+            components.auth_gate("Admin token required for docs/export.")
         else:
-            col1, col2 = st.columns(2)
+            # ── Version Control ──────────────────────────────────────────────
+            components.section_header("Version Control")
+            col1, col2 = st.columns(theme.COL_HALF)
             doc_id = col1.text_input("Document ID", value=st.session_state.get("last_doc_id", ""))
             new_version = col2.text_input("Set searchable version", value="1")
             doc_id_s = (doc_id or "").strip()
 
-            c1, c2 = st.columns(2)
-            if c1.button(
-                "Show current searchable version", use_container_width=True, disabled=not bool(doc_id_s)
-            ):
+            version_results = components.action_bar(
+                {"label": "Show current searchable version", "key": "ver_show", "disabled": not bool(doc_id_s)},
+                {"label": "Set searchable version", "key": "ver_set", "disabled": not bool(doc_id_s)},
+            )
+            if version_results[0]:
                 resp, data = _request_json_diag(
                     label="admin active version get",
                     method="GET",
@@ -844,7 +844,7 @@ def main() -> None:
                 else:
                     _render_response(resp)
 
-            if c2.button("Set searchable version", use_container_width=True, disabled=not bool(doc_id_s)):
+            if version_results[1]:
                 payload = {
                     "doc_version": new_version,
                     "tenant_id": tenant_id,
@@ -867,7 +867,9 @@ def main() -> None:
                     _render_response(resp)
 
             st.divider()
-            st.subheader("Export package")
+
+            # ── Document Export ──────────────────────────────────────────────
+            components.section_header("Document Export")
             exp_version = st.text_input("Version to export", value="1")
             if st.button("Generate export ZIP", use_container_width=True, disabled=not bool(doc_id_s)):
                 params = {
@@ -908,7 +910,9 @@ def main() -> None:
                     )
 
             st.divider()
-            st.subheader("Corpus export/import")
+
+            # ── Corpus Export / Import ───────────────────────────────────────
+            components.section_header("Corpus Export / Import")
 
             if st.button("Generate corpus export ZIP", use_container_width=True):
                 params = {"tenant_id": tenant_id, "project_id": project_id, "max_docs": 200}
@@ -985,16 +989,15 @@ def main() -> None:
 
     if bool(st.session_state.get("show_diagnostics")):
         st.divider()
-        st.subheader("Diagnostics")
+        components.section_header("Diagnostics")
         _diag_init()
         events = list(st.session_state.get("diag_events") or [])
         if not events:
             st.caption("No diagnostics yet. Click 'Test connection' or run an action.")
         else:
-            # Show newest first.
             events = list(reversed(events))
             rows = []
-            for e in events[:50]:
+            for e in events[:theme.MAX_DIAG_ROWS]:
                 rows.append(
                     {
                         "ts": e.get("ts"),
@@ -1007,7 +1010,7 @@ def main() -> None:
                         "error": e.get("error"),
                     }
                 )
-            st.dataframe(rows, use_container_width=True, hide_index=True)
+            components.data_table(rows)
 
 
 if __name__ == "__main__":

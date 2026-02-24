@@ -1,3 +1,10 @@
 [browser]
-# Prevent Streamlit frontend metrics/usage beacons (reduces noisy console errors in offline / DNS-blocked envs).
 gatherUsageStats = false
+
+[theme]
+base = "light"
+primaryColor = "#0068C9"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F7F8FA"
+textColor = "#1A1D23"
+font = "sans serif"
