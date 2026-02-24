@@ -169,7 +169,7 @@ Improved Document:"""
         1. NEEDS_REVIEW: max retries exceeded (must escalate to HITL)
         2. VERIFIED: judge score is high (>= 4), quality is good
         3. LOW_CONFIDENCE: judge score <= 2, quality is poor
-        4. PARTIAL: score is borderline (3), some improvement made
+        4. PARTIAL: score is borderline (3), neither clearly good nor clearly poor
         """
         if retry_count >= self.max_retries:
             return FidelityFlag.NEEDS_REVIEW
