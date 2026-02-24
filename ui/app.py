@@ -220,6 +220,7 @@ def main() -> None:
             "Admin Token",
             type="password",
             key="admin_token",
+            help="Required for /admin/* endpoints.",
         )
 
         with st.expander("Advanced", expanded=False):
@@ -685,7 +686,7 @@ def main() -> None:
             components.auth_gate("Admin token required for HITL.")
         else:
             col1, col2, col3 = st.columns(theme.COL_THIRDS)
-            status = col1.selectbox("status filter", options=["", "pending", "in_progress", "completed", "skipped", "rejected"], index=0)
+            status = col1.selectbox("Status filter", options=["", "pending", "in_progress", "completed", "skipped", "rejected"], index=0)
             limit = col2.number_input("Row limit", min_value=1, max_value=500, value=100, key="hitl_limit")
             assigned_to = col3.text_input("Assign to", value="operator")
 
@@ -750,7 +751,7 @@ def main() -> None:
 
                 left, right = st.columns(theme.COL_HALF)
                 with left:
-                    st.text_area("Before (read-only)", height=theme.TEXT_AREA_MD, value=current.get("before_md") or "", disabled=True)
+                    st.text_area("Before", height=theme.TEXT_AREA_MD, value=current.get("before_md") or "", disabled=True, help="Read-only preview of the original content.")
                     with st.expander("Before (preview)", expanded=False):
                         st.markdown(current.get("before_md") or "")
 

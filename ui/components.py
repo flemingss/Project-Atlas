@@ -7,7 +7,7 @@ Import from this module — never duplicate layout primitives in app.py.
 from __future__ import annotations
 
 import contextlib
-from typing import Any
+from typing import Any, Generator
 
 import streamlit as st
 
@@ -123,7 +123,7 @@ def ingest_result(title: str, detail: str = "") -> None:
 
 
 @contextlib.contextmanager
-def danger_zone(*, caption: str, warning: str):  # type: ignore[return]
+def danger_zone(*, caption: str, warning: str) -> Generator[None, None, None]:
     """
     Returns a styled expander context manager for destructive operations.
     Renders a red-tinted expander (via CSS class) with a caption and warning inside.
