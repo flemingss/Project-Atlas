@@ -296,6 +296,8 @@ def parse_document_path(*, doc_path: Path, source_mime_type: str) -> DoclingPars
                             timeout_s=float(settings.atlas_docling_timeout_s),
                         )
                         method = "ocr"
+            except DoclingIngestError:
+                raise
             except Exception:
                 # Any docling API drift or option mismatch shouldn't break ingestion; fall back to defaults.
                 converter = DocumentConverter()

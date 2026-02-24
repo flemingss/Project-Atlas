@@ -5,6 +5,7 @@ Evaluates document quality using Llama 3.2 3B with explicit few-shot rubric.
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timezone
 from typing import Any
 
@@ -45,6 +46,16 @@ JUDGE_FEW_SHOT_EXAMPLES = [
 ]
 
 
+def _prompt_hash() -> str:
+    """Stable short hash of the judge prompt constants for versioning."""
+    h = hashlib.sha256()
+    h.update(JUDGE_SYSTEM_PROMPT.encode("utf-8"))
+    for ex in JUDGE_FEW_SHOT_EXAMPLES:
+        h.update(ex["input"].encode("utf-8"))
+        h.update(ex["output"].encode("utf-8"))
+    return h.hexdigest()[:12]
+
+
 class JudgeNode:
     """Judge node: Grade markdown quality using LLM (HLD section 2).
 
@@ -61,8 +72,8 @@ class JudgeNode:
         self.model_params = model_params
         self.diagnostics = get_diagnostics()
 
-        # Create judge version identifier
-        self.judge_version = f"{model_name}:v1"  # TODO: Add prompt hash
+        # Create judge version identifier (model name + prompt hash for traceability)
+        self.judge_version = f"{model_name}:ph-{_prompt_hash()}"
 
     async def grade_document(
         self, *, markdown: str, judge_cutoff: int = 4
@@ -119,15 +130,13 @@ class JudgeNode:
                 )
 
     def _build_prompt(self, markdown: str) -> str:
-        """Build prompt with few-shot examples."""
+        """Build user prompt with few-shot examples and document to grade."""
         examples_text = "\n\n".join(
             f"Example {i+1}:\nInput: {ex['input']}\nOutput: {ex['output']}"
             for i, ex in enumerate(JUDGE_FEW_SHOT_EXAMPLES)
         )
 
-        prompt = f"""{JUDGE_SYSTEM_PROMPT}
-
-{examples_text}
+        prompt = f"""{examples_text}
 
 Now grade this document:
 
@@ -137,11 +146,7 @@ Your response:"""
         return prompt
 
     async def _call_judge_model(self, prompt: str) -> str:
-        """Call the judge LLM model.
-
-        NOTE: Simplified implementation. Full version would use proper
-        message format and handle streaming/errors better.
-        """
+        """Call the judge LLM model with separated system and user messages."""
         messages = [
             ChatMessage(role="system", content=JUDGE_SYSTEM_PROMPT),
             ChatMessage(role="user", content=prompt),

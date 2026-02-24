@@ -143,3 +143,27 @@ def test_chunk_text_hierarchical_no_headings():
     # But they should have empty section paths
     for c in chunks:
         assert len(c.section_path) == 0 or c.section_path == []
+
+
+def test_chunk_text_hierarchical_deterministic_ids() -> None:
+    """Hierarchical chunk indices must be deterministic for equal inputs."""
+    text = "# Chapter\n\nSome content here.\n\n## Section\n\nMore content."
+    chunks_a = chunk_text_hierarchical(text=text, max_chars=500)
+    chunks_b = chunk_text_hierarchical(text=text, max_chars=500)
+    assert len(chunks_a) == len(chunks_b)
+    for a, b in zip(chunks_a, chunks_b):
+        assert a.index == b.index
+        assert a.text == b.text
+        assert a.section_path == b.section_path
+
+
+def test_chunk_text_hierarchical_preserves_section_hierarchy() -> None:
+    """Section paths must reflect the heading nesting order."""
+    text = "# Root\n\n## Child\n\n### Grandchild\n\nLeaf content."
+    chunks = chunk_text_hierarchical(text=text, max_chars=500)
+    # Find the chunk containing leaf content.
+    leaf = next((c for c in chunks if "Leaf content" in c.text), None)
+    assert leaf is not None
+    # Its section_path should contain all ancestor headings.
+    assert "Root" in leaf.section_path
+    assert "Child" in leaf.section_path

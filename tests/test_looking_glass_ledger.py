@@ -119,16 +119,38 @@ def test_looking_glass_ledger_endpoints(tmp_path: Path) -> None:
     assert s["node_runs"]["failed_by_error_code"]["E_REFINE"] == 1
     assert s["hitl_tasks"]["by_status"]["pending"] == 2
 
+    # Richer summary fields
+    assert s["workflow_runs"]["docs_unique"] == 2  # doc-ok and doc-bad
+    assert s["workflow_runs"]["runs_last_24h"] == 2  # both were just created
+
     inflight = client.get("/admin/looking-glass/ledger/in-flight")
     assert inflight.status_code == 200
     inflight_runs = inflight.json()
     assert {r["id"] for r in inflight_runs} == {run_ok["id"]}
+
+    # Test tenant filtering on in-flight
+    inflight_t1 = client.get("/admin/looking-glass/ledger/in-flight", params={"tenant_id": "t1"})
+    assert inflight_t1.status_code == 200
+    assert len(inflight_t1.json()) == 1
+
+    inflight_no_match = client.get("/admin/looking-glass/ledger/in-flight", params={"tenant_id": "other"})
+    assert inflight_no_match.status_code == 200
+    assert len(inflight_no_match.json()) == 0
 
     failures = client.get("/admin/looking-glass/ledger/failures")
     assert failures.status_code == 200
     payload = failures.json()
     assert payload["failures"][0]["run"]["id"] == run_failed["id"]
     assert payload["failures"][0]["node_errors"][0]["error_code"] == "E_REFINE"
+
+    # Test tenant filtering on failures
+    failures_t1 = client.get("/admin/looking-glass/ledger/failures", params={"tenant_id": "t1"})
+    assert failures_t1.status_code == 200
+    assert len(failures_t1.json()["failures"]) == 1
+
+    failures_no_match = client.get("/admin/looking-glass/ledger/failures", params={"tenant_id": "other"})
+    assert failures_no_match.status_code == 200
+    assert len(failures_no_match.json()["failures"]) == 0
 
     hitl_pending = client.get("/admin/looking-glass/ledger/hitl")
     assert hitl_pending.status_code == 200

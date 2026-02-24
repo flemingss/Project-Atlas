@@ -136,10 +136,7 @@ Original Document:
 Improved Document:"""
 
     async def _call_refine_model(self, prompt: str) -> str:
-        """Call the refine model.
-
-        NOTE: Simplified implementation. Full version would handle vision inputs.
-        """
+        """Call the refine model to improve the document."""
         messages = [
             ChatMessage(role="system", content=REFINE_SYSTEM_PROMPT),
             ChatMessage(role="user", content=prompt),
@@ -167,12 +164,18 @@ Improved Document:"""
         """Determine fidelity flag for a chunk based on processing results.
 
         HLD: Safety - Tag problematic chunks with fidelity_flag
-        """
-        if judge_score >= 4 and refine_success:
-            return FidelityFlag.VERIFIED
 
+        Priority order:
+        1. NEEDS_REVIEW: max retries exceeded (must escalate to HITL)
+        2. VERIFIED: judge score is high (>= 4), quality is good
+        3. LOW_CONFIDENCE: judge score <= 2, quality is poor
+        4. PARTIAL: score is borderline (3), some improvement made
+        """
         if retry_count >= self.max_retries:
             return FidelityFlag.NEEDS_REVIEW
+
+        if judge_score >= 4:
+            return FidelityFlag.VERIFIED
 
         if judge_score <= 2:
             return FidelityFlag.LOW_CONFIDENCE

@@ -289,3 +289,108 @@ def test_rag_ingest_pdf_low_quality_returns_error_code(tmp_path: Path, monkeypat
     assert data["chunks_upserted"] == 0
     assert data["error_code"] == "DOC_EXTRACT_LOW_QUALITY"
     assert data["error_message"]
+
+
+def test_rag_ingest_docling_unavailable_returns_error_code(tmp_path: Path, monkeypatch: Any) -> None:
+    """DoclingUnavailableError must surface as DOC_PARSE_DEPENDENCY_MISSING, not 502."""
+    from atlas.ingest.docling_adapter import DoclingUnavailableError
+
+    app, _session_factory = _make_test_app(tmp_root=tmp_path, monkeypatch=monkeypatch)
+    client = TestClient(app)
+
+    def _raise_unavailable(*, doc_path: Path, source_mime_type: str) -> None:  # noqa: ARG001
+        raise DoclingUnavailableError()
+
+    monkeypatch.setattr(pipeline_ingest, "parse_document_path", _raise_unavailable)
+
+    res = client.post(
+        "/rag/ingest/file",
+        data={"doc_id": "pdf-nodocling", "doc_version": "v1"},
+        files={"file": ("no_docling.pdf", b"%PDF-1.4\n%fake\n", "application/pdf")},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["ok"] is False
+    assert data["chunks_upserted"] == 0
+    assert data["error_code"] == "DOC_PARSE_DEPENDENCY_MISSING"
+    assert data["error_message"]
+
+
+def test_rag_ingest_file_fidelity_flag_in_payload(tmp_path: Path, monkeypatch: Any) -> None:
+    """Committed chunks must include fidelity_flag in their Qdrant payload."""
+    app, _session_factory = _make_test_app(tmp_root=tmp_path, monkeypatch=monkeypatch)
+    client = TestClient(app)
+
+    res = client.post(
+        "/rag/ingest/file",
+        data={"doc_id": "pdf-fid", "doc_version": "v1"},
+        files={"file": ("sample.pdf", b"%PDF-1.4\n%fake\n", "application/pdf")},
+    )
+    assert res.status_code == 200
+    assert res.json()["ok"] is True
+
+    for pt in _FakeQdrantStore.last_points:
+        assert "fidelity_flag" in pt.payload, "fidelity_flag missing from chunk payload"
+
+
+def test_rag_ingest_hierarchical_strategy(tmp_path: Path, monkeypatch: Any) -> None:
+    """Using chunking.strategy=hierarchical must succeed and produce structured chunks."""
+    from atlas.config_manager import ConfigManager
+
+    root = tmp_path / "hier"
+    root.mkdir()
+    (root / "config").mkdir()
+    (root / "config" / "pipeline.yaml").write_text(
+        "version: 1\n"
+        "limits: { chunk_max_chars: 500 }\n"
+        "chunking: { strategy: hierarchical }\n",
+        encoding="utf-8",
+    )
+    (root / "config" / "models.yaml").write_text(
+        "version: 1\n"
+        "providers: { deterministic: { type: deterministic } }\n"
+        "roles: {\n"
+        "  embed_model: { provider: deterministic, model_name: deterministic-embed, params: { dim: 8 } },\n"
+        "  judge_model: { provider: deterministic, model_name: deterministic-judge, params: {} },\n"
+        "  refine_model: { provider: deterministic, model_name: deterministic-refine, params: {} },\n"
+        "  metadata_tier1_model: { provider: deterministic, model_name: deterministic-meta1, params: {} },\n"
+        "  metadata_tier2_model: { provider: deterministic, model_name: deterministic-meta2, params: {} }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    config_manager = ConfigManager(root_dir=root)
+    db_path = root / "test.sqlite"
+    from atlas.db import make_engine, make_sessionmaker
+    from atlas.db_init import ensure_schema
+    from fastapi import FastAPI
+
+    engine = make_engine(f"sqlite+pysqlite:///{db_path}")
+    ensure_schema(engine)
+    sf = make_sessionmaker(engine)
+
+    monkeypatch.setattr("atlas.pipeline.runner.QdrantStore", _FakeQdrantStore)
+    monkeypatch.setenv("ATLAS_ARTIFACTS_DIR", str(root / "artifacts"))
+
+    # Use a markdown file so no Docling call is needed.
+    md = b"# Chapter 1\n\nIntro text.\n\n## Section 1.1\n\nDetailed content here.\n"
+    app = FastAPI()
+    from atlas.api_rag import make_rag_router
+
+    app.include_router(make_rag_router(config_manager=config_manager, session_factory=sf))
+    from fastapi.testclient import TestClient
+
+    c = TestClient(app)
+    res = c.post(
+        "/rag/ingest/file",
+        data={"doc_id": "hier1", "doc_version": "v1"},
+        files={"file": ("doc.md", md, "text/markdown")},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["ok"] is True
+    assert data["chunks_upserted"] >= 1
+
+    # Verify section_path is populated for at least one chunk (hierarchical feature).
+    chunks_with_path = [pt for pt in _FakeQdrantStore.last_points if pt.payload.get("section_path")]
+    assert chunks_with_path, "hierarchical strategy should produce chunks with section_path"
