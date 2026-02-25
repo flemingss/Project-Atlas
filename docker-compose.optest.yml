@@ -31,6 +31,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      qdrant:
+        condition: service_started
     environment:
       ATLAS_ENV: ${ATLAS_ENV:-dev}
       ATLAS_LOG_LEVEL: ${ATLAS_LOG_LEVEL:-INFO}
@@ -50,7 +52,7 @@ services:
     volumes:
       - atlas_artifacts:/app/artifacts
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health').read(); print('ok')\"" ]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health').read(); print('ok')\""]
       interval: 3s
       timeout: 5s
       retries: 30
