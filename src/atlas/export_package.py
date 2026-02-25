@@ -268,3 +268,134 @@ async def export_doc_package(
                 continue
 
     return buf.getvalue()
+
+
+async def get_doc_markdown(
+    *,
+    session_factory: sessionmaker[Session],
+    tenant_id: str,
+    project_id: str,
+    corpus_id: str | None = None,
+    doc_id: str,
+    doc_version: str | None = None,
+) -> str:
+    """Return the plain markdown text for a document (no YAML frontmatter).
+
+    Tries the stored ``markdown_projection`` artifact first; falls back to
+    reconstructing from ordered Qdrant chunk texts so the export is never empty.
+    """
+    settings = Settings()
+    artifacts_dir = Path(settings.atlas_artifacts_dir).resolve()
+
+    with session_factory() as session:
+        resolved_version = doc_version
+        if resolved_version is None:
+            resolved_version = get_active_doc_version(
+                session,
+                tenant_id=tenant_id,
+                project_id=project_id,
+                doc_id=doc_id,
+                corpus_id=corpus_id,
+            )
+        if resolved_version is None:
+            resolved_version = get_latest_doc_version_from_runs(
+                session,
+                tenant_id=tenant_id,
+                project_id=project_id,
+                doc_id=doc_id,
+            )
+        if resolved_version is None:
+            raise KeyError("doc not found")
+
+        run = _latest_run_for_version(
+            session,
+            tenant_id=tenant_id,
+            project_id=project_id,
+            doc_id=doc_id,
+            doc_version=resolved_version,
+        )
+        refs = []
+        if run is not None:
+            from sqlalchemy import select as _select
+
+            refs = list(
+                session.execute(
+                    _select(ArtifactRef)
+                    .where(ArtifactRef.run_id == run.id)
+                    .order_by(ArtifactRef.id.asc())
+                ).scalars()
+            )
+
+    # Try the stored markdown projection from artifacts first.
+    markdown_projection = ""
+    for r in refs:
+        if str(r.kind) == "markdown_projection":
+            try:
+                p = (artifacts_dir / str(r.path)).resolve()
+                markdown_projection = p.read_text(encoding="utf-8")
+            except Exception:
+                markdown_projection = ""
+            break
+
+    if markdown_projection.strip():
+        # Strip Atlas YAML frontmatter so callers get clean content.
+        text = markdown_projection
+        if text.startswith("---\n"):
+            end = text.find("\n---\n", 4)
+            if end != -1:
+                text = text[end + len("\n---\n"):]
+        return text.strip()
+
+    # Fallback: reconstruct from Qdrant chunk texts in order.
+    store = QdrantStore(url=settings.atlas_qdrant_url, api_key=None, collection="atlas_chunks")
+    must = [
+        qm.FieldCondition(key="tenant_id", match=qm.MatchValue(value=tenant_id)),
+        qm.FieldCondition(key="project_id", match=qm.MatchValue(value=project_id)),
+        qm.FieldCondition(key="doc_id", match=qm.MatchValue(value=doc_id)),
+        qm.FieldCondition(key="doc_version", match=qm.MatchValue(value=resolved_version)),
+    ]
+    if corpus_id is not None:
+        must.insert(2, qm.FieldCondition(key="corpus_id", match=qm.MatchValue(value=corpus_id)))
+    points = await run_in_threadpool(store.scroll_points, must=must, limit=256, max_points=50_000)
+
+    ordered = sorted(
+        points,
+        key=lambda p: (
+            _as_point_payload(p).get("chunk_index") is None,
+            int(_as_point_payload(p).get("chunk_index") or 0),
+        ),
+    )
+    return "\n\n".join(
+        str(_as_point_payload(p).get("text") or "").strip()
+        for p in ordered
+        if (_as_point_payload(p).get("text") or "").strip()
+    )
+
+
+async def export_doc_lean(
+    *,
+    session_factory: sessionmaker[Session],
+    tenant_id: str,
+    project_id: str,
+    corpus_id: str | None = None,
+    doc_id: str,
+    doc_version: str | None = None,
+) -> bytes:
+    """Lean export: a ZIP containing only ``document.md`` with no Atlas metadata.
+
+    The resulting ZIP is suitable for dropping directly into another RAG
+    pipeline — no manifest, no artifacts, no index JSON.
+    """
+    content = await get_doc_markdown(
+        session_factory=session_factory,
+        tenant_id=tenant_id,
+        project_id=project_id,
+        corpus_id=corpus_id,
+        doc_id=doc_id,
+        doc_version=doc_version,
+    )
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as z:
+        z.writestr("document.md", content or "")
+    return buf.getvalue()

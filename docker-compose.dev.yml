@@ -9,3 +9,9 @@ services:
       - ./scripts:/app/scripts
       - ./artifacts:/app/artifacts
     command: ["uvicorn", "atlas.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080", "--reload", "--reload-dir", "/app/src"]
+
+  ui:
+    # Dev override: bind-mount UI source so Streamlit auto-reloads on file save.
+    # No rebuild needed for UI changes at all.
+    volumes:
+      - ./ui:/app/ui

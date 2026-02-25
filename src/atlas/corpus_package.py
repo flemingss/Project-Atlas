@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from starlette.concurrency import run_in_threadpool
 
 from atlas.config_manager import ConfigManager
-from atlas.export_package import export_doc_package
+from atlas.export_package import export_doc_package, get_doc_markdown
 from atlas.pipeline.runner import ingest_text_via_pipeline
 from atlas.settings import Settings
 from atlas.vectorstore.qdrant_store import QdrantStore
@@ -114,6 +114,339 @@ async def export_corpus_package(
             )
             name = f"docs/{_safe_filename(doc_id)}_v{_safe_filename(doc_version)}.zip"
             z.writestr(name, blob)
+
+    return buf.getvalue()
+
+
+async def export_corpus_lean(
+    *,
+    session_factory: sessionmaker[Session],
+    tenant_id: str,
+    project_id: str,
+    corpus_id: str,
+    max_docs: int = 200,
+) -> bytes:
+    """Lean corpus export: a flat ZIP of ``docs/{doc_id}.md`` files.
+
+    Each file contains clean markdown with no Atlas frontmatter or metadata,
+    ready to drop directly into any RAG pipeline.
+    """
+    settings = Settings()
+    store = QdrantStore(url=settings.atlas_qdrant_url, api_key=None, collection="atlas_chunks")
+
+    must = [
+        qm.FieldCondition(key="tenant_id", match=qm.MatchValue(value=tenant_id)),
+        qm.FieldCondition(key="project_id", match=qm.MatchValue(value=project_id)),
+        qm.FieldCondition(key="corpus_id", match=qm.MatchValue(value=corpus_id)),
+        qm.FieldCondition(key="is_finalized", match=qm.MatchValue(value=True)),
+        qm.FieldCondition(key="is_active_version", match=qm.MatchValue(value=True)),
+    ]
+
+    points = await run_in_threadpool(store.scroll_points, must=must, limit=256, max_points=200_000)
+
+    seen: set[tuple[str, str]] = set()
+    docs: list[dict[str, str]] = []
+    for p in points:
+        payload = p.get("payload") if isinstance(p, dict) else getattr(p, "payload", {})
+        payload = payload or {}
+        doc_id = str(payload.get("doc_id") or "").strip()
+        doc_version = str(payload.get("doc_version") or "").strip()
+        if not doc_id or not doc_version:
+            continue
+        key = (doc_id, doc_version)
+        if key in seen:
+            continue
+        seen.add(key)
+        docs.append({"doc_id": doc_id, "doc_version": doc_version})
+        if len(docs) >= int(max_docs):
+            break
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as z:
+        z.writestr(
+            "corpus_manifest.json",
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "export_format": "lean",
+                    "tenant_id": tenant_id,
+                    "project_id": project_id,
+                    "corpus_id": corpus_id,
+                    "doc_count": len(docs),
+                    "docs": [{"doc_id": d["doc_id"], "doc_version": d["doc_version"]} for d in docs],
+                },
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            ),
+        )
+
+        for d in docs:
+            doc_id = d["doc_id"]
+            doc_version = d["doc_version"]
+            try:
+                content = await get_doc_markdown(
+                    session_factory=session_factory,
+                    tenant_id=tenant_id,
+                    project_id=project_id,
+                    corpus_id=corpus_id,
+                    doc_id=doc_id,
+                    doc_version=doc_version,
+                )
+            except Exception:  # noqa: BLE001
+                content = ""
+            name = f"docs/{_safe_filename(doc_id)}.md"
+            z.writestr(name, content or "")
+
+    return buf.getvalue()
+
+
+async def export_project_package(
+    *,
+    session_factory: sessionmaker[Session],
+    tenant_id: str,
+    project_id: str,
+    max_docs: int = 2000,
+) -> bytes:
+    """Export a project-level ZIP containing per-corpus export ZIPs."""
+    settings = Settings()
+    store = QdrantStore(url=settings.atlas_qdrant_url, api_key=None, collection="atlas_chunks")
+
+    must = [
+        qm.FieldCondition(key="tenant_id", match=qm.MatchValue(value=tenant_id)),
+        qm.FieldCondition(key="project_id", match=qm.MatchValue(value=project_id)),
+        qm.FieldCondition(key="is_finalized", match=qm.MatchValue(value=True)),
+        qm.FieldCondition(key="is_active_version", match=qm.MatchValue(value=True)),
+    ]
+    points = await run_in_threadpool(store.scroll_points, must=must, limit=256, max_points=200_000)
+
+    corpora: set[str] = set()
+    for p in points:
+        payload = p.get("payload") if isinstance(p, dict) else getattr(p, "payload", {})
+        payload = payload or {}
+        cid = str(payload.get("corpus_id") or "").strip()
+        if cid:
+            corpora.add(cid)
+
+    ordered_corpora = sorted(corpora)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as z:
+        z.writestr(
+            "project_manifest.json",
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "tenant_id": tenant_id,
+                    "project_id": project_id,
+                    "corpora": ordered_corpora,
+                    "corpora_count": len(ordered_corpora),
+                },
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            ),
+        )
+
+        for cid in ordered_corpora:
+            blob = await export_corpus_package(
+                session_factory=session_factory,
+                tenant_id=tenant_id,
+                project_id=project_id,
+                corpus_id=cid,
+                max_docs=int(max_docs),
+            )
+            z.writestr(f"corpora/{_safe_filename(cid)}.zip", blob)
+
+    return buf.getvalue()
+
+
+async def export_project_lean(
+    *,
+    session_factory: sessionmaker[Session],
+    tenant_id: str,
+    project_id: str,
+    max_docs: int = 2000,
+) -> bytes:
+    """Lean project export containing per-corpus lean ZIPs."""
+    settings = Settings()
+    store = QdrantStore(url=settings.atlas_qdrant_url, api_key=None, collection="atlas_chunks")
+
+    must = [
+        qm.FieldCondition(key="tenant_id", match=qm.MatchValue(value=tenant_id)),
+        qm.FieldCondition(key="project_id", match=qm.MatchValue(value=project_id)),
+        qm.FieldCondition(key="is_finalized", match=qm.MatchValue(value=True)),
+        qm.FieldCondition(key="is_active_version", match=qm.MatchValue(value=True)),
+    ]
+    points = await run_in_threadpool(store.scroll_points, must=must, limit=256, max_points=200_000)
+
+    corpora: set[str] = set()
+    for p in points:
+        payload = p.get("payload") if isinstance(p, dict) else getattr(p, "payload", {})
+        payload = payload or {}
+        cid = str(payload.get("corpus_id") or "").strip()
+        if cid:
+            corpora.add(cid)
+
+    ordered_corpora = sorted(corpora)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as z:
+        z.writestr(
+            "project_manifest.json",
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "export_format": "lean",
+                    "tenant_id": tenant_id,
+                    "project_id": project_id,
+                    "corpora": ordered_corpora,
+                    "corpora_count": len(ordered_corpora),
+                },
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            ),
+        )
+
+        for cid in ordered_corpora:
+            blob = await export_corpus_lean(
+                session_factory=session_factory,
+                tenant_id=tenant_id,
+                project_id=project_id,
+                corpus_id=cid,
+                max_docs=int(max_docs),
+            )
+            z.writestr(f"corpora/{_safe_filename(cid)}.zip", blob)
+
+    return buf.getvalue()
+
+
+async def export_tenant_package(
+    *,
+    session_factory: sessionmaker[Session],
+    tenant_id: str,
+    max_docs: int = 2000,
+) -> bytes:
+    """Export a tenant-level ZIP containing project/corpus export ZIPs."""
+    settings = Settings()
+    store = QdrantStore(url=settings.atlas_qdrant_url, api_key=None, collection="atlas_chunks")
+
+    must = [
+        qm.FieldCondition(key="tenant_id", match=qm.MatchValue(value=tenant_id)),
+        qm.FieldCondition(key="is_finalized", match=qm.MatchValue(value=True)),
+        qm.FieldCondition(key="is_active_version", match=qm.MatchValue(value=True)),
+    ]
+    points = await run_in_threadpool(store.scroll_points, must=must, limit=256, max_points=250_000)
+
+    projects: dict[str, set[str]] = {}
+    for p in points:
+        payload = p.get("payload") if isinstance(p, dict) else getattr(p, "payload", {})
+        payload = payload or {}
+        pid = str(payload.get("project_id") or "").strip()
+        cid = str(payload.get("corpus_id") or "").strip()
+        if not pid or not cid:
+            continue
+        projects.setdefault(pid, set()).add(cid)
+
+    ordered_projects = sorted(projects.keys())
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as z:
+        z.writestr(
+            "tenant_manifest.json",
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "tenant_id": tenant_id,
+                    "projects": [
+                        {"project_id": p, "corpora": sorted(projects[p])}
+                        for p in ordered_projects
+                    ],
+                    "projects_count": len(ordered_projects),
+                },
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            ),
+        )
+
+        for pid in ordered_projects:
+            for cid in sorted(projects[pid]):
+                blob = await export_corpus_package(
+                    session_factory=session_factory,
+                    tenant_id=tenant_id,
+                    project_id=pid,
+                    corpus_id=cid,
+                    max_docs=int(max_docs),
+                )
+                z.writestr(
+                    f"projects/{_safe_filename(pid)}/corpora/{_safe_filename(cid)}.zip",
+                    blob,
+                )
+
+    return buf.getvalue()
+
+
+async def export_tenant_lean(
+    *,
+    session_factory: sessionmaker[Session],
+    tenant_id: str,
+    max_docs: int = 2000,
+) -> bytes:
+    """Lean tenant export containing project/corpus lean ZIPs."""
+    settings = Settings()
+    store = QdrantStore(url=settings.atlas_qdrant_url, api_key=None, collection="atlas_chunks")
+
+    must = [
+        qm.FieldCondition(key="tenant_id", match=qm.MatchValue(value=tenant_id)),
+        qm.FieldCondition(key="is_finalized", match=qm.MatchValue(value=True)),
+        qm.FieldCondition(key="is_active_version", match=qm.MatchValue(value=True)),
+    ]
+    points = await run_in_threadpool(store.scroll_points, must=must, limit=256, max_points=250_000)
+
+    projects: dict[str, set[str]] = {}
+    for p in points:
+        payload = p.get("payload") if isinstance(p, dict) else getattr(p, "payload", {})
+        payload = payload or {}
+        pid = str(payload.get("project_id") or "").strip()
+        cid = str(payload.get("corpus_id") or "").strip()
+        if not pid or not cid:
+            continue
+        projects.setdefault(pid, set()).add(cid)
+
+    ordered_projects = sorted(projects.keys())
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as z:
+        z.writestr(
+            "tenant_manifest.json",
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "export_format": "lean",
+                    "tenant_id": tenant_id,
+                    "projects": [
+                        {"project_id": p, "corpora": sorted(projects[p])}
+                        for p in ordered_projects
+                    ],
+                    "projects_count": len(ordered_projects),
+                },
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            ),
+        )
+
+        for pid in ordered_projects:
+            for cid in sorted(projects[pid]):
+                blob = await export_corpus_lean(
+                    session_factory=session_factory,
+                    tenant_id=tenant_id,
+                    project_id=pid,
+                    corpus_id=cid,
+                    max_docs=int(max_docs),
+                )
+                z.writestr(
+                    f"projects/{_safe_filename(pid)}/corpora/{_safe_filename(cid)}.zip",
+                    blob,
+                )
 
     return buf.getvalue()
 

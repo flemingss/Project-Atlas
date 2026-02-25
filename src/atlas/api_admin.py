@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from qdrant_client.http import models as qm
 from sqlalchemy.engine import Engine
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.concurrency import run_in_threadpool
 
@@ -58,7 +59,7 @@ from atlas.hitl_ledger import (
     skip_task,
     to_hitl_response,
 )
-from atlas.models import HitlTaskRow, NodeRun, WorkflowRun
+from atlas.models import Corpus, HitlTaskRow, NodeRun, Project, Tenant, WorkflowRun
 from atlas.pipeline.runner import resume_completed_hitl_task
 from atlas.vectorstore.qdrant_store import QdrantStore
 
@@ -75,6 +76,27 @@ class SetActiveDocVersionRequest(BaseModel):
     tenant_id: str | None = None
     project_id: str | None = None
     corpus_id: str | None = None
+
+
+class TenantCreateRequest(BaseModel):
+    tenant_id: str
+    display_name: str = ""
+    description: str = ""
+
+
+class ProjectCreateRequest(BaseModel):
+    tenant_id: str
+    project_id: str
+    display_name: str = ""
+    description: str = ""
+
+
+class CorpusCreateRequest(BaseModel):
+    tenant_id: str
+    project_id: str
+    corpus_id: str
+    display_name: str = ""
+    description: str = ""
 
 
 def make_admin_router(*, config_manager: ConfigManager, session_factory: sessionmaker[Session]) -> APIRouter:
@@ -299,6 +321,14 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
             return int(cursor)
         return cursor
 
+    def _clean_scope_id(label: str, value: str) -> str:
+        v = (value or "").strip()
+        if not v:
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=400, detail=f"{label} must be non-empty")
+        return v
+
     @r.get("/config/effective")
     def effective_config() -> dict:
         yaml_defaults = config_manager.get()
@@ -361,6 +391,231 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
         with session_factory() as session:
             activate_config_version(session, config_id=config_id)
         return {"ok": True, "active_id": config_id}
+
+    @r.get("/tenants")
+    def list_tenants(active_only: bool = Query(default=True)) -> dict[str, Any]:
+        with session_factory() as session:
+            stmt = select(Tenant).order_by(Tenant.tenant_id.asc())
+            if active_only:
+                stmt = stmt.where(Tenant.is_active.is_(True))
+            rows = list(session.execute(stmt).scalars().all())
+        return {
+            "tenants": [
+                {
+                    "tenant_id": t.tenant_id,
+                    "display_name": t.display_name,
+                    "description": t.description,
+                    "is_active": bool(t.is_active),
+                }
+                for t in rows
+            ]
+        }
+
+    @r.post("/tenants")
+    def create_tenant(req: TenantCreateRequest) -> dict[str, Any]:
+        t_id = _clean_scope_id("tenant_id", req.tenant_id)
+        row = Tenant(
+            tenant_id=t_id,
+            display_name=(req.display_name or "").strip(),
+            description=(req.description or "").strip(),
+            is_active=True,
+        )
+        with session_factory() as session:
+            try:
+                session.add(row)
+                session.commit()
+            except IntegrityError as e:
+                session.rollback()
+                from fastapi import HTTPException
+
+                raise HTTPException(status_code=409, detail="tenant already exists") from e
+        return {"ok": True, "tenant_id": t_id}
+
+    @r.delete("/tenants/{tenant_id}")
+    def delete_tenant(tenant_id: str) -> dict[str, Any]:
+        t_id = _clean_scope_id("tenant_id", tenant_id)
+        with session_factory() as session:
+            proj_count = int(
+                session.execute(
+                    select(func.count()).select_from(Project).where(Project.tenant_id == t_id)
+                ).scalar_one()
+            )
+            corp_count = int(
+                session.execute(
+                    select(func.count()).select_from(Corpus).where(Corpus.tenant_id == t_id)
+                ).scalar_one()
+            )
+            if proj_count > 0 or corp_count > 0:
+                from fastapi import HTTPException
+
+                raise HTTPException(status_code=409, detail="tenant has projects/corpora; delete children first")
+
+            row = session.execute(select(Tenant).where(Tenant.tenant_id == t_id)).scalars().first()
+            if row is None:
+                from fastapi import HTTPException
+
+                raise HTTPException(status_code=404, detail="tenant not found")
+            session.delete(row)
+            session.commit()
+        return {"ok": True, "tenant_id": t_id}
+
+    @r.get("/projects")
+    def list_projects(tenant_id: str | None = Query(default=None), active_only: bool = Query(default=True)) -> dict[str, Any]:
+        with session_factory() as session:
+            stmt = select(Project).order_by(Project.tenant_id.asc(), Project.project_id.asc())
+            if tenant_id:
+                stmt = stmt.where(Project.tenant_id == tenant_id)
+            if active_only:
+                stmt = stmt.where(Project.is_active.is_(True))
+            rows = list(session.execute(stmt).scalars().all())
+        return {
+            "projects": [
+                {
+                    "tenant_id": p.tenant_id,
+                    "project_id": p.project_id,
+                    "display_name": p.display_name,
+                    "description": p.description,
+                    "is_active": bool(p.is_active),
+                }
+                for p in rows
+            ]
+        }
+
+    @r.post("/projects")
+    def create_project(req: ProjectCreateRequest) -> dict[str, Any]:
+        t_id = _clean_scope_id("tenant_id", req.tenant_id)
+        p_id = _clean_scope_id("project_id", req.project_id)
+        row = Project(
+            tenant_id=t_id,
+            project_id=p_id,
+            display_name=(req.display_name or "").strip(),
+            description=(req.description or "").strip(),
+            is_active=True,
+        )
+        with session_factory() as session:
+            tenant = session.execute(select(Tenant).where(Tenant.tenant_id == t_id)).scalars().first()
+            if tenant is None:
+                from fastapi import HTTPException
+
+                raise HTTPException(status_code=404, detail="tenant not found")
+            try:
+                session.add(row)
+                session.commit()
+            except IntegrityError as e:
+                session.rollback()
+                from fastapi import HTTPException
+
+                raise HTTPException(status_code=409, detail="project already exists in tenant") from e
+        return {"ok": True, "tenant_id": t_id, "project_id": p_id}
+
+    @r.delete("/projects/{project_id}")
+    def delete_project(project_id: str, tenant_id: str = Query(...)) -> dict[str, Any]:
+        t_id = _clean_scope_id("tenant_id", tenant_id)
+        p_id = _clean_scope_id("project_id", project_id)
+        with session_factory() as session:
+            corp_count = int(
+                session.execute(
+                    select(func.count())
+                    .select_from(Corpus)
+                    .where(Corpus.tenant_id == t_id, Corpus.project_id == p_id)
+                ).scalar_one()
+            )
+            if corp_count > 0:
+                from fastapi import HTTPException
+
+                raise HTTPException(status_code=409, detail="project has corpora; delete children first")
+
+            row = session.execute(
+                select(Project).where(Project.tenant_id == t_id, Project.project_id == p_id)
+            ).scalars().first()
+            if row is None:
+                from fastapi import HTTPException
+
+                raise HTTPException(status_code=404, detail="project not found")
+            session.delete(row)
+            session.commit()
+        return {"ok": True, "tenant_id": t_id, "project_id": p_id}
+
+    @r.get("/corpora")
+    def list_corpora(
+        tenant_id: str | None = Query(default=None),
+        project_id: str | None = Query(default=None),
+        active_only: bool = Query(default=True),
+    ) -> dict[str, Any]:
+        with session_factory() as session:
+            stmt = select(Corpus).order_by(Corpus.tenant_id.asc(), Corpus.project_id.asc(), Corpus.corpus_id.asc())
+            if tenant_id:
+                stmt = stmt.where(Corpus.tenant_id == tenant_id)
+            if project_id:
+                stmt = stmt.where(Corpus.project_id == project_id)
+            if active_only:
+                stmt = stmt.where(Corpus.is_active.is_(True))
+            rows = list(session.execute(stmt).scalars().all())
+        return {
+            "corpora": [
+                {
+                    "tenant_id": c.tenant_id,
+                    "project_id": c.project_id,
+                    "corpus_id": c.corpus_id,
+                    "display_name": c.display_name,
+                    "description": c.description,
+                    "is_active": bool(c.is_active),
+                }
+                for c in rows
+            ]
+        }
+
+    @r.post("/corpora")
+    def create_corpus(req: CorpusCreateRequest) -> dict[str, Any]:
+        t_id = _clean_scope_id("tenant_id", req.tenant_id)
+        p_id = _clean_scope_id("project_id", req.project_id)
+        c_id = _clean_scope_id("corpus_id", req.corpus_id)
+        row = Corpus(
+            tenant_id=t_id,
+            project_id=p_id,
+            corpus_id=c_id,
+            display_name=(req.display_name or "").strip(),
+            description=(req.description or "").strip(),
+            is_active=True,
+        )
+        with session_factory() as session:
+            project = session.execute(
+                select(Project).where(Project.tenant_id == t_id, Project.project_id == p_id)
+            ).scalars().first()
+            if project is None:
+                from fastapi import HTTPException
+
+                raise HTTPException(status_code=404, detail="project not found")
+            try:
+                session.add(row)
+                session.commit()
+            except IntegrityError as e:
+                session.rollback()
+                from fastapi import HTTPException
+
+                raise HTTPException(status_code=409, detail="corpus already exists in project") from e
+        return {"ok": True, "tenant_id": t_id, "project_id": p_id, "corpus_id": c_id}
+
+    @r.delete("/corpora/{corpus_id}")
+    def delete_corpus(corpus_id: str, tenant_id: str = Query(...), project_id: str = Query(...)) -> dict[str, Any]:
+        t_id = _clean_scope_id("tenant_id", tenant_id)
+        p_id = _clean_scope_id("project_id", project_id)
+        c_id = _clean_scope_id("corpus_id", corpus_id)
+        with session_factory() as session:
+            row = session.execute(
+                select(Corpus).where(
+                    Corpus.tenant_id == t_id,
+                    Corpus.project_id == p_id,
+                    Corpus.corpus_id == c_id,
+                )
+            ).scalars().first()
+            if row is None:
+                from fastapi import HTTPException
+
+                raise HTTPException(status_code=404, detail="corpus not found")
+            session.delete(row)
+            session.commit()
+        return {"ok": True, "tenant_id": t_id, "project_id": p_id, "corpus_id": c_id}
 
     @r.get("/runs", response_model=list[WorkflowRunResponse])
     def runs(limit: int = Query(default=100, ge=1, le=500)) -> list[WorkflowRunResponse]:
@@ -725,12 +980,24 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
         limit: int = Query(default=50, ge=1, le=200),
         cursor: str | None = Query(default=None),
         scan_page_size: int = Query(default=200, ge=50, le=1000),
+        tenant_id: str | None = Query(default=None),
+        project_id: str | None = Query(default=None),
+        corpus_id: str | None = Query(default=None),
     ) -> dict[str, Any]:
         collection = _qdrant_collection()
         next_offset = _parse_cursor(cursor)
 
         docs: dict[str, dict[str, Any]] = {}
         scanned_pages = 0
+
+        # Build optional Qdrant filter from scope params.
+        scope_must: list[dict[str, Any]] = []
+        if tenant_id:
+            scope_must.append({"key": "tenant_id", "match": {"value": tenant_id}})
+        if project_id:
+            scope_must.append({"key": "project_id", "match": {"value": project_id}})
+        if corpus_id:
+            scope_must.append({"key": "corpus_id", "match": {"value": corpus_id}})
 
         while len(docs) < limit and scanned_pages < 10:
             scanned_pages += 1
@@ -741,6 +1008,8 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
             }
             if next_offset is not None:
                 body["offset"] = next_offset
+            if scope_must:
+                body["filter"] = {"must": scope_must}
 
             res = await _qdrant_post_json(f"/collections/{collection}/points/scroll", body)
             result = res.get("result") or {}
@@ -756,6 +1025,7 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
                     "doc_id": str(doc_id),
                     "tenant_id": payload.get("tenant_id"),
                     "project_id": payload.get("project_id"),
+                    "corpus_id": payload.get("corpus_id"),
                     "doc_version": payload.get("doc_version"),
                     "source_mime_type": payload.get("source_mime_type"),
                     "is_finalized": payload.get("is_finalized"),
@@ -929,6 +1199,65 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
             "active_doc_version": str(row.active_doc_version),
         }
 
+    @r.delete("/docs/{doc_id}")
+    async def delete_doc(
+        doc_id: str,
+        tenant_id: str | None = Query(default=None),
+        project_id: str | None = Query(default=None),
+        corpus_id: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        """Delete all Qdrant chunks and active-version row for a document."""
+        t_id = tenant_id or settings.atlas_default_tenant_id
+        p_id = project_id or settings.atlas_default_project_id
+        c_id = corpus_id or settings.atlas_default_corpus_id
+
+        # Remove all Qdrant points for this doc in this scope.
+        collection = _qdrant_collection()
+        delete_filter: dict[str, Any] = {
+            "must": [
+                {"key": "tenant_id", "match": {"value": t_id}},
+                {"key": "project_id", "match": {"value": p_id}},
+                {"key": "doc_id", "match": {"value": doc_id}},
+            ]
+        }
+        res = await _qdrant_post_json(
+            f"/collections/{collection}/points/delete",
+            {"filter": delete_filter, "wait": True},
+        )
+        points_deleted = (res.get("result") or {}).get("operation_id", 0)
+
+        # Remove the active-doc-version row (best-effort).
+        rows_deleted = 0
+        try:
+            from atlas.models import ActiveDocVersion
+
+            with session_factory() as session:
+                stmt = (
+                    session.query(ActiveDocVersion)
+                    .filter(
+                        ActiveDocVersion.tenant_id == t_id,
+                        ActiveDocVersion.project_id == p_id,
+                        ActiveDocVersion.doc_id == doc_id,
+                    )
+                )
+                rows = stmt.all()
+                for row in rows:
+                    session.delete(row)
+                session.commit()
+                rows_deleted = len(rows)
+        except Exception:  # noqa: BLE001
+            rows_deleted = 0
+
+        return {
+            "ok": True,
+            "doc_id": doc_id,
+            "tenant_id": t_id,
+            "project_id": p_id,
+            "corpus_id": c_id,
+            "qdrant_operation_id": points_deleted,
+            "active_version_rows_deleted": rows_deleted,
+        }
+
     @r.get("/docs/{doc_id}/export")
     async def export_doc(
         doc_id: str,
@@ -936,24 +1265,37 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
         project_id: str | None = Query(default=None),
         corpus_id: str | None = Query(default=None),
         doc_version: str | None = Query(default=None),
+        format: str = Query(default="full", description="Export format: 'full' (default) or 'lean' (markdown only)."),
     ) -> Any:
-        from atlas.export_package import export_doc_package
+        from atlas.export_package import export_doc_lean, export_doc_package
 
         t_id = tenant_id or settings.atlas_default_tenant_id
         p_id = project_id or settings.atlas_default_project_id
         c_id = corpus_id or settings.atlas_default_corpus_id
 
-        blob = await export_doc_package(
-            session_factory=session_factory,
-            tenant_id=t_id,
-            project_id=p_id,
-            corpus_id=c_id,
-            doc_id=doc_id,
-            doc_version=doc_version,
-        )
+        if (format or "full").lower() == "lean":
+            blob = await export_doc_lean(
+                session_factory=session_factory,
+                tenant_id=t_id,
+                project_id=p_id,
+                corpus_id=c_id,
+                doc_id=doc_id,
+                doc_version=doc_version,
+            )
+            name_version = (doc_version or "active").replace("/", "_")
+            filename = f"atlas_lean_{doc_id}_{name_version}.zip"
+        else:
+            blob = await export_doc_package(
+                session_factory=session_factory,
+                tenant_id=t_id,
+                project_id=p_id,
+                corpus_id=c_id,
+                doc_id=doc_id,
+                doc_version=doc_version,
+            )
+            name_version = (doc_version or "active").replace("/", "_")
+            filename = f"atlas_export_{doc_id}_{name_version}.zip"
 
-        name_version = (doc_version or "active").replace("/", "_")
-        filename = f"atlas_export_{doc_id}_{name_version}.zip"
         return StreamingResponse(
             io.BytesIO(blob),
             media_type="application/zip",
@@ -966,27 +1308,168 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
         tenant_id: str | None = Query(default=None),
         project_id: str | None = Query(default=None),
         max_docs: int = Query(default=200, ge=1, le=5000),
+        format: str = Query(default="full", description="Export format: 'full' (default) or 'lean' (markdown only)."),
     ) -> Any:
-        from atlas.corpus_package import export_corpus_package
+        from atlas.corpus_package import export_corpus_lean, export_corpus_package
 
         t_id = tenant_id or settings.atlas_default_tenant_id
         p_id = project_id or settings.atlas_default_project_id
         c_id = (corpus_id or "").strip() or settings.atlas_default_corpus_id
 
-        blob = await export_corpus_package(
-            session_factory=session_factory,
-            tenant_id=t_id,
-            project_id=p_id,
-            corpus_id=c_id,
-            max_docs=int(max_docs),
-        )
+        if (format or "full").lower() == "lean":
+            blob = await export_corpus_lean(
+                session_factory=session_factory,
+                tenant_id=t_id,
+                project_id=p_id,
+                corpus_id=c_id,
+                max_docs=int(max_docs),
+            )
+            filename = f"atlas_corpus_lean_{c_id}.zip"
+        else:
+            blob = await export_corpus_package(
+                session_factory=session_factory,
+                tenant_id=t_id,
+                project_id=p_id,
+                corpus_id=c_id,
+                max_docs=int(max_docs),
+            )
+            filename = f"atlas_corpus_export_{c_id}.zip"
 
-        filename = f"atlas_corpus_export_{c_id}.zip"
         return StreamingResponse(
             io.BytesIO(blob),
             media_type="application/zip",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
+
+    @r.get("/projects/{project_id}/export")
+    async def export_project(
+        project_id: str,
+        tenant_id: str | None = Query(default=None),
+        max_docs: int = Query(default=2000, ge=1, le=20000),
+        format: str = Query(default="full", description="Export format: 'full' (default) or 'lean' (markdown only)."),
+    ) -> Any:
+        from atlas.corpus_package import export_project_lean, export_project_package
+
+        t_id = tenant_id or settings.atlas_default_tenant_id
+        p_id = (project_id or "").strip() or settings.atlas_default_project_id
+
+        if (format or "full").lower() == "lean":
+            blob = await export_project_lean(
+                session_factory=session_factory,
+                tenant_id=t_id,
+                project_id=p_id,
+                max_docs=int(max_docs),
+            )
+            filename = f"atlas_project_lean_{p_id}.zip"
+        else:
+            blob = await export_project_package(
+                session_factory=session_factory,
+                tenant_id=t_id,
+                project_id=p_id,
+                max_docs=int(max_docs),
+            )
+            filename = f"atlas_project_export_{p_id}.zip"
+
+        return StreamingResponse(
+            io.BytesIO(blob),
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @r.get("/tenants/{tenant_id}/export")
+    async def export_tenant(
+        tenant_id: str,
+        max_docs: int = Query(default=2000, ge=1, le=20000),
+        format: str = Query(default="full", description="Export format: 'full' (default) or 'lean' (markdown only)."),
+    ) -> Any:
+        from atlas.corpus_package import export_tenant_lean, export_tenant_package
+
+        t_id = (tenant_id or "").strip() or settings.atlas_default_tenant_id
+        if (format or "full").lower() == "lean":
+            blob = await export_tenant_lean(
+                session_factory=session_factory,
+                tenant_id=t_id,
+                max_docs=int(max_docs),
+            )
+            filename = f"atlas_tenant_lean_{t_id}.zip"
+        else:
+            blob = await export_tenant_package(
+                session_factory=session_factory,
+                tenant_id=t_id,
+                max_docs=int(max_docs),
+            )
+            filename = f"atlas_tenant_export_{t_id}.zip"
+
+        return StreamingResponse(
+            io.BytesIO(blob),
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @r.get("/export")
+    async def export_scoped(
+        scope: str = Query(..., description="One of: document, corpus, project, tenant"),
+        tenant_id: str | None = Query(default=None),
+        project_id: str | None = Query(default=None),
+        corpus_id: str | None = Query(default=None),
+        doc_id: str | None = Query(default=None),
+        doc_version: str | None = Query(default=None),
+        max_docs: int = Query(default=2000, ge=1, le=20000),
+        format: str = Query(default="full", description="Export format: 'full' (default) or 'lean' (markdown only)."),
+    ) -> Any:
+        normalized_scope = (scope or "").strip().lower()
+        t_id = tenant_id or settings.atlas_default_tenant_id
+
+        if normalized_scope == "document":
+            if not (doc_id or "").strip():
+                from fastapi import HTTPException
+
+                raise HTTPException(status_code=400, detail="doc_id is required for document scope")
+            return await export_doc(
+                doc_id=str(doc_id),
+                tenant_id=t_id,
+                project_id=project_id,
+                corpus_id=corpus_id,
+                doc_version=doc_version,
+                format=format,
+            )
+
+        if normalized_scope == "corpus":
+            if not (corpus_id or "").strip():
+                from fastapi import HTTPException
+
+                raise HTTPException(status_code=400, detail="corpus_id is required for corpus scope")
+            return await export_corpus(
+                corpus_id=str(corpus_id),
+                tenant_id=t_id,
+                project_id=project_id,
+                max_docs=int(max_docs),
+                format=format,
+            )
+
+        if normalized_scope == "project":
+            p_id = (project_id or "").strip()
+            if not p_id:
+                from fastapi import HTTPException
+
+                raise HTTPException(status_code=400, detail="project_id is required for project scope")
+            return await export_project(
+                project_id=p_id,
+                tenant_id=t_id,
+                max_docs=int(max_docs),
+                format=format,
+            )
+
+        if normalized_scope == "tenant":
+            return await export_tenant(
+                tenant_id=t_id,
+                max_docs=int(max_docs),
+                format=format,
+            )
+
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=400, detail="scope must be one of: document, corpus, project, tenant")
 
     @r.post("/corpora/{corpus_id}/import")
     async def import_corpus(

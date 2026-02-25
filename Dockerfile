@@ -9,6 +9,7 @@ WORKDIR /app
 # Docling is a required base dependency.
 ARG ATLAS_PIP_EXTRAS=""
 
+# ---------- OS libraries (cached unless base image changes) ----------
 # Docling OCR can pull in OpenCV via rapidocr. The slim base image does not
 # include the shared libraries OpenCV expects at runtime.
 RUN apt-get update \
@@ -22,11 +23,18 @@ RUN apt-get update \
         libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install dependencies
+# ---------- Dependency layer (cached until pyproject.toml changes) ----------
+# Copy only the project metadata + a tiny stub so pip can resolve deps
+# without needing the real source tree. This means editing files under src/
+# does NOT trigger a full pip re-install of docling, onnxruntime, etc.
 COPY pyproject.toml LICENSE README.md ./
-COPY src ./src
-RUN pip install --no-cache-dir --upgrade pip \
+RUN mkdir -p src/atlas && echo '__version__ = "0.0.0"' > src/atlas/__init__.py \
+    && pip install --no-cache-dir --upgrade pip \
     && if [ -n "$ATLAS_PIP_EXTRAS" ]; then pip install --no-cache-dir ".[${ATLAS_PIP_EXTRAS}]"; else pip install --no-cache-dir .; fi
+
+# ---------- Source layer (rebuilds only on code changes — fast) ----------
+COPY src ./src
+RUN pip install --no-cache-dir --no-deps .
 
 # Runtime assets (loaded from ATLAS_CONFIG_DIR, default ./config)
 COPY config ./config

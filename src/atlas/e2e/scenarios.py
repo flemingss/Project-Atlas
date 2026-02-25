@@ -139,10 +139,28 @@ def scenario_local_llm_preflight(client: httpx.Client, *, api_url: str) -> None:
     print(f"[e2e] local_llm preflight embeddings ok model={embed_model}")
 
 
+def restore_yaml_default_config(client: httpx.Client, *, api_url: str) -> None:
+    """Restore the YAML-default config as the active version.
+
+    Call this after E2E runs so that deterministic/test provider overrides
+    do not persist and silently intercept real (LM Studio) ingest traffic.
+    """
+    payload = {
+        "name": "e2e: restore yaml defaults",
+        "notes": "Automatic E2E teardown: revert to models.yaml / pipeline.yaml defaults.",
+        "base": "yaml",
+        "patch": {},
+        "activate": True,
+    }
+    r = client.post(f"{api_url}/admin/config-versions", json=payload)
+    _require_ok(r, label="restore yaml default config")
+    print(f"[{_now()}] [e2e] Restored YAML-default config as active version")
+
+
 def activate_deterministic_pipeline_models(client: httpx.Client, *, api_url: str, dim: int) -> None:
     payload = {
         "name": f"e2e: deterministic pipeline models (dim {dim})",
-        "notes": "E2E scenario runner: deterministic providers for judge/refine/metadata/embeddings.",
+        "notes": "E2E scenario runner: deterministic providers for judge/refine/metadata/embeddings. Auto-reverted on teardown.",
         "base": "yaml",
         "patch": {
             "models": {
@@ -286,7 +304,14 @@ def scenario_config_version_activation(client: httpx.Client, *, api_url: str) ->
         )
 
 
-def scenario_rag_roundtrip(client: httpx.Client, *, api_url: str) -> None:
+def scenario_rag_roundtrip(
+    client: httpx.Client,
+    *,
+    api_url: str,
+    qdrant_url: str,
+    collection: str,
+    mode: str,
+) -> None:
     doc_id = f"e2e-doc-{int(time.time())}"
     ingest = {
         "doc_id": doc_id,
@@ -306,22 +331,36 @@ def scenario_rag_roundtrip(client: httpx.Client, *, api_url: str) -> None:
     if int(data1.get("chunks_upserted", 0)) < 1:
         raise RuntimeError(f"rag ingest upserted 0 chunks: {data1}")
 
+    # Validate the new doc is actually present in Qdrant.
+    # In deterministic mode, embeddings are non-semantic, so we should not rely
+    # on natural-language search to retrieve a specific doc.
+    filt = {
+        "must": [
+            {"key": "tenant_id", "match": {"value": "local"}},
+            {"key": "project_id", "match": {"value": "default"}},
+            {"key": "doc_id", "match": {"value": doc_id}},
+        ]
+    }
+    found = qdrant_count_points(client, qdrant_url=qdrant_url, collection=collection, filt=filt)
+    if found < 1:
+        raise RuntimeError(f"rag ingest did not materialize in qdrant for doc_id={doc_id}")
+
     search = {
         "query": "E2E test chunk",
         "top_k": 5,
         "tenant_id": "local",
         "project_id": "default",
     }
+
     r2 = client.post(f"{api_url}/rag/search", json=search)
     data2 = _require_ok(r2, label="rag search")
     hits = data2.get("hits") or []
     if not hits:
         raise RuntimeError(f"rag search returned no hits: {data2}")
 
-    if not any(h.get("doc_id") == doc_id for h in hits):
-        raise RuntimeError(
-            f"rag search did not return our doc_id={doc_id}: {json.dumps(hits)[:500]}"
-        )
+    # Only enforce semantic retrieval when embeddings are expected to be semantic.
+    if mode == "local_llm" and not any(h.get("doc_id") == doc_id for h in hits):
+        raise RuntimeError(f"rag search did not return our doc_id={doc_id}: {json.dumps(hits)[:500]}")
 
 
 def scenario_rag_tenant_isolation(client: httpx.Client, *, api_url: str) -> None:
@@ -480,8 +519,9 @@ def scenario_pipeline_hitl_escalation_and_resume(
     if int(resumed.get("chunks_upserted", 0)) < 1:
         raise RuntimeError(f"Expected chunks after resume, got: {resumed}")
 
-    # Verify searchable
-    search = {"query": "Fixed content", "top_k": 5, "tenant_id": "local", "project_id": "default"}
+    # Verify searchable – use a generous top_k because deterministic
+    # embeddings have no semantic ranking; the resumed doc may sit anywhere.
+    search = {"query": "Fixed content", "top_k": 50, "tenant_id": "local", "project_id": "default"}
     hits = (
         _require_ok(client.post(f"{api_url}/rag/search", json=search), label="rag search after resume").get("hits")
         or []
@@ -490,7 +530,14 @@ def scenario_pipeline_hitl_escalation_and_resume(
         raise RuntimeError(f"Expected search to find resumed doc_id={doc_id}")
 
 
-def scenario_batch_multi_document_ingest(client: httpx.Client, *, api_url: str) -> None:
+def scenario_batch_multi_document_ingest(
+    client: httpx.Client,
+    *,
+    api_url: str,
+    qdrant_url: str,
+    collection: str,
+    mode: str,
+) -> None:
     """Validate batch ingestion of multiple documents with various characteristics."""
     timestamp = int(time.time())
     doc_ids = []
@@ -514,15 +561,40 @@ def scenario_batch_multi_document_ingest(client: httpx.Client, *, api_url: str) 
         if int(data.get("chunks_upserted", 0)) < 1:
             raise RuntimeError(f"Batch doc {i} did not ingest: {data}")
 
-    # Verify we can search and find at least some of these documents
-    search = {"query": "topic", "top_k": 10, "tenant_id": "local", "project_id": "default"}
-    hits = _require_ok(client.post(f"{api_url}/rag/search", json=search), label="batch search").get("hits") or []
-    found_count = sum(1 for h in hits if h.get("doc_id") in doc_ids)
-    if found_count < 1:
-        raise RuntimeError(f"Expected to find at least one batch document, found {found_count}")
+    if mode == "local_llm":
+        # Verify we can semantically search and find at least some of these documents.
+        search = {"query": "topic", "top_k": 10, "tenant_id": "local", "project_id": "default"}
+        hits = _require_ok(client.post(f"{api_url}/rag/search", json=search), label="batch search").get("hits") or []
+        found_count = sum(1 for h in hits if h.get("doc_id") in doc_ids)
+        if found_count < 1:
+            raise RuntimeError(f"Expected to find at least one batch document, found {found_count}")
+        return
+
+    # Deterministic embeddings are non-semantic; validate batch ingestion by checking
+    # that each doc_id materialized in Qdrant.
+    present = 0
+    for doc_id in doc_ids:
+        filt = {
+            "must": [
+                {"key": "tenant_id", "match": {"value": "local"}},
+                {"key": "project_id", "match": {"value": "default"}},
+                {"key": "doc_id", "match": {"value": doc_id}},
+            ]
+        }
+        if qdrant_count_points(client, qdrant_url=qdrant_url, collection=collection, filt=filt) >= 1:
+            present += 1
+    if present != len(doc_ids):
+        raise RuntimeError(f"Expected all batch docs present in qdrant; found {present}/{len(doc_ids)}")
 
 
-def scenario_workflow_orchestration_validation(client: httpx.Client, *, api_url: str) -> None:
+def scenario_workflow_orchestration_validation(
+    client: httpx.Client,
+    *,
+    api_url: str,
+    qdrant_url: str,
+    collection: str,
+    mode: str,
+) -> None:
     """
     Comprehensive workflow test: ingest → chunk → judge → embed → store → search.
     Validates complete data flow through the entire pipeline.
@@ -553,12 +625,26 @@ def scenario_workflow_orchestration_validation(client: httpx.Client, *, api_url:
     if not runs or not isinstance(runs, list):
         raise RuntimeError("No workflow runs found in ledger")
 
-    # Step 3: Search for the ingested content and validate retrieval
-    search = {"query": "system architecture", "top_k": 5, "tenant_id": "local", "project_id": "default"}
-    search_data = _require_ok(client.post(f"{api_url}/rag/search", json=search), label="workflow search")
-    hits = search_data.get("hits") or []
-    if not any(h.get("doc_id") == doc_id for h in hits):
-        raise RuntimeError(f"Workflow: search did not find ingested doc_id={doc_id}")
+    # Step 3: Validate retrieval.
+    if mode == "local_llm":
+        # Semantic embeddings should allow finding the ingested doc.
+        search = {"query": "system architecture", "top_k": 5, "tenant_id": "local", "project_id": "default"}
+        search_data = _require_ok(client.post(f"{api_url}/rag/search", json=search), label="workflow search")
+        hits = search_data.get("hits") or []
+        if not any(h.get("doc_id") == doc_id for h in hits):
+            raise RuntimeError(f"Workflow: search did not find ingested doc_id={doc_id}")
+        return
+
+    # Deterministic embeddings are non-semantic; validate the ingest->store path via Qdrant.
+    filt = {
+        "must": [
+            {"key": "tenant_id", "match": {"value": "local"}},
+            {"key": "project_id", "match": {"value": "default"}},
+            {"key": "doc_id", "match": {"value": doc_id}},
+        ]
+    }
+    if qdrant_count_points(client, qdrant_url=qdrant_url, collection=collection, filt=filt) < 1:
+        raise RuntimeError(f"Workflow: expected qdrant points for doc_id={doc_id}")
 
 
 def scenario_error_recovery_validation(client: httpx.Client, *, api_url: str) -> None:
@@ -583,7 +669,10 @@ def scenario_error_recovery_validation(client: httpx.Client, *, api_url: str) ->
 
     # Get the task and test skip operation
     task_skip = _require_ok(client.post(f"{api_url}/admin/hitl/tasks/next", params={"assigned_to": "e2e"}), label="error recovery get task skip")
-    skip_result = _require_ok(client.post(f"{api_url}/admin/hitl/tasks/{task_skip['id']}/skip"), label="error recovery skip")
+    skip_result = _require_ok(
+        client.post(f"{api_url}/admin/hitl/tasks/{task_skip['id']}/skip", json={}),
+        label="error recovery skip",
+    )
     if skip_result.get("status") != "skipped":
         raise RuntimeError(f"Skip did not transition to skipped status: {skip_result}")
 
@@ -604,7 +693,10 @@ def scenario_error_recovery_validation(client: httpx.Client, *, api_url: str) ->
 
     # Get the task and test reject operation
     task_reject = _require_ok(client.post(f"{api_url}/admin/hitl/tasks/next", params={"assigned_to": "e2e"}), label="error recovery get task reject")
-    reject_result = _require_ok(client.post(f"{api_url}/admin/hitl/tasks/{task_reject['id']}/reject"), label="error recovery reject")
+    reject_result = _require_ok(
+        client.post(f"{api_url}/admin/hitl/tasks/{task_reject['id']}/reject", json={}),
+        label="error recovery reject",
+    )
     if reject_result.get("status") != "rejected":
         raise RuntimeError(f"Reject did not transition to rejected status: {reject_result}")
 
@@ -616,18 +708,29 @@ def scenario_looking_glass_endpoints(client: httpx.Client, *, api_url: str) -> N
     """
     # Check Qdrant status
     qdrant_status = _require_ok(client.get(f"{api_url}/admin/looking-glass/qdrant"), label="looking glass qdrant")
-    if "collections" not in qdrant_status:
-        raise RuntimeError(f"Looking Glass Qdrant missing collections: {qdrant_status}")
+    if "collections" in qdrant_status:
+        # Legacy shape: summary across all collections.
+        if not isinstance(qdrant_status.get("collections"), list):
+            raise RuntimeError(f"Looking Glass Qdrant collections should be a list: {qdrant_status}")
+    elif "collection" in qdrant_status and "collection_info" in qdrant_status:
+        # Current shape: info for the configured collection.
+        if not qdrant_status.get("collection"):
+            raise RuntimeError(f"Looking Glass Qdrant missing collection name: {qdrant_status}")
+    else:
+        raise RuntimeError(f"Looking Glass Qdrant unexpected shape: {qdrant_status}")
 
     # Check inventory
     inventory = _require_ok(client.get(f"{api_url}/admin/looking-glass/inventory"), label="looking glass inventory")
-    if "docs" not in inventory or "chunks" not in inventory:
-        raise RuntimeError(f"Looking Glass inventory incomplete: {inventory}")
+    # Current shape is a summary (counts + breakdowns) plus a ledger snapshot.
+    for k in ("collection", "ledger", "scanned_points", "unique_docs", "points_finalized", "points_nonfinalized"):
+        if k not in inventory:
+            raise RuntimeError(f"Looking Glass inventory missing '{k}': {inventory}")
 
     # Check docs list
-    docs = _require_ok(client.get(f"{api_url}/admin/looking-glass/docs"), label="looking glass docs")
+    docs_res = _require_ok(client.get(f"{api_url}/admin/looking-glass/docs"), label="looking glass docs")
+    docs = docs_res.get("docs")
     if not isinstance(docs, list):
-        raise RuntimeError(f"Looking Glass docs should return list: {docs}")
+        raise RuntimeError(f"Looking Glass docs should return dict with 'docs' list: {docs_res}")
 
 
 def run_scenarios(
@@ -662,6 +765,10 @@ def run_scenarios(
     with httpx.Client(timeout=60.0, headers=headers) as client:
         wait_for_health(client, api_url=api, timeout_s=timeout_s)
 
+        # Track whether we activate test-specific config (deterministic / local_llm)
+        # so teardown can unconditionally restore defaults.
+        _activated_test_config = False
+
         _run_one("admin_endpoints", lambda: scenario_admin_endpoints(client, api_url=api))
         if results[-1].ok:
             _run_one(
@@ -681,6 +788,7 @@ def run_scenarios(
                 "activate_local_llm_pipeline_models",
                 lambda: activate_local_llm_pipeline_models(client, api_url=api),
             )
+            _activated_test_config = True
 
         dim = qdrant_collection_dim(client, qdrant_url=qdrant, collection=collection)
         if dim is None:
@@ -691,9 +799,19 @@ def run_scenarios(
                 "activate_deterministic_pipeline_models",
                 lambda: activate_deterministic_pipeline_models(client, api_url=api, dim=dim),
             )
+            _activated_test_config = True
 
         if results[-1].ok:
-            _run_one("rag_roundtrip", lambda: scenario_rag_roundtrip(client, api_url=api))
+            _run_one(
+                "rag_roundtrip",
+                lambda: scenario_rag_roundtrip(
+                    client,
+                    api_url=api,
+                    qdrant_url=qdrant,
+                    collection=collection,
+                    mode=mode,
+                ),
+            )
         if results[-1].ok:
             _run_one("rag_tenant_isolation", lambda: scenario_rag_tenant_isolation(client, api_url=api))
         if results[-1].ok:
@@ -716,16 +834,39 @@ def run_scenarios(
 
         # Comprehensive workflow and orchestration tests
         if results[-1].ok:
-            _run_one("batch_multi_document_ingest", lambda: scenario_batch_multi_document_ingest(client, api_url=api))
+            _run_one(
+                "batch_multi_document_ingest",
+                lambda: scenario_batch_multi_document_ingest(
+                    client,
+                    api_url=api,
+                    qdrant_url=qdrant,
+                    collection=collection,
+                    mode=mode,
+                ),
+            )
         if results[-1].ok:
             _run_one(
                 "workflow_orchestration_validation",
-                lambda: scenario_workflow_orchestration_validation(client, api_url=api),
+                lambda: scenario_workflow_orchestration_validation(
+                    client,
+                    api_url=api,
+                    qdrant_url=qdrant,
+                    collection=collection,
+                    mode=mode,
+                ),
             )
         if results[-1].ok:
             _run_one("error_recovery_validation", lambda: scenario_error_recovery_validation(client, api_url=api))
         if results[-1].ok:
             _run_one("looking_glass_endpoints", lambda: scenario_looking_glass_endpoints(client, api_url=api))
+
+    # ---- Teardown: restore YAML defaults so test providers don't persist ----
+    if _activated_test_config:
+        try:
+            with httpx.Client(timeout=60.0, headers=headers) as teardown_client:
+                restore_yaml_default_config(teardown_client, api_url=api)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[{_now()}] [e2e] WARNING: failed to restore default config on teardown: {exc}")
 
     ok = all(r.ok for r in results)
     return RunSummary(ok=ok, results=results)

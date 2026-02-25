@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import httpx
@@ -10,6 +11,7 @@ from atlas.settings import Settings
 
 
 _DEV_ENVS = {"dev", "development", "local", "test"}
+_log = logging.getLogger("atlas.startup")
 
 
 def _is_non_dev(env: str) -> bool:
@@ -22,6 +24,7 @@ def validate_startup(*, settings: Settings, config_manager: ConfigManager, engin
     _validate_config_shapes(config_manager=config_manager)
     _validate_db_connection(settings=settings, engine=engine)
     _validate_qdrant(settings=settings)
+    _warn_deterministic_config(settings=settings, engine=engine)
 
 
 def _validate_admin_token(*, settings: Settings) -> None:
@@ -108,3 +111,51 @@ def _validate_qdrant(*, settings: Settings) -> None:
             r.raise_for_status()
     except Exception as e:  # noqa: BLE001
         raise RuntimeError(f"Qdrant unreachable at ATLAS_QDRANT_URL: {settings.atlas_qdrant_url} ({e})") from e
+
+
+def _warn_deterministic_config(*, settings: Settings, engine: Engine) -> None:
+    """Check if the active DB config version uses deterministic providers.
+
+    This catches the common case where E2E tests activated deterministic
+    (stub) providers and the teardown was skipped or failed, so real ingest
+    would silently bypass external LLM calls.
+
+    In non-dev environments this is promoted to an ERROR-level log.
+    """
+    try:
+        from sqlalchemy.orm import Session
+        from atlas.models import ConfigVersion
+        from sqlalchemy import select
+
+        with Session(engine) as session:
+            active = session.execute(
+                select(ConfigVersion).where(ConfigVersion.is_active.is_(True))
+            ).scalars().first()
+            if active is None:
+                return  # No DB config override → YAML defaults will be used
+
+            roles = (active.payload or {}).get("models", {}).get("roles", {})
+            deterministic_roles = [
+                role_name
+                for role_name in ("judge_model", "refine_model", "embed_model",
+                                  "metadata_tier1_model", "metadata_tier2_model")
+                if (roles.get(role_name) or {}).get("provider") == "deterministic"
+            ]
+            if not deterministic_roles:
+                return
+
+            msg = (
+                f"Active config version (id={active.id}) uses DETERMINISTIC provider for: "
+                f"{', '.join(deterministic_roles)}. "
+                "External LLM calls (e.g. LM Studio) will NOT be made during ingest. "
+                "This is normal during E2E tests but unexpected in regular operation. "
+                "To restore real providers: POST /admin/config-versions with "
+                '{\"base\": \"yaml\", \"patch\": {}, \"activate\": true}'
+            )
+            if _is_non_dev(settings.atlas_env):
+                _log.error(msg)
+            else:
+                _log.warning(msg)
+    except Exception:  # noqa: BLE001
+        # Best-effort check; don't block startup if the table doesn't exist yet.
+        pass
