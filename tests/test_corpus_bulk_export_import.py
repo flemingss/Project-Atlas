@@ -5,132 +5,13 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-import atlas.api_admin as api_admin
-import atlas.api_rag as api_rag
-import atlas.corpus_package as corpus_package
-import atlas.export_package as export_package
-from atlas.api_admin import make_admin_router
-from atlas.api_rag import make_rag_router
-from atlas.config_manager import ConfigManager
-from atlas.db import make_engine, make_sessionmaker
-from atlas.db_init import ensure_schema
-from atlas.vectorstore.qdrant_store import QdrantHit
-
-
-def _write_minimal_yaml_config(root_dir: Path) -> None:
-    (root_dir / "config").mkdir(parents=True, exist_ok=True)
-    (root_dir / "config" / "pipeline.yaml").write_text(
-        "version: 1\nlimits: { chunk_max_chars: 1000 }\n",
-        encoding="utf-8",
-    )
-    (root_dir / "config" / "models.yaml").write_text(
-        "version: 1\n"
-        "providers: { deterministic: { type: deterministic } }\n"
-        "roles: {\n"
-        "  embed_model: { provider: deterministic, model_name: deterministic-embed, params: { dim: 8 } },\n"
-        "  judge_model: { provider: deterministic, model_name: deterministic-judge, params: {} },\n"
-        "  refine_model: { provider: deterministic, model_name: deterministic-refine, params: {} },\n"
-        "  metadata_tier1_model: { provider: deterministic, model_name: deterministic-meta1, params: {} },\n"
-        "  metadata_tier2_model: { provider: deterministic, model_name: deterministic-meta2, params: {} }\n"
-        "}\n",
-        encoding="utf-8",
-    )
-
-
-def _cond_value(cond: Any) -> tuple[str, Any] | None:
-    try:
-        key = str(getattr(cond, "key"))
-        match = getattr(cond, "match", None)
-        value = getattr(match, "value", None)
-        return key, value
-    except Exception:
-        return None
-
-
-class _MemQdrantStore:
-    _points: dict[str, dict[str, Any]] = {}
-
-    def __init__(self, *, url: str, api_key: str | None, collection: str):
-        self._collection = collection
-
-    @property
-    def collection(self) -> str:
-        return self._collection
-
-    def ensure_collection(self, *, vector_size: int) -> None:
-        assert int(vector_size) > 0
-
-    def upsert_points(self, *, points: list[Any]) -> None:
-        for p in points:
-            pid = str(getattr(p, "id", ""))
-            payload = dict(getattr(p, "payload", {}) or {})
-            _MemQdrantStore._points[pid] = {"id": pid, "payload": payload}
-
-    def _matches(self, payload: dict[str, Any], must: list[Any]) -> bool:
-        for m in must or []:
-            kv = _cond_value(m)
-            if not kv:
-                continue
-            k, v = kv
-            if payload.get(k) != v:
-                return False
-        return True
-
-    def scroll_points(self, *, must: list[Any], limit: int = 256, max_points: int = 10_000) -> list[Any]:
-        out: list[Any] = []
-        for p in _MemQdrantStore._points.values():
-            if self._matches(p.get("payload") or {}, must):
-                out.append({"id": p["id"], "payload": dict(p.get("payload") or {})})
-                if len(out) >= int(max_points):
-                    break
-        return out[: int(limit)] if int(limit) > 0 else out
-
-    def set_payload(self, *, payload: dict[str, Any], must: list[Any]) -> None:
-        for p in _MemQdrantStore._points.values():
-            if self._matches(p.get("payload") or {}, must):
-                p_payload = p.get("payload") or {}
-                p_payload.update(payload or {})
-                p["payload"] = p_payload
-
-    def search(self, *, query_vector: list[float], limit: int, must: list[Any]) -> list[QdrantHit]:
-        hits: list[QdrantHit] = []
-        for p in _MemQdrantStore._points.values():
-            payload = dict(p.get("payload") or {})
-            if self._matches(payload, must):
-                hits.append(QdrantHit(id=p["id"], score=1.0, payload=payload))
-        return hits[: int(limit)]
-
-
-def _make_test_app(tmp_root: Path, monkeypatch: Any) -> FastAPI:
-    _write_minimal_yaml_config(tmp_root)
-    config_manager = ConfigManager(root_dir=tmp_root)
-
-    db_path = tmp_root / "test.sqlite"
-    engine = make_engine(f"sqlite+pysqlite:///{db_path}")
-    ensure_schema(engine)
-    session_factory = make_sessionmaker(engine)
-
-    artifacts_dir = tmp_root / "artifacts"
-    monkeypatch.setenv("ATLAS_ARTIFACTS_DIR", str(artifacts_dir))
-
-    _MemQdrantStore._points = {}
-    monkeypatch.setattr(api_rag, "QdrantStore", _MemQdrantStore)
-    monkeypatch.setattr(api_admin, "QdrantStore", _MemQdrantStore)
-    monkeypatch.setattr("atlas.pipeline.runner.QdrantStore", _MemQdrantStore)
-    monkeypatch.setattr(export_package, "QdrantStore", _MemQdrantStore)
-    monkeypatch.setattr(corpus_package, "QdrantStore", _MemQdrantStore)
-
-    app = FastAPI()
-    app.include_router(make_rag_router(config_manager=config_manager, session_factory=session_factory))
-    app.include_router(make_admin_router(config_manager=config_manager, session_factory=session_factory))
-    return app
+from tests.helpers import FakeQdrantStore, make_test_app
 
 
 def test_corpus_export_then_import_roundtrip(tmp_path: Path, monkeypatch: Any) -> None:
-    app = _make_test_app(tmp_root=tmp_path, monkeypatch=monkeypatch)
+    app, _ = make_test_app(tmp_path, monkeypatch)
     client = TestClient(app)
 
     # Ingest a doc into corpus A.
@@ -174,9 +55,13 @@ def test_corpus_export_then_import_roundtrip(tmp_path: Path, monkeypatch: Any) -
 
     # Ensure points exist for the imported corpus and are searchable.
     has_corp_b = False
-    for p in _MemQdrantStore._points.values():
+    for p in FakeQdrantStore._storage.values():
         payload = p.get("payload") or {}
-        if payload.get("corpus_id") == "corpB" and payload.get("is_finalized") is True and payload.get("is_active_version") is True:
+        if (
+            payload.get("corpus_id") == "corpB"
+            and payload.get("is_finalized") is True
+            and payload.get("is_active_version") is True
+        ):
             has_corp_b = True
             break
     assert has_corp_b
