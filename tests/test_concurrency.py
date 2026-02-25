@@ -42,19 +42,26 @@ async def test_concurrency_guard_queue_depth_tracking() -> None:
 
     # Start a second acquire in the background — it should sit in the queue.
     task = asyncio.create_task(guard.acquire_heavy_task())
-    await asyncio.sleep(0.01)  # let the task reach the semaphore.wait()
-    assert guard.queue_depth >= 0  # may be 0 after reaching semaphore
+
+    # Wait (with polling) until the background task has incremented queue_depth.
+    for _ in range(100):
+        if guard.queue_depth > 0:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("queue_depth did not increase while task was queued")
 
     # Release the first slot — the waiting task should proceed.
     guard.release_heavy_task()
     await asyncio.wait_for(task, timeout=1.0)
-    assert guard.active_tasks == 1
+    # After the queued task acquires, there should be no queued tasks.
+    assert guard.queue_depth == 0
     guard.release_heavy_task()
     assert guard.active_tasks == 0
 
 
 def test_resource_guard_privacy_check() -> None:
-    """check_privacy(is_sensitive=True, allow_api=False) should return False (local only)."""
+    """Sensitive data must not be routed via API; local routing remains allowed."""
     rg = ResourceGuard()
     # Sensitive data + API routing requested → must be rejected
     result = rg.check_privacy(is_sensitive=True, allow_api=True)

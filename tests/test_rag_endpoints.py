@@ -49,7 +49,7 @@ def test_rag_search_returns_hits_and_applies_filters(tmp_path: Path, monkeypatch
 # ---------------------------------------------------------------------------
 
 def test_ingest_text_empty_body_returns_error(tmp_path: Path, monkeypatch: Any) -> None:
-    """POST /rag/ingest/text with text='' should return a 422 or produce no chunks."""
+    """POST /rag/ingest/text with text='' produces no chunks (pipeline short-circuits)."""
     app, _ = make_test_app(tmp_path, monkeypatch, include_admin=False)
     client = TestClient(app)
 
@@ -57,10 +57,8 @@ def test_ingest_text_empty_body_returns_error(tmp_path: Path, monkeypatch: Any) 
         "/rag/ingest/text",
         json={"doc_id": "d1", "doc_version": "v1", "text": ""},
     )
-    # Either a validation error (422) or a 200 with zero chunks upserted is acceptable.
-    assert res.status_code in (200, 422)
-    if res.status_code == 200:
-        assert res.json()["chunks_upserted"] == 0
+    assert res.status_code == 200
+    assert res.json()["chunks_upserted"] == 0
 
 
 def test_ingest_text_missing_doc_id_returns_422(tmp_path: Path, monkeypatch: Any) -> None:

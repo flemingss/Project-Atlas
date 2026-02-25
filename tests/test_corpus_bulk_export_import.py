@@ -54,16 +54,12 @@ def test_corpus_export_then_import_roundtrip(tmp_path: Path, monkeypatch: Any) -
     assert data["docs_imported"] >= 1
 
     # Ensure points exist for the imported corpus and are searchable.
-    has_corp_b = False
-    for p in FakeQdrantStore._storage.values():
-        payload = p.get("payload") or {}
-        if (
-            payload.get("corpus_id") == "corpB"
-            and payload.get("is_finalized") is True
-            and payload.get("is_active_version") is True
-        ):
-            has_corp_b = True
-            break
+    has_corp_b = any(
+        pt.payload.get("corpus_id") == "corpB"
+        and pt.payload.get("is_finalized") is True
+        and pt.payload.get("is_active_version") is True
+        for pt in FakeQdrantStore.last_points
+    )
     assert has_corp_b
 
     # Verify search is corpus-scoped.
