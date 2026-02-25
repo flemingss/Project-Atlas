@@ -7,12 +7,7 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from atlas.api_admin import make_admin_router
-from atlas.api_rag import make_rag_router
-from atlas.config_manager import ConfigManager
-from atlas.db import make_engine, make_sessionmaker
-from atlas.db_init import ensure_schema
-from atlas.vectorstore.qdrant_store import QdrantHit
+from tests.helpers import FakeQdrantStore, make_test_app
 
 
 # Test markers for triggering pipeline behaviors
@@ -21,141 +16,21 @@ HITL_ESCALATION_CONTENT = "\uFFFD\uFFFD\uFFFD"  # Replacement characters that tr
 REFINE_TRIGGER_TEXT = "## Ov3rview\n\nThe syst3m c0nsists of components."  # Typos trigger judge score 3 → refine
 
 
-def _write_minimal_yaml_config(root_dir: Path) -> None:
-    (root_dir / "config").mkdir(parents=True, exist_ok=True)
-    (root_dir / "config" / "pipeline.yaml").write_text(
-        "version: 1\nthresholds: { judge_cutoff_refine: 4, refine_max_retries: 2 }\nlimits: { chunk_max_chars: 1000 }\n",
-        encoding="utf-8",
-    )
-    (root_dir / "config" / "models.yaml").write_text(
-        "version: 1\n"
-        "providers: { deterministic: { type: deterministic } }\n"
-        "roles: {\n"
-        "  embed_model: { provider: deterministic, model_name: deterministic-embed, params: { dim: 8 } },\n"
-        "  judge_model: { provider: deterministic, model_name: deterministic-judge, params: {} },\n"
-        "  refine_model: { provider: deterministic, model_name: deterministic-refine, params: {} },\n"
-        "  metadata_tier1_model: { provider: deterministic, model_name: deterministic-meta1, params: {} },\n"
-        "  metadata_tier2_model: { provider: deterministic, model_name: deterministic-meta2, params: {} }\n"
-        "}\n",
-        encoding="utf-8",
-    )
-
-
-class _FakeQdrantStore:
-    """Mock QdrantStore that tracks all operations for validation.
-    
-    Note: Uses class-level state for simplicity. Tests using this mock should not
-    run in parallel (pytest-xdist) as they share state. The reset() method ensures
-    test isolation when run sequentially.
-    """
-
-    all_points: list[Any] = []
-    search_calls: list[dict[str, Any]] = []
-    upsert_count: int = 0
-
-    def __init__(self, *, url: str, api_key: str | None, collection: str):
-        self._collection = collection
-
-    @property
-    def collection(self) -> str:
-        return self._collection
-
-    def ensure_collection(self, *, vector_size: int) -> None:
-        assert vector_size > 0
-
-    def upsert_points(self, *, points: list[Any]) -> None:
-        # Simulate Qdrant's upsert behavior: replace by ID
-        # Build a dictionary for O(n) lookup
-        existing_by_id = {pt.id: pt for pt in _FakeQdrantStore.all_points}
-        
-        # Update with new points (replaces existing by ID)
-        for pt in points:
-            existing_by_id[pt.id] = pt
-        
-        # Reconstruct the list
-        _FakeQdrantStore.all_points = list(existing_by_id.values())
-        _FakeQdrantStore.upsert_count += len(points)
-
-    def _extract_condition_value(self, condition: Any) -> tuple[str, Any] | None:
-        """Extract key and expected value from a filter condition.
-        
-        Returns (key, expected_value) tuple or None if condition cannot be parsed.
-        """
-        # Handle FieldCondition objects from qdrant_client
-        if hasattr(condition, 'key') and hasattr(condition, 'match'):
-            key = condition.key
-            expected = condition.match.value if hasattr(condition.match, 'value') else condition.match
-            return (key, expected)
-        # Handle dict format (for backward compatibility)
-        elif isinstance(condition, dict) and "key" in condition and "match" in condition:
-            key = condition["key"]
-            expected = condition["match"]["value"] if isinstance(condition["match"], dict) else condition["match"]
-            return (key, expected)
-        return None
-
-    def search(self, *, query_vector: list[float], limit: int, must: list[Any]) -> list[QdrantHit]:
-        _FakeQdrantStore.search_calls.append({"query_vector": query_vector, "limit": limit, "must": must})
-        # Return relevant points that match the filters
-        hits = []
-        for pt in _FakeQdrantStore.all_points:
-            payload = pt.payload
-            # Check filter matching
-            matches = True
-            for condition in must:
-                parsed = self._extract_condition_value(condition)
-                if parsed is None:
-                    continue
-                key, expected = parsed
-                if payload.get(key) != expected:
-                    matches = False
-                    break
-            if matches and len(hits) < limit:
-                hits.append(
-                    QdrantHit(
-                        id=pt.id,
-                        score=0.9,
-                        payload=payload,
-                    )
-                )
-        return hits
-
-    @classmethod
-    def reset(cls) -> None:
-        cls.all_points = []
-        cls.search_calls = []
-        cls.upsert_count = 0
-
-
 def _make_test_app(tmp_root: Path, monkeypatch: Any) -> FastAPI:
-    _write_minimal_yaml_config(tmp_root)
-    config_manager = ConfigManager(root_dir=tmp_root)
+    app, _ = make_test_app(tmp_root, monkeypatch)
 
-    db_path = tmp_root / "test.sqlite"
-    engine = make_engine(f"sqlite+pysqlite:///{db_path}")
-    ensure_schema(engine)
-    session_factory = make_sessionmaker(engine)
-
-    # Patch the store used by the pipeline runner and rag router.
-    _FakeQdrantStore.reset()
-    monkeypatch.setattr("atlas.pipeline.runner.QdrantStore", _FakeQdrantStore)
-    monkeypatch.setattr("atlas.api_rag.QdrantStore", _FakeQdrantStore)
-
-    app = FastAPI()
-    
     # Add health endpoint like the production app
     @app.get("/health")
     async def health() -> dict:
         return {"status": "ok"}
-    
-    app.include_router(make_admin_router(config_manager=config_manager, session_factory=session_factory))
-    app.include_router(make_rag_router(config_manager=config_manager, session_factory=session_factory))
+
     return app
 
 
 def test_e2e_complete_workflow_ingest_to_search(tmp_path: Path, monkeypatch: Any) -> None:
     """
     End-to-end workflow test: Ingest → Chunk → Judge → Embed → Store → Search
-    
+
     This validates the complete happy path through the system with deterministic models.
     """
     app = _make_test_app(tmp_root=tmp_path, monkeypatch=monkeypatch)
@@ -183,8 +58,8 @@ def test_e2e_complete_workflow_ingest_to_search(tmp_path: Path, monkeypatch: Any
     assert ingest_data["chunks_upserted"] >= 1
 
     # Verify chunks were stored
-    assert _FakeQdrantStore.upsert_count >= 1
-    stored_chunk = _FakeQdrantStore.all_points[0]
+    assert FakeQdrantStore.upsert_count >= 1
+    stored_chunk = FakeQdrantStore.last_points[0]
     assert stored_chunk.payload["doc_id"] == doc_id
     assert stored_chunk.payload["tenant_id"] == "test_tenant"
     assert stored_chunk.payload["project_id"] == "test_project"
@@ -213,7 +88,7 @@ def test_e2e_complete_workflow_ingest_to_search(tmp_path: Path, monkeypatch: Any
 def test_e2e_multi_document_batch_workflow(tmp_path: Path, monkeypatch: Any) -> None:
     """
     End-to-end test: Batch ingest multiple documents and verify isolation and retrieval.
-    
+
     Tests that multiple documents can be ingested and each maintains proper isolation.
     """
     app = _make_test_app(tmp_root=tmp_path, monkeypatch=monkeypatch)
@@ -243,7 +118,7 @@ def test_e2e_multi_document_batch_workflow(tmp_path: Path, monkeypatch: Any) -> 
         assert data["chunks_upserted"] >= 1
 
     # Verify all documents were stored
-    stored_doc_ids = {pt.payload["doc_id"] for pt in _FakeQdrantStore.all_points}
+    stored_doc_ids = {pt.payload["doc_id"] for pt in FakeQdrantStore.last_points}
     expected_doc_ids = {doc["doc_id"] for doc in documents}
     assert expected_doc_ids.issubset(stored_doc_ids)
 
@@ -265,7 +140,7 @@ def test_e2e_multi_document_batch_workflow(tmp_path: Path, monkeypatch: Any) -> 
 def test_e2e_pipeline_refine_loop_workflow(tmp_path: Path, monkeypatch: Any) -> None:
     """
     End-to-end test: Pipeline with refine loop (judge score < threshold → refine → re-judge)
-    
+
     Tests the automatic refinement workflow using deterministic models that trigger refinement.
     The text with intentional typos (Ov3rview, syst3m, c0nsists) triggers deterministic judge
     score 3, which is below the threshold of 4, triggering the refine loop. After refinement,
@@ -295,9 +170,9 @@ def test_e2e_pipeline_refine_loop_workflow(tmp_path: Path, monkeypatch: Any) -> 
     assert data["chunks_upserted"] >= 1
 
     # Verify the refined content was stored
-    refined_chunks = [pt for pt in _FakeQdrantStore.all_points if pt.payload.get("doc_id") == doc_id]
+    refined_chunks = [pt for pt in FakeQdrantStore.last_points if pt.payload.get("doc_id") == doc_id]
     assert len(refined_chunks) >= 1
-    
+
     # Verify refinement occurred by checking for the [REFINED] marker added by deterministic refine
     # The deterministic refine model adds "[REFINED]" prefix to refined content
     chunk_text = refined_chunks[0].payload.get("text", "")
@@ -307,7 +182,7 @@ def test_e2e_pipeline_refine_loop_workflow(tmp_path: Path, monkeypatch: Any) -> 
 def test_e2e_hitl_escalation_workflow(tmp_path: Path, monkeypatch: Any) -> None:
     """
     End-to-end test: HITL escalation workflow (unfixable content → HITL → human fix → resume)
-    
+
     Tests the complete human-in-the-loop workflow from escalation through resolution.
     Content containing HITL_ESCALATION_MARKER and replacement characters triggers
     automatic escalation to human review.
@@ -376,7 +251,7 @@ def test_e2e_hitl_escalation_workflow(tmp_path: Path, monkeypatch: Any) -> None:
 def test_e2e_tenant_isolation_workflow(tmp_path: Path, monkeypatch: Any) -> None:
     """
     End-to-end test: Multi-tenant isolation (verify tenant A cannot see tenant B's data)
-    
+
     Critical security test ensuring tenant isolation in the RAG system.
     """
     app = _make_test_app(tmp_root=tmp_path, monkeypatch=monkeypatch)
@@ -434,11 +309,11 @@ def test_e2e_tenant_isolation_workflow(tmp_path: Path, monkeypatch: Any) -> None
     )
     assert search_a.status_code == 200
     hits_a = search_a.json()["hits"]
-    
+
     # Tenant A should see their own doc
     tenant_a_found = any(hit["doc_id"] == doc_a for hit in hits_a)
     assert tenant_a_found, "Tenant A cannot see their own document!"
-    
+
     # Tenant A should NOT see tenant B's doc
     tenant_b_leaked = any(hit["doc_id"] == doc_b for hit in hits_a)
     assert not tenant_b_leaked, "SECURITY: Tenant A can see Tenant B's data!"
@@ -455,11 +330,11 @@ def test_e2e_tenant_isolation_workflow(tmp_path: Path, monkeypatch: Any) -> None
     )
     assert search_b.status_code == 200
     hits_b = search_b.json()["hits"]
-    
+
     # Tenant B should see their own doc
     tenant_b_found = any(hit["doc_id"] == doc_b for hit in hits_b)
     assert tenant_b_found, "Tenant B cannot see their own document!"
-    
+
     # Tenant B should NOT see tenant A's doc
     tenant_a_leaked = any(hit["doc_id"] == doc_a for hit in hits_b)
     assert not tenant_a_leaked, "SECURITY: Tenant B can see Tenant A's data!"
@@ -468,7 +343,7 @@ def test_e2e_tenant_isolation_workflow(tmp_path: Path, monkeypatch: Any) -> None
 def test_e2e_finalized_filter_workflow(tmp_path: Path, monkeypatch: Any) -> None:
     """
     End-to-end test: Non-finalized documents are not returned in searches.
-    
+
     Tests that the is_finalized filter correctly excludes draft documents.
     """
     app = _make_test_app(tmp_root=tmp_path, monkeypatch=monkeypatch)
@@ -529,7 +404,7 @@ def test_e2e_finalized_filter_workflow(tmp_path: Path, monkeypatch: Any) -> None
     # Finalized document SHOULD appear in results
     final_in_results = any(hit["doc_id"] == doc_final for hit in hits)
     assert final_in_results, "Finalized document not found in search results!"
-    
+
     # Draft document should NOT appear in results
     draft_in_results = any(hit["doc_id"] == doc_draft for hit in hits)
     assert not draft_in_results, "Non-finalized document appeared in search results!"
@@ -538,7 +413,7 @@ def test_e2e_finalized_filter_workflow(tmp_path: Path, monkeypatch: Any) -> None
 def test_e2e_config_version_activation_affects_pipeline(tmp_path: Path, monkeypatch: Any) -> None:
     """
     End-to-end test: Changing config versions affects pipeline behavior.
-    
+
     Tests that the dynamic configuration system correctly applies to the pipeline.
     """
     app = _make_test_app(tmp_root=tmp_path, monkeypatch=monkeypatch)
@@ -573,7 +448,7 @@ def test_e2e_config_version_activation_affects_pipeline(tmp_path: Path, monkeypa
 def test_e2e_idempotent_ingest_workflow(tmp_path: Path, monkeypatch: Any) -> None:
     """
     End-to-end test: Ingesting the same document multiple times is idempotent.
-    
+
     Tests that re-ingesting identical content doesn't create duplicates.
     """
     app = _make_test_app(tmp_root=tmp_path, monkeypatch=monkeypatch)
@@ -594,28 +469,31 @@ def test_e2e_idempotent_ingest_workflow(tmp_path: Path, monkeypatch: Any) -> Non
     # First ingest
     response1 = client.post("/rag/ingest/text", json=doc_payload)
     assert response1.status_code == 200
-    
+
     # Count points for this doc after first ingest
-    points_after_first = [pt for pt in _FakeQdrantStore.all_points if pt.payload.get("doc_id") == "idempotent-test"]
+    points_after_first = [pt for pt in FakeQdrantStore.last_points if pt.payload.get("doc_id") == "idempotent-test"]
     count_after_first = len(points_after_first)
     assert count_after_first >= 1, "First ingest produced no points"
 
     # Second ingest (identical)
     response2 = client.post("/rag/ingest/text", json=doc_payload)
     assert response2.status_code == 200
-    
+
     # Count points for this doc after second ingest
-    points_after_second = [pt for pt in _FakeQdrantStore.all_points if pt.payload.get("doc_id") == "idempotent-test"]
+    points_after_second = [pt for pt in FakeQdrantStore.last_points if pt.payload.get("doc_id") == "idempotent-test"]
     count_after_second = len(points_after_second)
-    
+
     # Idempotency: the number of stored points should remain the same (upsert replaces by ID)
-    assert count_after_second == count_after_first, f"Idempotency violation: {count_after_first} points after first ingest, {count_after_second} after second"
+    assert count_after_second == count_after_first, (
+        f"Idempotency violation: {count_after_first} points after first ingest, "
+        f"{count_after_second} after second"
+    )
 
 
 def test_e2e_admin_health_and_diagnostics(tmp_path: Path, monkeypatch: Any) -> None:
     """
     End-to-end test: Admin endpoints for health and diagnostics work correctly.
-    
+
     Tests that operational endpoints are functional for monitoring.
     """
     app = _make_test_app(tmp_root=tmp_path, monkeypatch=monkeypatch)

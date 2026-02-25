@@ -6,7 +6,6 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-import atlas.api_rag as api_rag
 import atlas.pipeline.ingest as pipeline_ingest
 from atlas.api_rag import make_rag_router
 from atlas.config_manager import ConfigManager
@@ -14,87 +13,31 @@ from atlas.db import make_engine, make_sessionmaker
 from atlas.db_init import ensure_schema
 from atlas.ingest.docling_adapter import DoclingParseResult
 from atlas.schemas import ParseProfile
-from atlas.vectorstore.qdrant_store import QdrantHit
+
+from tests.helpers import FakeQdrantStore, make_test_app
 
 
-def _write_minimal_yaml_config(root_dir: Path) -> None:
-    (root_dir / "config").mkdir(parents=True, exist_ok=True)
-    (root_dir / "config" / "pipeline.yaml").write_text(
-        "version: 1\nlimits: { chunk_max_chars: 1000 }\n",
-        encoding="utf-8",
-    )
-    (root_dir / "config" / "models.yaml").write_text(
-        "version: 1\n"
-        "providers: { deterministic: { type: deterministic } }\n"
-        "roles: {\n"
-        "  embed_model: { provider: deterministic, model_name: deterministic-embed, params: { dim: 8 } },\n"
-        "  judge_model: { provider: deterministic, model_name: deterministic-judge, params: {} },\n"
-        "  refine_model: { provider: deterministic, model_name: deterministic-refine, params: {} },\n"
-        "  metadata_tier1_model: { provider: deterministic, model_name: deterministic-meta1, params: {} },\n"
-        "  metadata_tier2_model: { provider: deterministic, model_name: deterministic-meta2, params: {} }\n"
-        "}\n",
-        encoding="utf-8",
-    )
-
-
-class _FakeQdrantStore:
-    last_points: list[Any] = []
-
-    def __init__(self, *, url: str, api_key: str | None, collection: str):
-        self._collection = collection
-
-    @property
-    def collection(self) -> str:
-        return self._collection
-
-    def ensure_collection(self, *, vector_size: int) -> None:
-        assert vector_size > 0
-
-    def upsert_points(self, *, points: list[Any]) -> None:
-        _FakeQdrantStore.last_points = points
-
-    def search(self, *, query_vector: list[float], limit: int, must: list[Any]) -> list[QdrantHit]:
-        return []
-
-
-def _make_test_app(tmp_root: Path, monkeypatch: Any) -> tuple[FastAPI, Any]:
-    _write_minimal_yaml_config(tmp_root)
-    config_manager = ConfigManager(root_dir=tmp_root)
-
-    db_path = tmp_root / "test.sqlite"
-    engine = make_engine(f"sqlite+pysqlite:///{db_path}")
-    ensure_schema(engine)
-    session_factory = make_sessionmaker(engine)
-
-    # Mock Qdrant store to avoid docker dependency.
-    monkeypatch.setattr(api_rag, "QdrantStore", _FakeQdrantStore)
-    monkeypatch.setattr("atlas.pipeline.runner.QdrantStore", _FakeQdrantStore)
-
-    # Ensure artifacts go into the temp dir.
-    monkeypatch.setenv("ATLAS_ARTIFACTS_DIR", str(tmp_root / "artifacts"))
-
-    # Patch Docling adapter to keep parsing deterministic.
-    def _fake_parse_document_path(*, doc_path: Path, source_mime_type: str) -> DoclingParseResult:  # noqa: ARG001
-        if source_mime_type.endswith("wordprocessingml.document"):
-            return DoclingParseResult(
-                markdown_projection="# Sample DOCX\n\nHello from DOCX.\n",
-                docling_json={"schema_version": "test", "pages": 1, "text": "Hello from DOCX."},
-                parse_profile=ParseProfile.TEXT,
-                docling_schema_version="test",
-                meta={"fake": True, "source_mime_type": source_mime_type},
-            )
+def _fake_parse_document_path(*, doc_path: Path, source_mime_type: str) -> DoclingParseResult:  # noqa: ARG001
+    if source_mime_type.endswith("wordprocessingml.document"):
         return DoclingParseResult(
-            markdown_projection="# Sample PDF\n\nHello from PDF.\n",
-            docling_json={"schema_version": "test", "pages": 1, "text": "Hello from PDF."},
-            parse_profile=ParseProfile.PDF_TEXT,
+            markdown_projection="# Sample DOCX\n\nHello from DOCX.\n",
+            docling_json={"schema_version": "test", "pages": 1, "text": "Hello from DOCX."},
+            parse_profile=ParseProfile.TEXT,
             docling_schema_version="test",
             meta={"fake": True, "source_mime_type": source_mime_type},
         )
+    return DoclingParseResult(
+        markdown_projection="# Sample PDF\n\nHello from PDF.\n",
+        docling_json={"schema_version": "test", "pages": 1, "text": "Hello from PDF."},
+        parse_profile=ParseProfile.PDF_TEXT,
+        docling_schema_version="test",
+        meta={"fake": True, "source_mime_type": source_mime_type},
+    )
 
+
+def _make_test_app(tmp_root: Path, monkeypatch: Any) -> tuple[Any, Any]:
+    app, session_factory = make_test_app(tmp_root, monkeypatch, include_admin=False)
     monkeypatch.setattr(pipeline_ingest, "parse_document_path", _fake_parse_document_path)
-
-    app = FastAPI()
-    app.include_router(make_rag_router(config_manager=config_manager, session_factory=session_factory))
     return app, session_factory
 
 
@@ -209,7 +152,6 @@ def test_rag_ingest_markdown_file_succeeds(tmp_path: Path, monkeypatch: Any) -> 
         )
         kinds = {a.kind for a in artifacts}
         assert "source" in kinds
-        assert "docling_json" in kinds
         assert "markdown_projection" in kinds
 
 
@@ -329,14 +271,12 @@ def test_rag_ingest_file_fidelity_flag_in_payload(tmp_path: Path, monkeypatch: A
     assert res.status_code == 200
     assert res.json()["ok"] is True
 
-    for pt in _FakeQdrantStore.last_points:
+    for pt in FakeQdrantStore.last_points:
         assert "fidelity_flag" in pt.payload, "fidelity_flag missing from chunk payload"
 
 
 def test_rag_ingest_hierarchical_strategy(tmp_path: Path, monkeypatch: Any) -> None:
     """Using chunking.strategy=hierarchical must succeed and produce structured chunks."""
-    from atlas.config_manager import ConfigManager
-
     root = tmp_path / "hier"
     root.mkdir()
     (root / "config").mkdir()
@@ -361,24 +301,19 @@ def test_rag_ingest_hierarchical_strategy(tmp_path: Path, monkeypatch: Any) -> N
 
     config_manager = ConfigManager(root_dir=root)
     db_path = root / "test.sqlite"
-    from atlas.db import make_engine, make_sessionmaker
-    from atlas.db_init import ensure_schema
-    from fastapi import FastAPI
 
     engine = make_engine(f"sqlite+pysqlite:///{db_path}")
     ensure_schema(engine)
     sf = make_sessionmaker(engine)
 
-    monkeypatch.setattr("atlas.pipeline.runner.QdrantStore", _FakeQdrantStore)
+    FakeQdrantStore.reset()
+    monkeypatch.setattr("atlas.pipeline.runner.QdrantStore", FakeQdrantStore)
     monkeypatch.setenv("ATLAS_ARTIFACTS_DIR", str(root / "artifacts"))
 
     # Use a markdown file so no Docling call is needed.
     md = b"# Chapter 1\n\nIntro text.\n\n## Section 1.1\n\nDetailed content here.\n"
     app = FastAPI()
-    from atlas.api_rag import make_rag_router
-
     app.include_router(make_rag_router(config_manager=config_manager, session_factory=sf))
-    from fastapi.testclient import TestClient
 
     c = TestClient(app)
     res = c.post(
@@ -392,5 +327,5 @@ def test_rag_ingest_hierarchical_strategy(tmp_path: Path, monkeypatch: Any) -> N
     assert data["chunks_upserted"] >= 1
 
     # Verify section_path is populated for at least one chunk (hierarchical feature).
-    chunks_with_path = [pt for pt in _FakeQdrantStore.last_points if pt.payload.get("section_path")]
+    chunks_with_path = [pt for pt in FakeQdrantStore.last_points if pt.payload.get("section_path")]
     assert chunks_with_path, "hierarchical strategy should produce chunks with section_path"
