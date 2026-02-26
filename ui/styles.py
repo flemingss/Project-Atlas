@@ -38,6 +38,11 @@ h2, h3 {
     font-weight: 600 !important;
     color: #1A1D23 !important;
 }
+h4 {
+    font-size: 0.88rem !important;
+    font-weight: 600 !important;
+    color: #1A1D23 !important;
+}
 .stCaption, [data-testid="stCaptionContainer"] {
     font-size: 0.8rem !important;
     color: #6C757D !important;
@@ -297,6 +302,17 @@ section[data-testid="stSidebar"] .stSelectbox > label {
     margin: 0;
 }
 
+/* -- Card section header (sub-section inside a card) -------------------------*/
+.atlas-card-section {
+    font-size: 0.88rem !important;
+    font-weight: 600 !important;
+    color: #1A1D23 !important;
+    margin-top: 0.75rem !important;
+    margin-bottom: 0.2rem !important;
+    padding-top: 0.5rem;
+    border-top: 1px solid #E8EAED;
+}
+
 /* -- Admin gate (visually muted admin-only section) --------------------------*/
 .atlas-admin-gate {
     border: 1px dashed #ADB5BD;
@@ -495,6 +511,84 @@ hr {
     font-size: 0.9rem;
     color: #6C757D;
     margin-top: 0.5rem;
+}
+
+/* -- Phase C polish ----------------------------------------------------------*/
+
+/* Smooth content transition when switching tabs */
+.stTabs [data-baseweb="tab-panel"] {
+    animation: atlas-fade-in 0.18s ease-out;
+}
+@keyframes atlas-fade-in {
+    from { opacity: 0; transform: translateY(4px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Quality badge colouring for search results */
+.atlas-quality-verified  { color: #28A745; font-weight: 600; font-size: 0.78rem; }
+.atlas-quality-partial   { color: #FFC107; font-weight: 600; font-size: 0.78rem; }
+.atlas-quality-review    { color: #D9534F; font-weight: 600; font-size: 0.78rem; }
+
+/* Responsive: tighter padding on narrow viewports */
+@media (max-width: 768px) {
+    .main .block-container { padding-left: 0.75rem; padding-right: 0.75rem; }
+    .atlas-card, .atlas-card-elevated { padding: 1rem 1.1rem; }
+    .atlas-card-hero { padding: 1.25rem 1.25rem; }
+    .stTabs [data-baseweb="tab"] { padding: 8px 12px; font-size: 0.78rem; }
+    .atlas-stats-strip { flex-wrap: wrap; gap: 0.75rem; }
+    section[data-testid="stSidebar"] { width: 240px !important; }
+}
+
+/* Processing history section polish */
+.atlas-processing-history [data-testid="stExpander"] {
+    border-color: #D6E4F0;
+    background: #F8FAFF;
+}
+
+/* File upload drop zone highlight */
+[data-testid="stFileUploader"] {
+    border-radius: 10px;
+    transition: border-color 0.15s ease;
+}
+[data-testid="stFileUploader"]:hover {
+    border-color: #0068C9;
+}
+
+/* Selectbox and number input consistency */
+.stSelectbox > div > div,
+.stNumberInput > div > div > input {
+    border-radius: 8px;
+    border-color: #E8EAED;
+    transition: border-color 0.15s ease;
+}
+.stSelectbox > div > div:focus-within,
+.stNumberInput > div > div > input:focus {
+    border-color: #0068C9;
+    box-shadow: 0 0 0 2px rgba(0,104,201,0.1);
+}
+
+/* Download button emphasis (after export) */
+.stDownloadButton > button {
+    background: #F0F6FF;
+    border: 1px solid #0068C9;
+    color: #0068C9;
+    font-weight: 600;
+    border-radius: 10px;
+    transition: all 0.15s ease;
+}
+.stDownloadButton > button:hover {
+    background: #0068C9;
+    color: white;
+    box-shadow: 0 2px 8px rgba(0,104,201,0.2);
+}
+
+/* Tooltip / help icon consistency */
+[data-testid="stTooltipIcon"] {
+    color: #ADB5BD;
+    transition: color 0.15s ease;
+}
+[data-testid="stTooltipIcon"]:hover {
+    color: #0068C9;
 }
 </style>
 """

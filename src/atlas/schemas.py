@@ -100,7 +100,8 @@ class DocumentIngestState:
     project_id: str
     source_mime_type: str
 
-    # Source information
+    # Source / corpus information
+    corpus_id: str = ""
     source_uri: str | None = None
     parse_profile: ParseProfile | None = None
 
@@ -135,13 +136,47 @@ class DocumentIngestState:
 
 @dataclass
 class JudgeResult:
-    """Result from the Judge node (HLD section 2)."""
+    """Result from the Judge node (HLD section 2).
 
-    score: int  # 1-5 scale
+    ``sub_scores`` holds per-dimension grades (faithfulness, formatting,
+    cohesion, hallucination_risk) each 1-5.  The composite ``score`` is the
+    rounded mean of sub_scores when available, or a single overall score for
+    backwards compatibility with older judge prompts.
+    """
+
+    score: int  # 1-5 composite (rounded mean of sub_scores)
     confidence_rationale: str
     judge_version: str
     needs_refinement: bool
     timestamp: str
+    sub_scores: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
+class CleanupResult:
+    """Result from the Cleanup node — deterministic markdown transforms.
+
+    The built-in transforms populate ``transforms_applied`` and ``warnings``.
+    If a config-driven cleanup rule matched, the rule-engine fields are also
+    populated:
+    - ``rules_applied``: name(s) of rules whose steps changed the markdown.
+    - ``rules_failed``:  name(s) of rules that encountered errors.
+    - ``fix_counts``:    per-step fix count from the matched rule.
+    - ``rule_tags``:     tags from the matched rule (consumed by routing).
+    """
+
+    cleaned_markdown: str
+    transforms_applied: list[str]
+    warnings: list[str]
+    chars_before: int
+    chars_after: int
+    timestamp: str
+
+    # Config-driven rule-engine fields (Phase 7A)
+    rules_applied: list[str] = field(default_factory=list)
+    rules_failed: list[str] = field(default_factory=list)
+    fix_counts: dict[str, int] = field(default_factory=dict)
+    rule_tags: list[str] = field(default_factory=list)
 
 
 @dataclass

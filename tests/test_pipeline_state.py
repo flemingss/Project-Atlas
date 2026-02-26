@@ -24,6 +24,28 @@ def test_create_pipeline_context():
     assert len(context.results) == 0
 
 
+def test_create_pipeline_context_with_corpus_id():
+    """Test that corpus_id propagates through pipeline context to cleanup matching."""
+    context = create_pipeline_context(
+        doc_id="doc-456",
+        doc_version="1",
+        tenant_id="local",
+        project_id="default",
+        corpus_id="default",
+    )
+
+    assert context.state.corpus_id == "default"
+
+    # Without corpus_id it should default to empty string
+    ctx_no_corpus = create_pipeline_context(
+        doc_id="doc-789",
+        doc_version="1",
+        tenant_id="local",
+        project_id="default",
+    )
+    assert ctx_no_corpus.state.corpus_id == ""
+
+
 def test_set_judge_result():
     """Test setting judge result in context."""
     context = create_pipeline_context(
@@ -94,7 +116,8 @@ def test_pipeline_state_manager_valid_transitions():
     """Test valid state transitions."""
     manager = PipelineStateManager()
 
-    assert manager.can_transition(PipelineNode.INGEST, PipelineNode.JUDGE) is True
+    assert manager.can_transition(PipelineNode.INGEST, PipelineNode.CLEANUP) is True
+    assert manager.can_transition(PipelineNode.CLEANUP, PipelineNode.JUDGE) is True
     assert manager.can_transition(PipelineNode.JUDGE, PipelineNode.REFINE) is True
     assert manager.can_transition(PipelineNode.JUDGE, PipelineNode.METADATA) is True
     assert manager.can_transition(PipelineNode.REFINE, PipelineNode.JUDGE) is True
@@ -120,11 +143,11 @@ def test_pipeline_transition():
     )
 
     # Valid transition
-    success = manager.transition(context, PipelineNode.JUDGE)
+    success = manager.transition(context, PipelineNode.CLEANUP)
     assert success is True
-    assert context.state.current_node == "judge"
+    assert context.state.current_node == "cleanup"
 
-    # Invalid transition
+    # Invalid transition (CLEANUP -> EMBEDDINGS not allowed)
     success = manager.transition(context, PipelineNode.EMBEDDINGS)
     assert success is False
 
@@ -141,6 +164,11 @@ def test_get_next_node():
         tenant_id="test-tenant",
         project_id="test-project",
     )
+    next_node = manager.get_next_node(context, config)
+    assert next_node == PipelineNode.CLEANUP
+
+    # Test cleanup -> judge
+    context.state.current_node = "cleanup"
     next_node = manager.get_next_node(context, config)
     assert next_node == PipelineNode.JUDGE
 
@@ -175,3 +203,28 @@ def test_get_next_node():
     context2.set_judge_result(result2)
     next_node = manager.get_next_node(context2, config)
     assert next_node == PipelineNode.REFINE
+
+
+def test_set_judge_result_stores_sub_scores():
+    """Verify sub_scores survive set_judge_result → context.results round-trip."""
+    context = create_pipeline_context(
+        doc_id="doc-sub",
+        doc_version="1",
+        tenant_id="t",
+        project_id="p",
+    )
+    dims = {"faithfulness": 5, "formatting": 4, "cohesion": 3, "hallucination_risk": 5}
+    result = JudgeResult(
+        score=4,
+        confidence_rationale="Good",
+        judge_version="v1",
+        needs_refinement=False,
+        timestamp="2024-01-01T00:00:00Z",
+        sub_scores=dims,
+    )
+    context.set_judge_result(result)
+
+    stored = context.results["judge"]
+    assert stored["sub_scores"] == dims
+    assert stored["score"] == 4
+    assert context.state.mean_judge_score == 4

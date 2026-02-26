@@ -17,6 +17,10 @@ Thumbs.db
 # Streamlit local secrets (never commit)
 .streamlit/secrets.toml
 
+# Operator-local config (use *.example as the stock reference)
+config/pipeline.yaml
+config/models.yaml
+
 # Editor/IDE
 .idea/
 .vscode/*.code-workspace

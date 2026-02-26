@@ -28,7 +28,13 @@ Every tab follows a **locked page skeleton**: `tab_header` (title + subtitle + s
 
 ### Tabs
 
-Home | Upload | Library | Search | Review | Versions & Export | History
+Home | Upload | My Collection | Search | Review | Admin
+
+The **Admin** tab is only visible when an admin token is provided.
+
+The UI has been consolidated from 8 tabs to 6 to simplify the user experience:
+- **Library** and **Versions & Export** were merged into **My Collection**.
+- **History** was moved into an expandable section within the **Upload** tab.
 
 ### `ui/theme.py` — Design Tokens
 

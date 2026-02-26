@@ -120,9 +120,14 @@ class FakeQdrantStore:
                 key = str(getattr(m, "key"))
                 match_obj = getattr(m, "match", None)
                 value = getattr(match_obj, "value", None)
+                # Support MatchAny (e.g. fidelity_mode = "verified+partial").
+                any_values = getattr(match_obj, "any", None)
             except Exception:  # noqa: BLE001
                 continue
-            if payload.get(key) != value:
+            if any_values is not None:
+                if payload.get(key) not in any_values:
+                    return False
+            elif payload.get(key) != value:
                 return False
         return True
 

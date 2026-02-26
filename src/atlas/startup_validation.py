@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
+from typing import Any
 
 import httpx
 from sqlalchemy import Engine, text
 
 from atlas.config_manager import ConfigManager
+from atlas.retry import load_retry_configs
 from atlas.settings import Settings
 
 
@@ -92,6 +95,134 @@ def _validate_config_shapes(*, config_manager: ConfigManager) -> None:
         raise RuntimeError("models.yaml roles.embed_model must set 'provider'")
     if not embed_role.get("model_name"):
         raise RuntimeError("models.yaml roles.embed_model must set 'model_name'")
+
+    # Load retry/backoff configuration from pipeline.yaml → retry section.
+    load_retry_configs(pipeline.get("retry"))
+
+    # Validate cleanup_rules structure (if present).
+    _validate_cleanup_rules(pipeline.get("cleanup_rules", []))
+
+
+# ---------------------------------------------------------------------------
+# Cleanup-rules schema validation
+# ---------------------------------------------------------------------------
+
+_VALID_STEP_KINDS = frozenset({
+    "strip_lines_matching",
+    "rewrite_pattern",
+    "strip_headers_footers",
+    "normalize_headings",
+    "merge_hardwrapped_paragraphs",
+    "fix_bullets",
+})
+
+_VALID_MATCH_KEYS = frozenset({
+    "tenant_id", "project_id", "corpus_id", "mime_type", "filename_pattern",
+})
+
+_VALID_TAGS = frozenset({
+    "auto_fix_only", "suspicious_content", "hard_failure",
+})
+
+
+def validate_cleanup_rules(raw: Any) -> list[str]:
+    """Validate cleanup_rules structure; return list of human-readable errors.
+
+    Public API — used by both startup validation and the restore-stock
+    endpoint.  Returns an empty list when everything is valid.
+    """
+    errors: list[str] = []
+    if raw is None or (isinstance(raw, list) and len(raw) == 0):
+        return errors  # empty is fine
+    if not isinstance(raw, list):
+        errors.append("cleanup_rules must be a list")
+        return errors
+
+    for idx, entry in enumerate(raw):
+        prefix = f"cleanup_rules[{idx}]"
+        if not isinstance(entry, dict):
+            errors.append(f"{prefix}: must be a mapping")
+            continue
+
+        # Name (required)
+        name = entry.get("name")
+        if not name or not isinstance(name, str):
+            errors.append(f"{prefix}: 'name' is required and must be a non-empty string")
+        elif not re.match(r"^[a-zA-Z0-9_-]+$", name):
+            errors.append(f"{prefix}: 'name' must be alphanumeric/underscore/hyphen (got '{name}')")
+
+        # Match block
+        match_block = entry.get("match")
+        if match_block is not None:
+            if not isinstance(match_block, dict):
+                errors.append(f"{prefix}: 'match' must be a mapping or omitted")
+            else:
+                unknown_keys = set(match_block.keys()) - _VALID_MATCH_KEYS
+                if unknown_keys:
+                    errors.append(f"{prefix}.match: unknown keys {sorted(unknown_keys)}")
+                # Validate filename_pattern is parseable
+                fp = match_block.get("filename_pattern")
+                if fp is not None and not isinstance(fp, str):
+                    errors.append(f"{prefix}.match.filename_pattern: must be a string")
+
+        # Steps (required, non-empty)
+        steps = entry.get("steps")
+        if not steps or not isinstance(steps, list):
+            errors.append(f"{prefix}: 'steps' is required and must be a non-empty list")
+        else:
+            for si, step in enumerate(steps):
+                sp = f"{prefix}.steps[{si}]"
+                if isinstance(step, str):
+                    if step not in _VALID_STEP_KINDS:
+                        errors.append(f"{sp}: unknown kind '{step}' (valid: {sorted(_VALID_STEP_KINDS)})")
+                elif isinstance(step, dict):
+                    kind = step.get("kind", "")
+                    if kind not in _VALID_STEP_KINDS:
+                        errors.append(f"{sp}: unknown kind '{kind}' (valid: {sorted(_VALID_STEP_KINDS)})")
+                    # Validate regex patterns compile
+                    for key in ("pattern",):
+                        pat = step.get(key)
+                        if pat is not None:
+                            try:
+                                re.compile(pat)
+                            except re.error as exc:
+                                errors.append(f"{sp}.{key}: invalid regex '{pat}' — {exc}")
+                    # Validate patterns list in strip_headers_footers
+                    patterns_list = step.get("patterns")
+                    if patterns_list is not None:
+                        if not isinstance(patterns_list, list):
+                            errors.append(f"{sp}.patterns: must be a list")
+                        else:
+                            for pi, p in enumerate(patterns_list):
+                                if not isinstance(p, str):
+                                    errors.append(f"{sp}.patterns[{pi}]: must be a string")
+                                else:
+                                    try:
+                                        re.compile(p)
+                                    except re.error as exc:
+                                        errors.append(f"{sp}.patterns[{pi}]: invalid regex '{p}' — {exc}")
+                else:
+                    errors.append(f"{sp}: must be a string or mapping")
+
+        # Tags (optional)
+        tags = entry.get("tags")
+        if tags is not None:
+            if not isinstance(tags, list):
+                errors.append(f"{prefix}: 'tags' must be a list")
+            else:
+                unknown_tags = set(tags) - _VALID_TAGS
+                if unknown_tags:
+                    _log.warning("%s: non-standard tags %s (allowed but unusual)", prefix, sorted(unknown_tags))
+
+    return errors
+
+
+def _validate_cleanup_rules(raw: Any) -> None:
+    """Startup gate: raise RuntimeError if cleanup_rules have structural problems."""
+    errors = validate_cleanup_rules(raw)
+    if errors:
+        detail = "\n  - ".join(errors)
+        raise RuntimeError(f"pipeline.yaml cleanup_rules validation failed:\n  - {detail}")
 
 
 def _validate_db_connection(*, settings: Settings, engine: Engine) -> None:

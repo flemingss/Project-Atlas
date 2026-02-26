@@ -40,8 +40,8 @@ def test_rag_search_returns_hits_and_applies_filters(tmp_path: Path, monkeypatch
     assert data["ok"] is True
     assert data["hits"]
 
-    # Sanity check: we pass tenant/project/finalized filter to the store.
-    assert len(FakeQdrantStore.last_search_must) == 5
+    # Sanity check: we pass tenant/project/finalized + fidelity filter to the store.
+    assert len(FakeQdrantStore.last_search_must) == 6
 
 
 # ---------------------------------------------------------------------------
@@ -80,3 +80,45 @@ def test_search_missing_query_returns_422(tmp_path: Path, monkeypatch: Any) -> N
 
     res = client.post("/rag/search", json={"top_k": 3})
     assert res.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Fidelity-aware search filter tests
+# ---------------------------------------------------------------------------
+
+def test_search_fidelity_default_is_verified(tmp_path: Path, monkeypatch: Any) -> None:
+    """Default fidelity_mode=verified adds a fidelity_flag filter."""
+    app, _ = make_test_app(tmp_path, monkeypatch, include_admin=False)
+    client = TestClient(app)
+
+    res = client.post("/rag/search", json={"query": "hello"})
+    assert res.status_code == 200
+    # 5 standard filters + 1 fidelity_flag == "verified"
+    assert len(FakeQdrantStore.last_search_must) == 6
+    fidelity_cond = FakeQdrantStore.last_search_must[-1]
+    assert getattr(fidelity_cond, "key") == "fidelity_flag"
+    assert getattr(fidelity_cond.match, "value", None) == "verified"
+
+
+def test_search_fidelity_all_no_extra_filter(tmp_path: Path, monkeypatch: Any) -> None:
+    """fidelity_mode=all should NOT add a fidelity_flag condition."""
+    app, _ = make_test_app(tmp_path, monkeypatch, include_admin=False)
+    client = TestClient(app)
+
+    res = client.post("/rag/search", json={"query": "hello", "fidelity_mode": "all"})
+    assert res.status_code == 200
+    assert len(FakeQdrantStore.last_search_must) == 5  # no fidelity filter
+
+
+def test_search_fidelity_verified_partial(tmp_path: Path, monkeypatch: Any) -> None:
+    """fidelity_mode=verified+partial uses MatchAny."""
+    app, _ = make_test_app(tmp_path, monkeypatch, include_admin=False)
+    client = TestClient(app)
+
+    res = client.post("/rag/search", json={"query": "hello", "fidelity_mode": "verified+partial"})
+    assert res.status_code == 200
+    assert len(FakeQdrantStore.last_search_must) == 6
+    fidelity_cond = FakeQdrantStore.last_search_must[-1]
+    assert getattr(fidelity_cond, "key") == "fidelity_flag"
+    any_vals = getattr(fidelity_cond.match, "any", None)
+    assert set(any_vals) == {"verified", "partial"}

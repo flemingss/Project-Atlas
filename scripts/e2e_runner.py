@@ -66,7 +66,7 @@ def main() -> int:
     ap.add_argument("--skip-docker", action="store_true")
     ap.add_argument("--skip-api", action="store_true")
     ap.add_argument("--leave-docker-up", action="store_true")
-    ap.add_argument("--timeout", type=float, default=30.0)
+    ap.add_argument("--timeout", type=float, default=60.0, help="Health-check wait timeout in seconds.")
     args = ap.parse_args()
 
     api_url = args.api_url.rstrip("/")

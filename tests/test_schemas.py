@@ -51,11 +51,26 @@ def test_judge_result_creation():
         judge_version="llama-3.2-3b:v1",
         needs_refinement=False,
         timestamp="2024-01-01T00:00:00Z",
+        sub_scores={"faithfulness": 5, "formatting": 4, "cohesion": 4, "hallucination_risk": 4},
     )
 
     assert result.score == 4
     assert result.needs_refinement is False
     assert "Good structure" in result.confidence_rationale
+    assert result.sub_scores["faithfulness"] == 5
+    assert len(result.sub_scores) == 4
+
+
+def test_judge_result_default_sub_scores():
+    """Test JudgeResult defaults to empty sub_scores for backwards compat."""
+    result = JudgeResult(
+        score=3,
+        confidence_rationale="test",
+        judge_version="v1",
+        needs_refinement=True,
+        timestamp="2024-01-01T00:00:00Z",
+    )
+    assert result.sub_scores == {}
 
 
 def test_fidelity_flags():

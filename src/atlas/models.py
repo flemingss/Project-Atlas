@@ -238,3 +238,46 @@ class Corpus(Base):
     display_name: Mapped[str] = mapped_column(String(200), default="")
     description: Mapped[str] = mapped_column(Text, default="")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+
+
+class CleanupFeedback(Base):
+    """Operator feedback on cleanup quality — used to inform future rule tuning.
+
+    Each row captures a single observation about a document or chunk that
+    passed through the cleanup pipeline with an undesirable outcome.
+    """
+
+    __tablename__ = "cleanup_feedback"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: dt.datetime.now(dt.timezone.utc),
+    )
+
+    # Scoping — at least doc_id should be set
+    tenant_id: Mapped[str] = mapped_column(String(120), index=True, default="")
+    project_id: Mapped[str] = mapped_column(String(120), index=True, default="")
+    corpus_id: Mapped[str] = mapped_column(String(120), index=True, default="")
+    doc_id: Mapped[str] = mapped_column(String(256), index=True, default="")
+    chunk_id: Mapped[str] = mapped_column(String(256), default="")
+
+    # Optional reference to the workflow run that produced the artefact
+    run_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("workflow_runs.id", ondelete="SET NULL"),
+        index=True, default=None,
+    )
+
+    # Feedback payload
+    category: Mapped[str] = mapped_column(
+        String(64), index=True, default="other",
+    )  # e.g. "missed_header_strip", "bad_bullet_fix", "ocr_artefact", "other"
+    description: Mapped[str] = mapped_column(Text, default="")
+
+    # Optional source span (character offsets) to pinpoint the issue
+    source_span_start: Mapped[int | None] = mapped_column(Integer, default=None)
+    source_span_end: Mapped[int | None] = mapped_column(Integer, default=None)
+
+    created_by: Mapped[str] = mapped_column(String(256), default="")
+
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)

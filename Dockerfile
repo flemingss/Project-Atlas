@@ -38,6 +38,9 @@ RUN pip install --no-cache-dir --no-deps .
 
 # Runtime assets (loaded from ATLAS_CONFIG_DIR, default ./config)
 COPY config ./config
+# If live config files are absent (fresh clone), fall back to stock .example copies.
+RUN cp -n config/pipeline.yaml.example config/pipeline.yaml 2>/dev/null || true \
+ && cp -n config/models.yaml.example config/models.yaml 2>/dev/null || true
 COPY scripts ./scripts
 
 EXPOSE 8080

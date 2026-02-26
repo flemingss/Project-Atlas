@@ -34,14 +34,20 @@ class DeterministicProvider(ILlmProvider):
             return self._metadata_json(text)
 
         # Judge detection
-        if "Grade the given markdown document" in joined or "SCORE:" in joined and "RATIONALE:" in joined:
-            score = self._judge_score(text)
-            rationale = self._judge_rationale(text, score=score)
-            return f"SCORE: {score}\nRATIONALE: {rationale}"
+        if "Grade the given markdown document" in joined or "Evaluate the given markdown document" in joined or "FAITHFULNESS:" in joined:
+            scores = self._judge_sub_scores(text)
+            rationale = self._judge_rationale(text, score=round(sum(scores.values()) / len(scores)))
+            lines = [f"{k.upper()}: {v}" for k, v in scores.items()]
+            lines.append(f"RATIONALE: {rationale}")
+            return "\n".join(lines)
 
         # Refine detection
         if "document refinement" in joined.lower() or "Improved Document" in joined:
             return self._refine_markdown(text)
+
+        # Rule-suggestion detection (Phase 7D)
+        if "cleanup_rules" in joined and ("suggest" in joined.lower() or "cleanup rule" in joined.lower()):
+            return self._suggest_rule_json()
 
         # Default: echo-ish deterministic response
         return f"OK ({model})"
@@ -51,6 +57,19 @@ class DeterministicProvider(ILlmProvider):
         if dim <= 0:
             raise ValueError(f"Invalid embedding dim: {dim}")
         return [self._embed_one(t, dim=dim) for t in texts]
+
+    def _judge_sub_scores(self, markdown: str) -> dict[str, int]:
+        """Return per-dimension judge scores for the given markdown."""
+        base = self._judge_score(markdown)
+        # For deterministic testing, derive slight per-dimension variation:
+        # faithfulness = base, formatting = base, cohesion = base,
+        # hallucination_risk mirrors base (high base → low risk → high score).
+        return {
+            "faithfulness": base,
+            "formatting": base,
+            "cohesion": base,
+            "hallucination_risk": base,
+        }
 
     def _judge_score(self, markdown: str) -> int:
         md = self._extract_judge_document(markdown)
@@ -125,6 +144,24 @@ class DeterministicProvider(ILlmProvider):
             "density": "general",
         }
         return json.dumps(payload, sort_keys=True)
+
+    def _suggest_rule_json(self) -> str:
+        """Return a deterministic rule suggestion for CI/test usage."""
+        import json
+
+        payload = {
+            "rule_yaml": (
+                "- name: suggested_rule\n"
+                "  match: {}\n"
+                "  steps:\n"
+                "    - kind: normalize_headings\n"
+                "    - kind: merge_hardwrapped_paragraphs\n"
+                "  tags:\n"
+                "    - auto_fix_only\n"
+            ),
+            "rationale": "Deterministic suggestion: normalize headings and merge hard-wrapped paragraphs.",
+        }
+        return json.dumps(payload)
 
     def _embed_one(self, text: str, *, dim: int) -> list[float]:
         # Expand SHA-256 into a stream of bytes and interpret as uint32 words.

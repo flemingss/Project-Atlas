@@ -66,6 +66,12 @@ class SearchRequest(BaseModel):
     project_id: str | None = None
     corpus_id: str | None = None
 
+    # Fidelity-aware retrieval:
+    #   "verified"    → only chunks with fidelity_flag == "verified"  (default, highest precision)
+    #   "verified+partial" → fidelity_flag in {"verified", "partial"}
+    #   "all"         → no fidelity filter (high-recall / debug mode)
+    fidelity_mode: str = "verified"
+
 
 class SearchHit(BaseModel):
     id: str
@@ -208,6 +214,20 @@ def make_rag_router(*, config_manager: ConfigManager, session_factory: sessionma
             qm.FieldCondition(key="is_finalized", match=qm.MatchValue(value=True)),
             qm.FieldCondition(key="is_active_version", match=qm.MatchValue(value=True)),
         ]
+
+        # Fidelity-aware filtering: restrict to high-confidence chunks unless
+        # the caller explicitly opts into lower-fidelity or "all" mode.
+        fmode = (req.fidelity_mode or "verified").strip().lower()
+        if fmode == "verified":
+            must.append(qm.FieldCondition(key="fidelity_flag", match=qm.MatchValue(value="verified")))
+        elif fmode in ("verified+partial", "verified_partial"):
+            must.append(
+                qm.FieldCondition(
+                    key="fidelity_flag",
+                    match=qm.MatchAny(any=["verified", "partial"]),
+                )
+            )
+        # fmode == "all" → no fidelity filter appended
         hits: list[QdrantHit] = await run_in_threadpool(
             store.search,
             query_vector=vectors[0],

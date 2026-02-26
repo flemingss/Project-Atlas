@@ -762,7 +762,7 @@ def run_scenarios(
         except Exception as e:  # noqa: BLE001
             results.append(ScenarioResult(name=name, ok=False, detail=str(e)))
 
-    with httpx.Client(timeout=60.0, headers=headers) as client:
+    with httpx.Client(timeout=180.0, headers=headers) as client:
         wait_for_health(client, api_url=api, timeout_s=timeout_s)
 
         # Track whether we activate test-specific config (deterministic / local_llm)
@@ -863,7 +863,7 @@ def run_scenarios(
     # ---- Teardown: restore YAML defaults so test providers don't persist ----
     if _activated_test_config:
         try:
-            with httpx.Client(timeout=60.0, headers=headers) as teardown_client:
+            with httpx.Client(timeout=120.0, headers=headers) as teardown_client:
                 restore_yaml_default_config(teardown_client, api_url=api)
         except Exception as exc:  # noqa: BLE001
             print(f"[{_now()}] [e2e] WARNING: failed to restore default config on teardown: {exc}")

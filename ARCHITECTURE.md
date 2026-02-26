@@ -10,16 +10,31 @@ Source of truth: `TECHNICAL_DESIGN.md` (current reality, explicit scope decision
 
 ### Pipeline Module (`atlas.pipeline`)
 
-Pipeline scaffold implementing the intended flow: **Ingest → Judge → Refine → Metadata → Embeddings → Chunking → Commit**.
+Pipeline implementing the full agentic flow: **Ingest → Cleanup → Judge → Refine → Metadata → Embeddings → Chunking → Commit** (11 nodes including HITL, COMPLETED, FAILED).
 
-Status note (Feb 2026): `/rag/ingest/*` is pipeline-backed (text + file). The judge/refine/metadata nodes call providers, but remain a simplified v1 implementation (prompts/parsing/caps will evolve).
+Status note (Feb 2026): `/rag/ingest/*` is pipeline-backed (text + file). All nodes are wired with real provider calls. v0.5.0 adds config-driven cleanup rules engine, cleanup feedback capture, metrics aggregation, LLM-assisted rule suggestion, and Cleanup & Tuning UI on top of v0.4.0's deterministic Cleanup node, multi-dimensional judge rubric, unified routing, retry/backoff, chunk QA with fallback, and Docling health scoring.
 
 - **`ingest.py`** - Document ingestion node
   - Scaffold for ingest orchestration
   - Docling-based parsing is supported as an optional dependency (best-effort; see `TECHNICAL_DESIGN.md` Phase 4)
 
-- **`judge.py`** - Quality grading node
-  - Scaffold for quality grading (provider calls + rubric/versioning planned)
+- **`cleanup.py`** - Deterministic markdown cleanup node
+  - Five built-in transforms: normalise whitespace, strip broken links, repair heading hierarchy, strip trailing whitespace, static checks
+  - Runs between Ingest and Judge; no LLM calls
+  - Accepts optional `doc_context` and `config` to apply config-driven cleanup rules after built-in transforms
+  - Produces `CleanupResult` with per-transform change flags + rule-engine fields (`rules_applied`, `rules_failed`, `fix_counts`, `rule_tags`)
+
+- **`cleanup_rules.py`** - Config-driven cleanup rules engine
+  - Declarative, first-match-wins rule resolution based on tenant_id, project_id, corpus_id, mime_type, filename_pattern
+  - Six step handlers: `strip_lines_matching`, `rewrite_pattern`, `strip_headers_footers`, `normalize_headings`, `merge_hardwrapped_paragraphs`, `fix_bullets`
+  - Rule tags (`hard_failure`, `suspicious_content`, `auto_fix_only`) influence routing decisions
+  - Rules configured in `pipeline.yaml` `cleanup_rules:` section
+
+- **`judge.py`** - Multi-dimensional quality grading node
+  - Four-dimension rubric: FAITHFULNESS, FORMATTING, COHESION, HALLUCINATION_RISK (each 1–5)
+  - Composite score = rounded mean of sub-scores
+  - Legacy single-SCORE fallback preserved for backward compatibility
+  - Versioned `judge_version` (model + prompt hash)
 
 - **`refine.py`** - Document refinement node
   - Scaffold for refinement + retry + HITL escalation
@@ -27,15 +42,22 @@ Status note (Feb 2026): `/rag/ingest/*` is pipeline-backed (text + file). The ju
 - **`metadata.py`** - Tiered metadata generation
   - Scaffold for tiered metadata generation
 
+- **`routing.py`** - Unified routing logic
+  - `decide_next_step()` pure function returns a frozen `RoutingDecision`
+  - Supports fail-fast (composite ≤ `fail_fast_score`), cleanup-rejudge, per-dimension floor checks, standard refine/HITL paths
+  - Rule-tag-aware cleanup routing: `hard_failure` → FAILED, `suspicious_content` → HITL, other tags → standard cleanup→judge
+  - All branching logic centralised here; callers never inspect scores directly
+
 - **`orchestrator.py`** - Pipeline coordination
   - Manages state transitions between nodes
-  - Handles retry logic and HITL escalation
+  - Dispatches to cleanup, judge, refine, metadata, and commit nodes
   - Integrates with diagnostics for traceability
 
 - **`state.py`** - State management
-  - Defines pipeline nodes and valid transitions
-  - Tracks document processing state
-  - Manages results from each node
+  - Defines 11 pipeline nodes (INGEST, CLEANUP, JUDGE, REFINE, METADATA, EMBEDDINGS, CHUNKING, COMMIT, HITL, COMPLETED, FAILED) and valid transitions
+  - CLEANUP transitions: → JUDGE, → HITL (via `suspicious_content` rule tag), → FAILED (via `hard_failure` rule tag)
+  - Tracks document processing state including cleanup results and Docling health
+  - `get_next_node()` delegates to `routing.decide_next_step()`
 
 ### Data Models (`atlas.schemas`)
 
@@ -54,9 +76,10 @@ Comprehensive data structures with full traceability:
   - Docling JSON ground truth storage
 
 - **Pipeline Results** - Structured outputs
-  - `JudgeResult`: score, rationale, version, refinement decision
+  - `JudgeResult`: composite score, sub_scores (per-dimension dict), rationale, version, refinement decision
   - `RefineResult`: refined markdown, improvements made, success flag
   - `MetadataResult`: tags, tier used, model info
+  - `CleanupResult`: cleaned markdown, per-transform flags, changes_made boolean
 
 - **`HITLTask`** - Human-in-the-Loop tasks
   - Priority calculation: (10 - judge_score) * sensitivity_multiplier
@@ -124,9 +147,62 @@ Human-in-the-Loop workflow:
   - Dify integration remains optional/experimental
   - Primary direction is a purpose-built console (“Control Center”) per `TECHNICAL_DESIGN.md`
 
+### Retry / Backoff (`atlas.retry`)
+
+Config-driven retry with exponential backoff for all external calls:
+
+- **`RetryConfig`** dataclass with `max_retries`, `base_delay_s`, `max_delay_s`
+- **`async_retry()`** / **`sync_retry()`** decorators wrapping provider calls
+- Config loaded from `pipeline.yaml` `retry:` section, keyed by subsystem (`llm`, `vectorstore`, `docling`)
+- Applied to: `openai_compat.py` (chat/embed), `qdrant_store.py` (upsert/delete), `docling_adapter.py` (convert)
+
+### Chunk QA + Fallback (`atlas.rag.chunk_qa`)
+
+Post-chunking quality validation with automatic fallback:
+
+- **`validate_chunks()`** — checks min/max token bounds and minimum chunk count
+- **`chunk_with_fallback()`** — tries the configured strategy; on QA failure falls back (semantic→paragraph, hierarchical→paragraph)
+- Configurable bounds via `pipeline.yaml` `chunking.qa:` section
+
+### Docling Health Score (`atlas.ingest.docling_health`)
+
+Quantitative ingest quality signal computed after every document parse:
+
+- **`compute_health()`** — scores extraction_method, content_volume, rotation, text_as_shapes signals
+- Produces a composite 1–5 `health_score` stored on `PipelineContext`
+- Low scores surface in Looking Glass and can inform operator triage
+
+### Cleanup Feedback & Metrics (`atlas.feedback_ledger`)
+
+Operator feedback loop for cleanup quality:
+
+- **`CleanupFeedback`** model (Postgres) — scoped by tenant/project/corpus/doc/chunk
+- **CRUD helpers** — `create_feedback`, `get_feedback`, `list_feedback`, `delete_feedback`, `feedback_category_counts`
+- **Five API endpoints** under `/admin/cleanup-feedback` — create, list (scoped), categories (aggregation), get by ID, delete
+- **Metrics aggregation endpoint** (`GET /admin/looking-glass/metrics`) — workflow status distribution, node failure rates, HITL escalation rates, auto-accepted counts, cleanup-feedback category counts (scoped by tenant/project/corpus)
+
+### Rule Suggester (`atlas.rule_suggester`)
+
+LLM-assisted cleanup rule suggestion (Phase 7D):
+
+- **`suggest_cleanup_rule()`** — accepts sample markdown + issues + optional context, calls the configured LLM, returns `{rule_yaml, rationale}`
+- **Heuristic fallback** — `_heuristic_suggestion()` detects hard-wrapped paragraphs, mixed bullets, setext headings, header/footer keywords, OCR artifacts
+- **Deterministic provider branch** — `DeterministicProvider._suggest_rule_json()` returns stable suggestion JSON for CI/test
+- **Endpoint**: `POST /admin/cleanup-rules/suggest` (resolves `chat_model` → `refine_model` fallback)
+
+### Cleanup & Tuning UI Card
+
+Streamlit Admin tab card (Phase 7E) for operator self-service:
+
+- **Active rules display** — fetches effective config and lists all cleanup rules with expandable JSON
+- **Feedback submission** — form for document ID, category, and comment → `POST /admin/cleanup-feedback`
+- **Feedback overview** — category histogram from `GET /admin/cleanup-feedback/categories`
+- **Pipeline metrics** — summary dashboard from `GET /admin/looking-glass/metrics`
+- **AI rule suggestion** — paste markdown + describe issues → calls `POST /admin/cleanup-rules/suggest` → inline YAML preview
+
 ### Enhanced Chunking (`atlas.rag.chunking`)
 
-Default chunking is simple paragraph chunking (`chunk_text`). A heading-aware variant exists (`chunk_text_hierarchical`) but is not the default path today.
+Three chunking strategies available (configurable via `pipeline.yaml`). Default is `semantic` (token-aware markdown-heading chunker). All chunking sites use `chunk_with_fallback()` for automatic QA + fallback.
 
 - **Hierarchical Structure**
   - Extract markdown headings (# through ######)
@@ -169,37 +245,50 @@ Default chunking is simple paragraph chunking (`chunk_text`). A heading-aware va
 
 ## Testing
 
-Current automated coverage:
-- Schema creation and validation
+Current automated coverage (**265 tests passing**, 0 failures):
+- Schema creation and validation (incl. `CleanupResult`, `JudgeResult.sub_scores`)
 - Diagnostics and error handling
-- Pipeline state transitions
+- Pipeline state transitions (11 nodes)
 - HITL priority calculations
-- Admin and RAG endpoints
+- Admin and RAG endpoints (incl. fidelity mode search filter)
 - Config management
 - Qdrant integration
-
-Status (as of Feb 2026):
-
-- Unit/breadcrumb tests: run `pytest -q`
-- Integration tests: run `pytest -m integration`
+- Retry/backoff (`test_retry.py` — 14 tests)
+- Chunk QA + fallback (`test_chunk_qa.py` — 9 tests)
+- Cleanup node (`test_cleanup.py` — 15 tests)
+- Docling health score (`test_docling_health.py` — 15 tests)
+- Routing logic (`test_routing.py` — 21 tests)
+- **Cleanup rules engine** (`test_cleanup_rules.py` — 34 tests)
+- **Cleanup feedback API** (`test_cleanup_feedback.py` — 7 tests)
+- **Metrics aggregation** (`test_metrics_aggregation.py` — 3 tests)
+- **Rule suggestion** (`test_rule_suggestion.py` — 13 tests)
 
 Run tests:
 ```bash
-pytest -q                    # All tests
+pytest -q                    # All tests (265 passing)
 pytest -m integration        # Integration tests only
 ```
 
 ## Next Steps
 
-The current implementation provides a solid scaffold with:
-- ✅ All core data models
-- ✅ Pipeline node structure
+The current implementation (v0.5.0) provides:
+- ✅ All core data models (incl. multi-dimensional judge, cleanup results, cleanup feedback)
+- ✅ Full 11-node pipeline (Ingest → Cleanup → Judge → Refine → Metadata → Embeddings → Chunking → Commit + HITL/COMPLETED/FAILED)
+- ✅ Config-driven cleanup rules engine (6 step types, first-match-wins, rule-tag routing)
+- ✅ Cleanup feedback capture + metrics aggregation API
+- ✅ LLM-assisted rule suggestion (`POST /admin/cleanup-rules/suggest`)
+- ✅ Cleanup & Tuning UI card in Admin tab
+- ✅ Retry/backoff on all external calls
+- ✅ Chunk QA with automatic fallback
+- ✅ Docling integration with health scoring
+- ✅ Unified routing with fail-fast, floor checks, cleanup-rejudge, rule-tag escalation
 - ✅ Diagnostics and concurrency management
 - ✅ HITL workflow
-- ✅ Enhanced chunking
+- ✅ Enhanced chunking (3 strategies + QA)
+- ✅ Fidelity mode search filter
 
-Still needed for full HLD implementation:
-- 🔄 Docling integration for PDF/Office parsing
-- 🔄 Improve prompts/parsing/guardrails for judge/refine/metadata nodes
+All Phase 7 items (7A–7E) are complete.
+- 🔄 Prompt/rubric tuning as real-world usage data accumulates
 - 🔄 Retrieval upgrades (hybrid/rerank) are explicitly deferred unless a measured failure mode requires them
 - 🔄 Semantic cache implementation
+- 🔄 Purpose-built Control Center console (replaces Streamlit for full HITL + monitoring)

@@ -49,27 +49,27 @@ ICON_HISTORY  = "~"
 
 TAB_HOME     = "Home"
 TAB_UPLOAD   = "Upload"
-TAB_LIBRARY  = "Library"
+TAB_LIBRARY  = "My Collection"
 TAB_SEARCH   = "Search"
 TAB_REVIEW   = "Review"
-TAB_VERSIONS = "Versions & Export"
-TAB_HISTORY  = "History"
+TAB_ADMIN    = "Admin"
 
 # -- Friendly microcopy ---------------------------------------------------------
 # One-sentence tab explainers (shown as captions under each tab header)
 COPY_HOME     = "Get started with your knowledge base -- connect, create, upload."
-COPY_UPLOAD   = "Add new documents into this collection and make them searchable."
-COPY_LIBRARY  = "Browse and manage documents in this collection."
+COPY_UPLOAD   = "Add new documents into this collection and make them available for search."
+COPY_LIBRARY  = "Browse, manage, and export documents in this collection."
 COPY_SEARCH   = "Ask questions and see how Atlas answers from this collection."
 COPY_REVIEW   = "Fix documents where automation was not confident."
-COPY_VERSIONS = "Control which document versions are used for answers and export packages."
 COPY_HISTORY  = "Inspect processing runs and diagnose failures."
+COPY_VERSIONS = "Control which document versions are used for answers and export packages."
+COPY_ADMIN    = "Advanced operations for Atlas administrators."
 
 # -- Friendly terminology -------------------------------------------------------
 LABEL_WORKSPACE      = "Workspace"
 LABEL_PROJECT        = "Project"
 LABEL_COLLECTION     = "Collection"
-LABEL_MAKE_SEARCH    = "Make searchable"
+LABEL_MAKE_SEARCH    = "Include in search results"
 LABEL_VERSION_ACTIVE = "Version used for answers"
 LABEL_SENSITIVE      = "Sensitive"
 # Legacy alias

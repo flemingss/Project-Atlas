@@ -12,7 +12,7 @@ WORKDIR /app
 # full backend here (docling, onnxruntime, PyMuPDF, OpenCV, etc.) would add
 # hundreds of MB and minutes of build time for zero benefit.
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir "streamlit>=1.31" "httpx>=0.27"
+    && pip install --no-cache-dir "streamlit>=1.31" "httpx>=0.27" "PyYAML>=6.0"
 
 # ---------- Source layer (rebuilds only on UI code changes — fast) ----------
 COPY ui ./ui

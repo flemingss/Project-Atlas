@@ -74,3 +74,93 @@ def test_validate_config_shapes_missing_version(tmp_path) -> None:
     config_manager = ConfigManager(config_dir=config_dir)
     with pytest.raises(RuntimeError, match="version"):
         _validate_config_shapes(config_manager=config_manager)
+
+
+# ---------------------------------------------------------------------------
+# Cleanup-rules schema validation
+# ---------------------------------------------------------------------------
+
+from atlas.startup_validation import validate_cleanup_rules
+
+
+class TestValidateCleanupRules:
+    """Unit tests for the cleanup_rules schema validator."""
+
+    def test_empty_list_valid(self) -> None:
+        assert validate_cleanup_rules([]) == []
+
+    def test_none_valid(self) -> None:
+        assert validate_cleanup_rules(None) == []
+
+    def test_valid_rule(self) -> None:
+        rules = [
+            {
+                "name": "strip_pdf_headers",
+                "match": {"mime_type": "application/pdf"},
+                "steps": [
+                    {"kind": "strip_headers_footers", "first_n": 2, "patterns": [r"^Page \d+$"]},
+                    {"kind": "normalize_headings"},
+                ],
+                "tags": ["auto_fix_only"],
+            }
+        ]
+        assert validate_cleanup_rules(rules) == []
+
+    def test_missing_name(self) -> None:
+        errors = validate_cleanup_rules([{"steps": [{"kind": "fix_bullets"}]}])
+        assert any("name" in e for e in errors)
+
+    def test_invalid_name_chars(self) -> None:
+        errors = validate_cleanup_rules([
+            {"name": "has spaces!", "steps": [{"kind": "fix_bullets"}]}
+        ])
+        assert any("alphanumeric" in e for e in errors)
+
+    def test_unknown_step_kind(self) -> None:
+        errors = validate_cleanup_rules([
+            {"name": "bad_kind", "steps": [{"kind": "not_real"}]}
+        ])
+        assert any("unknown kind" in e for e in errors)
+
+    def test_bad_regex_pattern(self) -> None:
+        errors = validate_cleanup_rules([
+            {"name": "bad_regex", "steps": [{"kind": "strip_lines_matching", "pattern": "[invalid"}]}
+        ])
+        assert any("invalid regex" in e for e in errors)
+
+    def test_bad_regex_in_patterns_list(self) -> None:
+        errors = validate_cleanup_rules([
+            {
+                "name": "bad_patterns",
+                "steps": [{"kind": "strip_headers_footers", "patterns": ["(unclosed"]}],
+            }
+        ])
+        assert any("invalid regex" in e for e in errors)
+
+    def test_unknown_match_keys(self) -> None:
+        errors = validate_cleanup_rules([
+            {"name": "unk_match", "match": {"bad_key": "x"}, "steps": [{"kind": "fix_bullets"}]}
+        ])
+        assert any("unknown keys" in e for e in errors)
+
+    def test_missing_steps(self) -> None:
+        errors = validate_cleanup_rules([{"name": "no_steps"}])
+        assert any("steps" in e for e in errors)
+
+    def test_not_a_list(self) -> None:
+        errors = validate_cleanup_rules("not a list")
+        assert any("must be a list" in e for e in errors)
+
+    def test_catch_all_match_valid(self) -> None:
+        """An empty match block (catch-all) should be valid."""
+        rules = [
+            {"name": "catch_all", "match": {}, "steps": [{"kind": "fix_bullets"}]}
+        ]
+        assert validate_cleanup_rules(rules) == []
+
+    def test_string_step_valid(self) -> None:
+        """Steps given as bare strings (kind only) should be valid."""
+        rules = [
+            {"name": "string_steps", "steps": ["normalize_headings", "fix_bullets"]}
+        ]
+        assert validate_cleanup_rules(rules) == []

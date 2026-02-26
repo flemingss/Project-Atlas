@@ -25,7 +25,7 @@ roles:
 
   refine_model:
     provider: lmstudio
-    model_name: "qwen/qwen3-vl-8b"
+    model_name: "openai/gpt-oss-20b"
     params:
       temperature: 0.2
 

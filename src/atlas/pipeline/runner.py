@@ -21,6 +21,7 @@ from atlas.pipeline.metadata import MetadataNode
 from atlas.pipeline.orchestrator import PipelineOrchestrator
 from atlas.pipeline.refine import RefineNode
 from atlas.pipeline.state import PipelineNode, create_pipeline_context
+from atlas.rag.chunk_qa import chunk_with_fallback
 from atlas.rag.chunking import chunk_markdown_semantic, chunk_text, chunk_text_hierarchical, infer_chunk_features
 from atlas.rag.deterministic import deterministic_chunk_id, sha256_hex
 from atlas.rag.normalize import normalize_markdown
@@ -274,10 +275,21 @@ async def ingest_text_via_pipeline(
         doc_version=doc_version,
         tenant_id=tenant_id,
         project_id=project_id,
+        corpus_id=corpus_id,
         source_mime_type=source_mime_type,
         max_refine_retries=int(pipeline_cfg.get("thresholds", {}).get("refine_max_retries", 2)),
     )
     ctx.state.markdown_projection = ingest_res.markdown_projection
+
+    # Compute Docling health score for downstream routing/diagnostics.
+    from atlas.ingest.docling_health import compute_health as _compute_health
+
+    _health = _compute_health(
+        meta=ingest_res.meta,
+        markdown_length=len(ingest_res.markdown_projection),
+        parse_profile=str(ingest_res.parse_profile),
+    )
+    ctx.set_docling_health(_health.to_dict())
 
     ctx = await orch.process_document(ctx)
 
@@ -419,16 +431,15 @@ async def ingest_text_via_pipeline(
     resolved_embed = registry.resolve("embed_model")
     embed_provider = registry.provider_for(resolved_embed.provider_name)
 
-    if chunk_strategy == "paragraph":
-        chunks = chunk_text(text=ctx.state.markdown_projection, max_chars=max_chars)
-    elif chunk_strategy == "hierarchical":
-        chunks = chunk_text_hierarchical(text=ctx.state.markdown_projection, max_chars=max_chars)
-    else:
-        chunks = chunk_markdown_semantic(
-            text=ctx.state.markdown_projection,
-            target_tokens=target_tokens,
-            max_tokens=max_tokens,
-        )
+    qa_bounds = (chunking_cfg.get("qa") or {}) if chunking_cfg else {}
+    chunks, strategy_used, chunk_qa = chunk_with_fallback(
+        text=ctx.state.markdown_projection,
+        strategy=chunk_strategy,
+        target_tokens=target_tokens,
+        max_tokens=max_tokens,
+        max_chars=max_chars,
+        qa_bounds=qa_bounds if qa_bounds else None,
+    )
     texts = [c.text for c in chunks]
     if not texts:
         return {"ok": True, "run_id": run_id, "collection": "atlas_chunks", "chunks_upserted": 0}
@@ -480,6 +491,8 @@ async def ingest_text_via_pipeline(
             "is_sensitive": bool(is_sensitive),
             "is_active_version": True,
             "source_mime_type": source_mime_type,
+            "chunking_strategy": strategy_used,
+            "chunk_qa": chunk_qa.to_dict(),
             "section_path": getattr(c, "section_path", []) or [],
             "parent_header_id": getattr(c, "parent_header_id", None),
             "sibling_ids": getattr(c, "sibling_ids", []) or [],
@@ -765,10 +778,22 @@ async def ingest_file_via_pipeline(
         doc_version=doc_version,
         tenant_id=tenant_id,
         project_id=project_id,
+        corpus_id=corpus_id,
         source_mime_type=source_mime_type,
         max_refine_retries=int(pipeline_cfg.get("thresholds", {}).get("refine_max_retries", 2)),
     )
     ctx.state.markdown_projection = ingest_res.markdown_projection
+
+    # Compute Docling health score for downstream routing/diagnostics.
+    from atlas.ingest.docling_health import compute_health as _compute_health
+
+    _health = _compute_health(
+        meta=ingest_res.meta,
+        markdown_length=len(ingest_res.markdown_projection),
+        parse_profile=str(ingest_res.parse_profile),
+    )
+    ctx.set_docling_health(_health.to_dict())
+
     ctx = await orch.process_document(ctx)
 
     # Normalize final markdown before chunking/embedding.
@@ -828,16 +853,15 @@ async def ingest_file_via_pipeline(
     resolved_embed = registry.resolve("embed_model")
     embed_provider = registry.provider_for(resolved_embed.provider_name)
 
-    if chunk_strategy == "paragraph":
-        chunks = chunk_text(text=ctx.state.markdown_projection, max_chars=max_chars)
-    elif chunk_strategy == "hierarchical":
-        chunks = chunk_text_hierarchical(text=ctx.state.markdown_projection, max_chars=max_chars)
-    else:
-        chunks = chunk_markdown_semantic(
-            text=ctx.state.markdown_projection,
-            target_tokens=target_tokens,
-            max_tokens=max_tokens,
-        )
+    qa_bounds = (chunking_cfg.get("qa") or {}) if chunking_cfg else {}
+    chunks, strategy_used, chunk_qa = chunk_with_fallback(
+        text=ctx.state.markdown_projection,
+        strategy=chunk_strategy,
+        target_tokens=target_tokens,
+        max_tokens=max_tokens,
+        max_chars=max_chars,
+        qa_bounds=qa_bounds if qa_bounds else None,
+    )
     texts = [c.text for c in chunks]
     if not texts:
         return {"ok": True, "run_id": run_id, "collection": "atlas_chunks", "chunks_upserted": 0}
@@ -890,6 +914,8 @@ async def ingest_file_via_pipeline(
             "is_active_version": True,
             "source_mime_type": source_mime_type,
             "source_filename": filename or "",
+            "chunking_strategy": strategy_used,
+            "chunk_qa": chunk_qa.to_dict(),
             "section_path": getattr(c, "section_path", []) or [],
             "parent_header_id": getattr(c, "parent_header_id", None),
             "sibling_ids": getattr(c, "sibling_ids", []) or [],

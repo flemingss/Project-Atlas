@@ -15,33 +15,41 @@ from atlas.llm.provider import ChatMessage
 from atlas.schemas import JudgeResult
 
 
+# Scoring dimensions evaluated by the judge rubric.
+JUDGE_DIMENSIONS = ("faithfulness", "formatting", "cohesion", "hallucination_risk")
+
 # Few-shot rubric for judge model (HLD section 2: Judge)
-JUDGE_SYSTEM_PROMPT = """You are a document quality grader. Grade the given markdown document on a scale of 1-5.
+JUDGE_SYSTEM_PROMPT = """You are a document quality grader. Evaluate the given markdown document across four dimensions, each on a 1-5 scale.
 
-Grading Rubric:
-5 - Excellent: Clean structure, clear headings, no OCR errors, complete information
-4 - Good: Minor formatting issues, mostly readable, complete content
-3 - Acceptable: Some OCR errors or formatting issues, content is understandable
-2 - Poor: Significant OCR errors, unclear structure, missing information
-1 - Unusable: Severe corruption, unreadable, or mostly gibberish
+Dimensions:
+  FAITHFULNESS  – How accurately the markdown reproduces the source content (no missing/added info).
+  FORMATTING    – Heading hierarchy, list structure, whitespace, and overall readability.
+  COHESION      – Logical flow between sections; consistent terminology and tone.
+  HALLUCINATION_RISK – Likelihood the text contains fabricated or hallucinated content (5 = no risk, 1 = high risk).
 
-Provide your response in this exact format:
-SCORE: [1-5]
+Per-dimension rubric:
+  5 - Excellent  4 - Good  3 - Acceptable  2 - Poor  1 - Unusable
+
+Provide your response in this exact format (one line per field):
+FAITHFULNESS: [1-5]
+FORMATTING: [1-5]
+COHESION: [1-5]
+HALLUCINATION_RISK: [1-5]
 RATIONALE: [Your explanation in one sentence]
 """
 
 JUDGE_FEW_SHOT_EXAMPLES = [
     {
         "input": "# Technical Manual\n\nThis document describes the system architecture...",
-        "output": "SCORE: 5\nRATIONALE: Clear structure with proper heading and complete readable content.",
+        "output": "FAITHFULNESS: 5\nFORMATTING: 5\nCOHESION: 5\nHALLUCINATION_RISK: 5\nRATIONALE: Clear structure with proper heading and complete readable content.",
     },
     {
         "input": "## Ov3rview\n\nThe syst3m c0nsists of...",
-        "output": "SCORE: 3\nRATIONALE: OCR errors present but content is still understandable.",
+        "output": "FAITHFULNESS: 3\nFORMATTING: 4\nCOHESION: 3\nHALLUCINATION_RISK: 3\nRATIONALE: OCR errors present but content is still understandable.",
     },
     {
         "input": "�� �� sdfjk asdfj 123 �� ��",
-        "output": "SCORE: 1\nRATIONALE: Severe corruption with unreadable content.",
+        "output": "FAITHFULNESS: 1\nFORMATTING: 1\nCOHESION: 1\nHALLUCINATION_RISK: 1\nRATIONALE: Severe corruption with unreadable content.",
     },
 ]
 
@@ -92,7 +100,10 @@ class JudgeNode:
                 response = await self._call_judge_model(prompt)
 
                 # Parse response
-                score, rationale = self._parse_response(response)
+                sub_scores, rationale = self._parse_response(response)
+
+                # Composite score is rounded mean of sub-dimensions
+                score = round(sum(sub_scores.values()) / len(sub_scores)) if sub_scores else 3
 
                 # Determine if refinement needed
                 needs_refinement = score < judge_cutoff
@@ -103,12 +114,13 @@ class JudgeNode:
                     judge_version=self.judge_version,
                     needs_refinement=needs_refinement,
                     timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    sub_scores=sub_scores,
                 )
 
                 self.diagnostics.log_info(
                     component="judge",
-                    message=f"Document graded: score={score}, needs_refinement={needs_refinement}",
-                    context={"score": score, "rationale": rationale},
+                    message=f"Document graded: score={score}, sub_scores={sub_scores}, needs_refinement={needs_refinement}",
+                    context={"score": score, "sub_scores": sub_scores, "rationale": rationale},
                 )
 
                 return result
@@ -127,6 +139,7 @@ class JudgeNode:
                     judge_version=self.judge_version,
                     needs_refinement=True,
                     timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    sub_scores={d: 1 for d in JUDGE_DIMENSIONS},
                 )
 
     def _build_prompt(self, markdown: str) -> str:
@@ -153,19 +166,45 @@ Your response:"""
         ]
         return await self.provider.chat(model=self.model_name, messages=messages, params=self.model_params)
 
-    def _parse_response(self, response: str) -> tuple[int, str]:
-        """Parse judge model response to extract score and rationale."""
-        score = 3  # Default
+    def _parse_response(self, response: str) -> tuple[dict[str, int], str]:
+        """Parse judge model response to extract per-dimension scores and rationale.
+
+        Returns (sub_scores dict, rationale string).  If none of the expected
+        dimension lines can be parsed the method falls back to a legacy single-
+        SCORE line for backwards compatibility.
+        """
+        sub_scores: dict[str, int] = {}
         rationale = "Unable to parse response"
+
+        # Normalised dimension keys (upper-case) → canonical key
+        dim_map = {d.upper(): d for d in JUDGE_DIMENSIONS}
 
         try:
             lines = response.strip().split("\n")
             for line in lines:
-                if line.startswith("SCORE:"):
-                    score_str = line.split(":", 1)[1].strip()
-                    score = int(score_str)
-                elif line.startswith("RATIONALE:"):
-                    rationale = line.split(":", 1)[1].strip()
+                if ":" not in line:
+                    continue
+                key, _, value = line.partition(":")
+                key = key.strip().upper()
+                value = value.strip()
+
+                if key == "RATIONALE":
+                    rationale = value
+                elif key in dim_map:
+                    try:
+                        s = int(value)
+                        sub_scores[dim_map[key]] = max(1, min(5, s))
+                    except ValueError:
+                        pass
+                elif key == "SCORE" and not sub_scores:
+                    # Legacy single-score fallback
+                    try:
+                        s = int(value)
+                        # Spread the single score across all dimensions
+                        for d in JUDGE_DIMENSIONS:
+                            sub_scores[d] = max(1, min(5, s))
+                    except ValueError:
+                        pass
         except Exception as e:
             self.diagnostics.log_warning(
                 component="judge",
@@ -173,13 +212,9 @@ Your response:"""
                 context={"response": response},
             )
 
-        # Validate score range
-        if score < 1 or score > 5:
-            self.diagnostics.log_error(
-                component="judge",
-                error_code=ErrorCode.JUDGE_INVALID_SCORE,
-                message=f"Invalid score: {score}",
-            )
-            score = 3  # Fallback to middle score
+        # If we still have no sub_scores, fall back to middle score
+        if not sub_scores:
+            for d in JUDGE_DIMENSIONS:
+                sub_scores[d] = 3
 
-        return score, rationale
+        return sub_scores, rationale

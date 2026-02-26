@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from atlas.diagnostics import ErrorCode, get_diagnostics
+from atlas.pipeline.cleanup import CleanupNode
 from atlas.pipeline.ingest import IngestNode
 from atlas.pipeline.judge import JudgeNode
 from atlas.pipeline.metadata import MetadataNode
@@ -36,12 +37,14 @@ class PipelineOrchestrator:
         self,
         *,
         ingest_node: IngestNode,
+        cleanup_node: CleanupNode | None = None,
         judge_node: JudgeNode,
         refine_node: RefineNode,
         metadata_node: MetadataNode,
         config: dict[str, Any],
     ):
         self.ingest_node = ingest_node
+        self.cleanup_node = cleanup_node or CleanupNode()
         self.judge_node = judge_node
         self.refine_node = refine_node
         self.metadata_node = metadata_node
@@ -70,6 +73,8 @@ class PipelineOrchestrator:
             # Process current node
             if current_node == PipelineNode.INGEST:
                 await self._process_ingest(context)
+            elif current_node == PipelineNode.CLEANUP:
+                await self._process_cleanup(context)
             elif current_node == PipelineNode.JUDGE:
                 await self._process_judge(context)
             elif current_node == PipelineNode.REFINE:
@@ -124,6 +129,26 @@ class PipelineOrchestrator:
         if not context.state.markdown_projection:
             context.state.error_code = ErrorCode.INGEST_FAILED.value
             self.state_manager.transition(context, PipelineNode.FAILED)
+
+    async def _process_cleanup(self, context: PipelineContext) -> None:
+        """Process cleanup node — deterministic markdown transforms."""
+        self.diagnostics.log_info(component="pipeline", message="Processing cleanup node")
+
+        # Build doc context for config-driven rule matching
+        doc_ctx = {
+            "tenant_id": context.state.tenant_id,
+            "project_id": context.state.project_id,
+            "corpus_id": getattr(context.state, "corpus_id", ""),
+            "mime_type": context.state.source_mime_type,
+            "filename": getattr(context.state, "source_uri", "") or "",
+        }
+
+        result = await self.cleanup_node.clean(
+            markdown=context.state.markdown_projection,
+            doc_context=doc_ctx,
+            config=self.config,
+        )
+        context.set_cleanup_result(result)
 
     async def _process_judge(self, context: PipelineContext) -> None:
         """Process judge node."""

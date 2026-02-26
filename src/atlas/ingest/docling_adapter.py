@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import json
+import logging
 import concurrent.futures
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from atlas.diagnostics import ErrorCode, get_diagnostics
+from atlas.retry import RetryConfig, get_retry_config, sync_retry
 from atlas.schemas import ParseProfile
 from atlas.settings import Settings
+
+log = logging.getLogger(__name__)
 
 
 class DoclingIngestError(RuntimeError):
@@ -124,24 +128,42 @@ def _pdf_preflight(*, pdf_path: Path) -> dict[str, Any]:
 
 
 def _docling_convert(*, converter: Any, source: str, timeout_s: float) -> Any:
-    """Run Docling conversion with a timeout.
+    """Run Docling conversion with a timeout and retry.
 
     Docling conversion can be CPU-heavy; run in a thread so we can time out.
+    Retries on DoclingTimeoutError using the ``docling`` retry config.
     """
-    # NOTE: Do not use ThreadPoolExecutor as a context manager here.
-    # If we raise on timeout inside a `with` block, the executor's __exit__ will
-    # call shutdown(wait=True) and block until the stuck conversion finishes,
-    # defeating the timeout and making the API appear to hang/crash.
-    ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    fut = ex.submit(converter.convert, source)
-    try:
-        return fut.result(timeout=float(timeout_s))
-    except concurrent.futures.TimeoutError as e:
-        fut.cancel()
-        raise DoclingTimeoutError(timeout_s=float(timeout_s)) from e
-    finally:
-        # Best-effort: don't wait for a stuck conversion.
-        ex.shutdown(wait=False, cancel_futures=True)
+
+    def _single_attempt() -> Any:
+        # NOTE: Do not use ThreadPoolExecutor as a context manager here.
+        # If we raise on timeout inside a `with` block, the executor's __exit__ will
+        # call shutdown(wait=True) and block until the stuck conversion finishes,
+        # defeating the timeout and making the API appear to hang/crash.
+        ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        fut = ex.submit(converter.convert, source)
+        try:
+            return fut.result(timeout=float(timeout_s))
+        except concurrent.futures.TimeoutError as e:
+            fut.cancel()
+            raise DoclingTimeoutError(timeout_s=float(timeout_s)) from e
+        finally:
+            # Best-effort: don't wait for a stuck conversion.
+            ex.shutdown(wait=False, cancel_futures=True)
+
+    cfg = get_retry_config("docling")
+    retry_cfg = RetryConfig(
+        max_retries=cfg.max_retries,
+        base_delay_s=cfg.base_delay_s,
+        max_delay_s=cfg.max_delay_s,
+        jitter=cfg.jitter,
+        retryable_exceptions=(DoclingTimeoutError,),
+    )
+    return sync_retry(
+        _single_attempt,
+        config=retry_cfg,
+        subsystem="docling",
+        operation="convert",
+    )
 
 
 def _try_export_docling_json(doc: Any) -> dict[str, Any]:

@@ -110,11 +110,99 @@ def detail_expander(label: str = "Details", data: Any = None, *, expanded: bool 
             st.json(data)
 
 
+def friendly_error(
+    message: str,
+    *,
+    status_code: int | None = None,
+    raw_text: str = "",
+) -> None:
+    """Show a human-readable error with optional technical details.
+
+    ``message`` is the plain-language explanation shown to the user.
+    The raw status code / response body are tucked into an expander so
+    advanced users can still inspect them.
+    """
+    st.error(message)
+    if status_code is not None or raw_text:
+        with st.expander("Technical details"):
+            if status_code is not None:
+                st.code(f"HTTP {status_code}")
+            if raw_text:
+                st.code(raw_text[:2000])
+
+
 def ingest_result(title: str, detail: str = "") -> None:
     """Renders a success state after an ingest operation."""
     st.success(title)
     if detail:
         st.caption(detail)
+
+
+def ingest_result_card(
+    *,
+    doc_name: str,
+    doc_id: str,
+    chunks: int,
+    searchable: bool,
+    paused_for_review: bool,
+    run_id: int | None = None,
+    error_message: str | None = None,
+) -> None:
+    """Renders a structured post-upload result card with plain-language status.
+
+    Replaces the old generic ``st.success`` + collapsed JSON pattern so the
+    operator can immediately see what happened without clicking anything.
+    """
+    # --- Status line in plain language ---
+    if error_message:
+        status_text = f"Processing issue: {error_message}"
+        status_icon = "warning"
+    elif paused_for_review:
+        status_text = "Sent to review — the pipeline flagged content for your attention"
+        status_icon = "review"
+    elif chunks > 0 and searchable:
+        status_text = "Ready for search"
+        status_icon = "ready"
+    elif chunks > 0:
+        status_text = "Indexed but not searchable (enable 'Include in search results' to make it findable)"
+        status_icon = "indexed"
+    elif chunks == 0 and not paused_for_review:
+        status_text = "Processing — check back in a moment"
+        status_icon = "processing"
+    else:
+        status_text = "Upload completed"
+        status_icon = "ready"
+
+    _colour = {
+        "ready": theme.SUCCESS,
+        "indexed": theme.PRIMARY,
+        "review": "#E6A817",
+        "processing": theme.MUTED,
+        "warning": theme.DANGER,
+    }.get(status_icon, theme.MUTED)
+
+    st.markdown(
+        f'<div class="atlas-ingest-result" style="border-left: 4px solid {_colour}; padding: 0.75rem 1rem; '
+        f'background: {theme.BG_SURFACE}; border-radius: 4px; margin: 0.5rem 0 1rem 0;">'
+        f'<strong style="font-size: 1rem;">{doc_name or doc_id}</strong>'
+        f'<table style="width:100%; margin-top:0.5rem; font-size:0.85rem; border-collapse:collapse;">'
+        f'<tr><td style="color:{theme.MUTED}; padding:2px 8px 2px 0;">Document ID</td>'
+        f'<td><code>{doc_id}</code></td></tr>'
+        f'<tr><td style="color:{theme.MUTED}; padding:2px 8px 2px 0;">Chunks created</td>'
+        f'<td><strong>{chunks}</strong></td></tr>'
+        f'<tr><td style="color:{theme.MUTED}; padding:2px 8px 2px 0;">Searchable</td>'
+        f'<td>{"Yes" if searchable else "No"}</td></tr>'
+        f'<tr><td style="color:{theme.MUTED}; padding:2px 8px 2px 0;">Status</td>'
+        f'<td style="color:{_colour}; font-weight:600;">{status_text}</td></tr>'
+        + (
+            f'<tr><td style="color:{theme.MUTED}; padding:2px 8px 2px 0;">Run</td>'
+            f'<td>#{run_id}</td></tr>'
+            if run_id
+            else ""
+        )
+        + f"</table></div>",
+        unsafe_allow_html=True,
+    )
 
 
 @contextlib.contextmanager
@@ -190,6 +278,20 @@ def card_header(title: str, caption: str = "") -> None:
         f'<div class="atlas-card-header"><h3>{title}</h3>{cap_html}</div>',
         unsafe_allow_html=True,
     )
+
+
+def card_section(title: str, caption: str = "", *, help: str = "") -> None:
+    """Renders a sub-section heading inside a card.
+
+    Use instead of bare st.markdown('#### ...') to maintain the visual
+    hierarchy: card_header (0.95rem) > card_section (0.88rem) > body text.
+    """
+    st.markdown(
+        f'<h4 class="atlas-card-section">{title}</h4>',
+        unsafe_allow_html=True,
+    )
+    if caption:
+        st.caption(caption)
 
 
 def tab_header(title: str, subtitle: str, workspace: str, collection: str, *, project: str = "") -> None:

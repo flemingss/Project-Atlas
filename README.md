@@ -2,6 +2,8 @@
 
 Local-first RAG system with a running FastAPI service (admin + RAG MVP), config versioning, and a repeatable black-box E2E runner.
 
+Pipeline: **Ingest → Cleanup → Judge → Refine → Metadata → Embeddings → Chunking → Commit** (11 nodes). Features config-driven cleanup rules engine, cleanup feedback API, metrics aggregation, LLM-assisted rule suggestion, Cleanup & Tuning UI, multi-dimensional judge rubric, retry/backoff on all external calls, chunk QA with automatic fallback, Docling health scoring, unified routing with fail-fast and rule-tag escalation, and fidelity mode search filtering.
+
 Design source of truth: `TECHNICAL_DESIGN.md` (build-continuity plan; current reality vs target end-state). `HLD.md` is retained as historical original intent.
 
 ## Capabilities Audit
@@ -76,6 +78,17 @@ Looking Glass:
 - `GET /admin/looking-glass/docs`
 - `GET /admin/looking-glass/docs/{doc_id}`
 - `GET /admin/looking-glass/docs/{doc_id}/chunks/{chunk_index}`
+- `GET /admin/looking-glass/metrics`
+
+Cleanup feedback:
+- `POST /admin/cleanup-feedback`
+- `GET /admin/cleanup-feedback`
+- `GET /admin/cleanup-feedback/categories`
+- `GET /admin/cleanup-feedback/{id}`
+- `DELETE /admin/cleanup-feedback/{id}`
+
+Cleanup rule suggestion:
+- `POST /admin/cleanup-rules/suggest`
 
 HITL:
 - `GET /admin/hitl/tasks`
@@ -234,9 +247,35 @@ Model provider:
 
 ## Config & Tuning
 
-Defaults live in:
-- `config/pipeline.yaml` (thresholds, caps, fallback toggles)
-- `config/models.yaml` (model roles and provider wiring)
+Stock defaults are shipped as `.example` files; live copies are operator-local:
+
+| Stock reference (tracked in git)     | Live file (gitignored, operator-local) |
+|--------------------------------------|----------------------------------------|
+| `config/pipeline.yaml.example`       | `config/pipeline.yaml`                 |
+| `config/models.yaml.example`         | `config/models.yaml`                   |
+
+**First-time setup** — after cloning, copy the stock files to create your live config:
+```bash
+cp config/pipeline.yaml.example config/pipeline.yaml
+cp config/models.yaml.example   config/models.yaml
+```
+Docker builds handle this automatically (the Dockerfile falls back to `.example` copies).
+
+**Restoring stock config** — if local edits break the pipeline:
+- **UI:** Admin → Danger Zone → *Restore stock config*
+- **API:** `POST /admin/config/restore-stock` with `{"confirm": "RESTORE"}`
+- **Manual:** Copy the `.example` file over the live file
+
+**Pre-commit guardrail** — `scripts/pre_commit_config_check.py` blocks commits that accidentally stage the live config files. Wire it into `.git/hooks/pre-commit` or your CI.
+
+Key `pipeline.yaml` sections:
+- `retry:` — per-subsystem retry config (`llm`, `vectorstore`, `docling`) with `max_retries`, `base_delay_s`, `max_delay_s`
+- `chunking.strategy:` — default chunking strategy (`semantic` | `paragraph` | `hierarchical`)
+- `chunking.qa:` — post-chunk validation bounds (`min_tokens`, `max_tokens`, `min_chunks`)
+- `judge_dim_floors:` — per-dimension minimum scores (faithfulness, formatting, cohesion, hallucination_risk)
+- `fail_fast_score:` — composite score at or below which the pipeline fails immediately
+- `cleanup_rejudge:` — toggle for re-running cleanup when formatting score is low but content is OK
+- `cleanup_rules:` — declarative per-corpus/per-mime-type cleanup rules (6 step handlers, rule tags for routing)
 
 Goal: change models and thresholds without code edits by updating YAML and/or DB-stored config versions.
 

@@ -11,13 +11,15 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from atlas.schemas import DocumentIngestState, JudgeResult, MetadataResult, RefineResult
+from atlas.pipeline.routing import decide_next_step
+from atlas.schemas import CleanupResult, DocumentIngestState, JudgeResult, MetadataResult, RefineResult
 
 
 class PipelineNode(str, Enum):
     """Pipeline node states (HLD section 2: Node Flow & Logic)."""
 
     INGEST = "ingest"
+    CLEANUP = "cleanup"
     JUDGE = "judge"
     REFINE = "refine"
     METADATA = "metadata"
@@ -40,6 +42,15 @@ class PipelineContext:
         """Store judge result in context."""
         self.results["judge"] = asdict(result)
         self.state.mean_judge_score = result.score
+
+    def set_cleanup_result(self, result: CleanupResult) -> None:
+        """Store cleanup result and update markdown projection in state."""
+        self.results["cleanup"] = asdict(result)
+        self.state.markdown_projection = result.cleaned_markdown
+
+    def set_docling_health(self, health: dict[str, Any]) -> None:
+        """Store Docling health assessment in context for downstream routing."""
+        self.results["docling_health"] = health
 
     def set_refine_result(self, result: RefineResult) -> None:
         """Store refine result in context."""
@@ -75,7 +86,8 @@ class PipelineStateManager:
 
     def __init__(self):
         self.valid_transitions: dict[PipelineNode, list[PipelineNode]] = {
-            PipelineNode.INGEST: [PipelineNode.JUDGE, PipelineNode.FAILED],
+            PipelineNode.INGEST: [PipelineNode.CLEANUP, PipelineNode.FAILED],
+            PipelineNode.CLEANUP: [PipelineNode.JUDGE, PipelineNode.HITL, PipelineNode.FAILED],
             PipelineNode.JUDGE: [
                 PipelineNode.REFINE,
                 PipelineNode.METADATA,
@@ -114,41 +126,27 @@ class PipelineStateManager:
     def get_next_node(
         self, context: PipelineContext, config: dict[str, Any]
     ) -> PipelineNode | None:
-        """Determine the next pipeline node based on current state and config."""
-        current_node = PipelineNode(context.state.current_node)
+        """Determine the next pipeline node based on current state and config.
 
-        if current_node == PipelineNode.INGEST:
-            return PipelineNode.JUDGE
-
-        if current_node == PipelineNode.JUDGE:
-            judge_cutoff = config.get("thresholds", {}).get("judge_cutoff_refine", 4)
-            if context.should_refine(judge_cutoff) and context.can_retry_refine():
-                return PipelineNode.REFINE
-            if context.needs_hitl_review():
-                return PipelineNode.HITL
-            return PipelineNode.METADATA
-
-        if current_node == PipelineNode.REFINE:
-            # After refine, go back to judge for re-evaluation
-            return PipelineNode.JUDGE
-
-        if current_node == PipelineNode.METADATA:
-            return PipelineNode.EMBEDDINGS
-
-        if current_node == PipelineNode.EMBEDDINGS:
-            return PipelineNode.CHUNKING
-
-        if current_node == PipelineNode.CHUNKING:
-            return PipelineNode.COMMIT
-
-        if current_node == PipelineNode.COMMIT:
-            return PipelineNode.COMPLETED
-
-        if current_node == PipelineNode.HITL:
-            # After HITL, could go back to judge or complete
-            return PipelineNode.COMPLETED
-
-        return None
+        Delegates to :func:`atlas.pipeline.routing.decide_next_step` for all
+        routing logic; this method translates the result back into a
+        ``PipelineNode``.
+        """
+        decision = decide_next_step(
+            current_node=context.state.current_node,
+            results=context.results,
+            state_snapshot={
+                "refine_retries": context.state.refine_retries,
+                "max_refine_retries": context.state.max_refine_retries,
+                "needs_hitl": context.state.needs_hitl,
+                "mean_judge_score": context.state.mean_judge_score,
+            },
+            config=config,
+        )
+        try:
+            return PipelineNode(decision.target)
+        except ValueError:
+            return None
 
 
 def create_pipeline_context(
@@ -157,6 +155,7 @@ def create_pipeline_context(
     doc_version: str,
     tenant_id: str,
     project_id: str,
+    corpus_id: str = "",
     source_uri: str | None = None,
     source_mime_type: str = "text/plain",
     max_refine_retries: int = 2,
@@ -167,6 +166,7 @@ def create_pipeline_context(
         doc_version=doc_version,
         tenant_id=tenant_id,
         project_id=project_id,
+        corpus_id=corpus_id,
         source_uri=source_uri,
         source_mime_type=source_mime_type,
         max_refine_retries=max_refine_retries,

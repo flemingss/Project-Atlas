@@ -1,0 +1,109 @@
+version: 1
+
+thresholds:
+  judge_cutoff_refine: 4
+  judge_borderline_low: 3
+  judge_borderline_high: 4
+  # Per-dimension judge floors (optional). If any dimension falls below its
+  # floor the document is sent to refine regardless of composite score.
+  # Set to 0 to disable per-dimension gating for a given dimension.
+  judge_dim_floors:
+    faithfulness: 3
+    formatting: 0
+    cohesion: 0
+    hallucination_risk: 3
+  # Composite score at or below which the document is immediately FAILED
+  # (skipping refine entirely).  Set to 0 to disable.
+  fail_fast_score: 0
+  # When true, a document whose formatting sub-score is below cutoff but
+  # whose content dimensions are above cutoff is re-routed through CLEANUP
+  # instead of REFINE.
+  cleanup_rejudge: false
+
+limits:
+  refine_max_retries: 2
+  tier2_chunk_cap_per_document: 25
+  # Back-compat: older configs used chunk_max_chars. Kept as a safety valve.
+  chunk_max_chars: 1000
+
+normalize:
+  enabled: true
+
+chunking:
+  # semantic: heading/table/list aware (recommended)
+  # paragraph: legacy paragraph splitter (max_chars)
+  strategy: semantic
+  target_tokens: 320
+  max_tokens: 400
+  qa:
+    min_chunk_count: 1
+    max_token_ratio_limit: 1.25
+    max_duplication_ratio: 0.10
+    min_coverage_ratio: 0.80
+
+frontier_fallback:
+  enabled: false
+  vram_percent_threshold: 92
+  queue_depth_threshold: 2
+
+cache:
+  semantic_cache_enabled: false
+  similarity_threshold: 0.98
+
+privacy:
+  default_is_sensitive: true
+
+retry:
+  llm:
+    max_retries: 3
+    base_delay_s: 2.0
+    max_delay_s: 30.0
+  vectorstore:
+    max_retries: 3
+    base_delay_s: 1.0
+    max_delay_s: 15.0
+  docling:
+    max_retries: 2
+    base_delay_s: 3.0
+    max_delay_s: 30.0
+
+# ---------------------------------------------------------------------------
+# Config-driven cleanup rules (Phase 7A)
+# ---------------------------------------------------------------------------
+# Rules are evaluated in declaration order; the FIRST matching rule is applied
+# (no merging in v1).  An empty "match" block is a catch-all.
+#
+# Supported step kinds:
+#   strip_lines_matching, rewrite_pattern, strip_headers_footers,
+#   normalize_headings, merge_hardwrapped_paragraphs, fix_bullets
+#
+# cleanup_rules:
+#   - name: pdf_scanned_defaults
+#     match:
+#       mime_type: application/pdf
+#     steps:
+#       - kind: merge_hardwrapped_paragraphs
+#       - kind: normalize_headings
+#       - kind: fix_bullets
+#     tags:
+#       - auto_fix_only
+#
+#   - name: strip_legal_headers
+#     match:
+#       corpus_id: legal_docs
+#     steps:
+#       - kind: strip_headers_footers
+#         first_n: 3
+#         last_n: 2
+#         patterns:
+#           - "^Page \\d+ of \\d+$"
+#           - "^CONFIDENTIAL"
+#     tags:
+#       - auto_fix_only
+#
+#   - name: catch_all
+#     match: {}
+#     steps:
+#       - kind: normalize_headings
+#       - kind: fix_bullets
+cleanup_rules: []

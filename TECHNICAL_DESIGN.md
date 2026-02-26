@@ -72,6 +72,7 @@ Ops:
   - durable run ledger (workflow runs / node runs / artifact refs)
   - HITL tasks
   - active doc versions
+  - cleanup feedback
 
 ### 3.2 Config management
 
@@ -109,6 +110,7 @@ Notes:
     - `corpus_id`
     - `is_finalized == true`
     - `is_active_version == true` (doc_version rollback/activation)
+  - `fidelity_mode` parameter: `verified` (default — only verified chunks), `verified+partial` (verified + partial), `all` (no fidelity filter)
 
 ### 3.4 LLM provider abstraction
 
@@ -125,23 +127,39 @@ Notes:
 ### 3.6 Pipeline modules
 
 - ✅ Pipeline state machine (`PipelineStateManager`) and orchestrator (`PipelineOrchestrator`) under `src/atlas/pipeline/*`
-- ✅ Judge node: few-shot rubric prompt, score 1–5, confidence rationale, versioned `judge_version` (model + prompt hash)
-- ✅ Refine node: configurable max retries, triggers HITL when exhausted
-- ✅ Metadata node: tiered (tier1 / tier2) with configurable per-doc tier2 cap
-- ✅ Pipeline runner is wired into `/rag/ingest/*` endpoints (text + file) and executes the full agentic loop
+- ✅ 11-node pipeline: INGEST → CLEANUP → JUDGE → REFINE → METADATA → EMBEDDINGS → CHUNKING → COMMIT (+ HITL, COMPLETED, FAILED)
+- ✅ **Cleanup node** (`pipeline/cleanup.py`): deterministic markdown cleanup between Ingest and Judge. Five built-in transforms (normalise whitespace, strip broken links, repair heading hierarchy, strip trailing whitespace, static checks). Produces `CleanupResult`. Accepts optional `doc_context` and `config` to apply config-driven cleanup rules after built-in transforms.
+- ✅ **Cleanup rules engine** (`pipeline/cleanup_rules.py`): declarative, first-match-wins rule engine for per-corpus / per-mime-type cleanup. Six step handlers: `strip_lines_matching`, `rewrite_pattern`, `strip_headers_footers`, `normalize_headings`, `merge_hardwrapped_paragraphs`, `fix_bullets`. Rules configured in `pipeline.yaml` `cleanup_rules:` section. Rule tags (`hard_failure`, `suspicious_content`, `auto_fix_only`) influence routing decisions.
+- ✅ **Judge node** (`pipeline/judge.py`): multi-dimensional rubric — FAITHFULNESS, FORMATTING, COHESION, HALLUCINATION_RISK (each 1–5). Composite score = rounded mean. Legacy single-SCORE fallback preserved. Versioned `judge_version` (model + prompt hash).
+- ✅ **Refine node**: configurable max retries, triggers HITL when exhausted
+- ✅ **Metadata node**: tiered (tier1 / tier2) with configurable per-doc tier2 cap
+- ✅ **Unified routing** (`pipeline/routing.py`): `decide_next_step()` pure function centralises all branching (fail-fast on composite ≤ `fail_fast_score`, per-dimension floor checks, cleanup-rejudge when formatting is bad but content is OK, standard refine/HITL paths, rule-tag-aware cleanup routing — `hard_failure`→FAILED, `suspicious_content`→HITL). `PipelineStateManager.get_next_node()` delegates here.
+- ✅ **Retry/backoff** (`retry.py`): `RetryConfig` + `async_retry()` / `sync_retry()` decorators. Applied to `openai_compat.py`, `qdrant_store.py`, `docling_adapter.py`. Config-driven per subsystem via `pipeline.yaml` `retry:` section.
+- ✅ **Chunk QA + fallback** (`rag/chunk_qa.py`): post-chunking validation + automatic fallback (semantic→paragraph, hierarchical→paragraph). Bounds configurable via `pipeline.yaml` `chunking.qa:` section.
+- ✅ **Docling health score** (`ingest/docling_health.py`): `compute_health()` evaluates extraction quality signals into a 1–5 composite score, stored on `PipelineContext`.
+- ✅ Pipeline runner is wired into `/rag/ingest/*` endpoints (text + file) and executes the full agentic loop with cleanup, chunk QA fallback, and health scoring
 - ✅ No LangGraph dependency exists today
 
 Notes:
 
 - Prompts/parsing are v1 and will evolve; the pipeline contract is stable.
+- Pipeline config (`pipeline.yaml`) includes `retry:`, `chunking.qa:`, `judge_dim_floors:`, `fail_fast_score`, `cleanup_rejudge`, and `cleanup_rules:` sections.
 
 ### 3.7 HITL
 
 - ✅ Durable HITL tasks are persisted in Postgres (`hitl_tasks`) with a small CRUD/queue API under `/admin/hitl/*`
 - 🟨 In-memory HITL queue exists (`src/atlas/hitl.py`) but is no longer the primary runtime path
 - 🟨 “Push to Dify” remains explicitly a placeholder/optional experiment
+### 3.8 Cleanup feedback & metrics
 
-### 3.8 E2E and repeatability
+- ✅ **Cleanup feedback model** (`models.py`): `CleanupFeedback` table with tenant/project/corpus/doc/chunk scoping, category, description, source spans, run_id FK, and metadata JSON.
+- ✅ **Feedback ledger** (`feedback_ledger.py`): CRUD helpers — `create_feedback`, `get_feedback`, `list_feedback`, `delete_feedback`, `feedback_category_counts`.
+- ✅ **Cleanup feedback API** (`api_admin.py`): five endpoints under `/admin/cleanup-feedback` — create (POST, 201), list (GET, scoped), categories (GET, aggregation), get by ID, delete by ID.
+- ✅ **Metrics aggregation API** (`api_admin.py`): `GET /admin/looking-glass/metrics` with optional tenant/project/corpus scoping. Returns workflow status distribution, node failure rates by node name, HITL escalation rates, auto-accepted counts, and cleanup-feedback category counts.
+- ✅ **LLM-assisted rule suggestion** (`rule_suggester.py`): `suggest_cleanup_rule()` accepts sample markdown + issues, calls the LLM (via `ModelRegistry`), and returns `{rule_yaml, rationale}`. Heuristic fallback when LLM unavailable. Deterministic provider branch for CI.
+- ✅ **Rule suggestion endpoint** (`api_admin.py`): `POST /admin/cleanup-rules/suggest` — resolves `chat_model` or `refine_model`, invokes `suggest_cleanup_rule()`, returns JSON suggestion.
+
+### 3.9 E2E and repeatability
 
 - ✅ Unit tests and integration tests exist and pass in this repo
 - ✅ Black-box E2E runner exists (`src/atlas/e2e/scenarios.py`):
@@ -153,7 +171,7 @@ Notes:
 - ✅ `POST /admin/self-test` runs the E2E suite against the running appliance in-place
 - ✅ Optional `--mode local_llm` for E2E testing against a real OpenAI-compatible LLM server
 
-### 3.9 Operator UI
+### 3.10 Operator UI
 
 - ✅ Streamlit-based operator UI (`ui/app.py`, `Dockerfile.ui`) for non-technical users
   - file upload (text, PDF/Office), corpus navigation, HITL task review
@@ -165,10 +183,11 @@ Notes:
   - 4-file design system: `theme.py` (tokens), `styles.py` (CSS), `components.py` (primitives), `app.py` (logic)
   - locked skeleton: every tab renders header + scope strip + max 3 cards
   - operator vs admin surface separation (admin controls visually gated)
-  - 7 tabs: Home, Upload, Library, Search, Review, Versions & Export, History
+  - 7 tabs + Admin (token-gated): Home, Upload, Library, Search, Review, Versions & Export, History, Admin
+  - Admin tab includes: Diagnostics, Data Management, Group Management, **Cleanup & Tuning** (active rules, feedback submission, feedback categories, pipeline metrics, AI rule suggestion)
   - one-primary-action-per-tab pattern; calm, workspace-centric microcopy
 
-### 3.10 Export and corpus management
+### 3.11 Export and corpus management
 
 - ✅ Doc-level export (`GET /admin/docs/{doc_id}/export`): zip containing manifest.json, document.md (enriched markdown with YAML frontmatter), index.json, index_config.json, chunk_manifest.jsonl, and artifact files
 - ✅ Lean export format: markdown-only zip for handoff to external RAG pipelines
@@ -177,13 +196,13 @@ Notes:
 - ✅ Doc deletion (`DELETE /admin/docs/{doc_id}`): removes Qdrant points + active_doc_version row
 - ✅ DB reset (`POST /admin/db/reset`): clear Postgres tables, Qdrant points, and/or artifact files (strict auth required)
 
-### 3.11 Doc versioning and rollback
+### 3.12 Doc versioning and rollback
 
 - ✅ `active_doc_versions` table tracks the active version per (tenant, project, doc)
 - ✅ `GET /admin/docs/{doc_id}/active-version` and `POST /admin/docs/{doc_id}/active-version` for version management
 - ✅ Rollback sets Qdrant `is_active_version` payload flags; search filters on `is_active_version == true`
 
-### 3.12 PDF ingest hardening
+### 3.13 PDF ingest hardening
 
 - ✅ Configurable guardrails via settings: `ATLAS_PDF_MAX_BYTES`, `ATLAS_PDF_MAX_PAGES`, `ATLAS_DOCLING_TIMEOUT_S`
 - ✅ Quality gates on PDF markdown output: min chars, min words, alpha ratio, garbled ratio thresholds
@@ -229,11 +248,17 @@ Rationale:
    - ✅ PDF-specific guardrails (size, page count, timeout, quality gates)
 
 2) **Agentic pipeline (automation loop)**
-   - ✅ Judge with real provider calls + rubric + versions (v1 prompts, will evolve)
+   - ✅ Deterministic cleanup node (5 built-in transforms) between Ingest and Judge
+   - ✅ Config-driven cleanup rules engine (6 step handlers, first-match-wins, rule-tag routing)
+   - ✅ Multi-dimensional judge (4 dimensions: faithfulness, formatting, cohesion, hallucination_risk)
+   - ✅ Unified routing with fail-fast, per-dimension floor checks, cleanup-rejudge, rule-tag-aware escalation
    - ✅ Refine with real provider calls + retry limits
    - ✅ Metadata tiering with enforced caps
    - ✅ Embeddings + chunking + commit integrated as first-class pipeline steps
    - ✅ Markdown normalization (page-number / noise stripping) before chunking
+   - ✅ Chunk QA with automatic fallback chain
+   - ✅ Retry/backoff on all external calls (LLM, vectorstore, Docling)
+   - ✅ Docling health scoring after every ingest
 
 3) **Durable workflow state**
    - ✅ Document/job table(s): ingest runs, current node, timestamps, error codes
@@ -273,8 +298,14 @@ Rationale:
     - chunk preview: show stored chunk text + key metadata (doc_id, doc_version, source spans)
     - run ledger: list ingest runs + current status + last error code + timestamps + in-flight/failure views
     - HITL queue: list tasks and link them to runs/docs
-    - storage health: Qdrant collections + vector dim + point counts; artifact store presence
+    - storage health: Qdrant collections + vector dim + point counts; artifact store presence    - **metrics aggregation**: workflow status distribution, node failure rates, HITL escalation rates, cleanup-feedback category counts (scoped by tenant/project/corpus)
 
+10) **Cleanup feedback loop**
+   - ✅ Durable feedback model (`cleanup_feedback` table) with tenant/project/corpus/doc/chunk scoping
+   - ✅ CRUD API under `/admin/cleanup-feedback` for operators to report cleanup quality issues
+   - ✅ Category-based aggregation for identifying systematic cleanup problems
+   - 🛠 LLM-assisted rule suggestion (on-demand endpoint to propose new cleanup rules from feedback patterns)
+   - 🛠 Admin UI "Cleanup & Tuning" tab in Streamlit
 9) **Operator UI**
    - ✅ Streamlit-based operator console (`ui/app.py`, containerized via `Dockerfile.ui`)
    - ✅ Covers: upload, corpus browsing, HITL review, export, admin controls, Looking Glass views
@@ -346,7 +377,17 @@ This is sequenced to maximize repeatability and minimize fantasy risk.
 
 **Definition of done:** operators can export a consistent package and recover a prior version.
 
-### Phase 6 — Retrieval-time upgrades (optional / scoped)
+### Phase 7 — Config-driven cleanup rules & feedback (v0.5.0)
+
+- ✅ **Phase 7A — Cleanup rules engine**: declarative rule engine (`cleanup_rules.py`) with 6 step handlers, first-match-wins resolution, rule tags influencing routing. `CleanupResult` extended with `rules_applied`, `rules_failed`, `fix_counts`, `rule_tags`. CLEANUP→HITL transition added. 34 new tests.
+- ✅ **Phase 7B — Feedback capture**: `CleanupFeedback` model + `feedback_ledger.py` CRUD + 5 admin endpoints. 7 new tests.
+- ✅ **Phase 7C — Metrics aggregation**: `GET /admin/looking-glass/metrics` with workflow/node/HITL/feedback aggregation, scoped by tenant/project/corpus. 3 new tests.
+- 🛠 **Phase 7D — LLM-assisted rule suggestion** (deferred): on-demand endpoint that accepts sample markdown + observed issues, calls LLM to suggest cleanup rule YAML.
+- 🛠 **Phase 7E — Admin UI "Cleanup & Tuning" tab** (deferred): Streamlit tab for viewing rules, submitting feedback, viewing metrics, and optionally invoking rule suggestions.
+
+**Definition of done (7A-7C):** 252 tests passing. Rules engine deterministic and fully backwards compatible. Feedback + metrics endpoints exercised by tests.
+
+### Phase 8 — Retrieval-time upgrades (optional / scoped)
 
 - 🛠 Decision: stay **vector-only** for v1; hybrid/BM25/rerank are out of scope unless a measured failure mode requires them
 
@@ -378,7 +419,7 @@ This section resolves the previously flagged “fantasy” items into explicit s
 
 **Decision (v1/end-state staging):**
 
-- ✅ v1 uses **vector-only retrieval + metadata filters** (tenant/project/is_finalized/is_active_version, plus future fidelity filters).
+- ✅ v1 uses **vector-only retrieval + metadata filters** (tenant/project/is_finalized/is_active_version, fidelity_mode filter).
 - 🛠 Hybrid keyword search and rerank are **explicitly deferred** until we have a measured failure mode that cannot be fixed by better chunking/metadata.
 
 **Rationale:** hybrid/rerank turns Atlas into a search stack with tuning + eval + ops overhead. It is a great upgrade *when needed*, not a baseline requirement for an appliance RC.

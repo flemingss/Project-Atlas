@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qm
+
+from atlas.retry import RetryConfig, get_retry_config, sync_retry
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -28,6 +33,37 @@ class QdrantStore:
     @property
     def collection(self) -> str:
         return self._collection
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _retry_cfg(self) -> RetryConfig:
+        cfg = get_retry_config("vectorstore")
+        # Only retry on connection / timeout exceptions from qdrant-client.
+        # Import qdrant exceptions lazily so we don't crash if the API changes.
+        retryable: list[type] = [ConnectionError, TimeoutError, OSError]
+        try:
+            from qdrant_client.http.exceptions import UnexpectedResponse
+            retryable.append(UnexpectedResponse)
+        except ImportError:
+            pass
+        try:
+            from httpx import RequestError
+            retryable.append(RequestError)
+        except ImportError:
+            pass
+        return RetryConfig(
+            max_retries=cfg.max_retries,
+            base_delay_s=cfg.base_delay_s,
+            max_delay_s=cfg.max_delay_s,
+            jitter=cfg.jitter,
+            retryable_exceptions=tuple(retryable),
+        )
+
+    # ------------------------------------------------------------------
+    # Public API — with retry
+    # ------------------------------------------------------------------
 
     def ensure_collection(self, *, vector_size: int) -> None:
         if self._client.collection_exists(self._collection):
@@ -54,7 +90,11 @@ class QdrantStore:
     def upsert_points(self, *, points: list[qm.PointStruct]) -> None:
         if not points:
             return
-        self._client.upsert(collection_name=self._collection, points=points, wait=True)
+
+        def _do() -> None:
+            self._client.upsert(collection_name=self._collection, points=points, wait=True)
+
+        sync_retry(_do, config=self._retry_cfg(), subsystem="vectorstore", operation="upsert")
 
     def search(
         self,
@@ -63,28 +103,34 @@ class QdrantStore:
         limit: int,
         must: list[qm.FieldCondition],
     ) -> list[QdrantHit]:
-        # qdrant-client >= 1.16 uses `query_points` rather than `search`.
-        res = self._client.query_points(
-            collection_name=self._collection,
-            query=query_vector,
-            limit=limit,
-            with_payload=True,
-            query_filter=qm.Filter(must=must),
-        )
-        hits: list[QdrantHit] = []
-        for r in res.points:
-            hits.append(QdrantHit(id=str(r.id), score=float(r.score), payload=r.payload or {}))
-        return hits
+        def _do() -> list[QdrantHit]:
+            res = self._client.query_points(
+                collection_name=self._collection,
+                query=query_vector,
+                limit=limit,
+                with_payload=True,
+                query_filter=qm.Filter(must=must),
+            )
+            hits: list[QdrantHit] = []
+            for r in res.points:
+                hits.append(QdrantHit(id=str(r.id), score=float(r.score), payload=r.payload or {}))
+            return hits
+
+        return sync_retry(_do, config=self._retry_cfg(), subsystem="vectorstore", operation="search")
 
     def set_payload(self, *, payload: dict[str, Any], must: list[qm.FieldCondition]) -> None:
         """Update payload for points matching a filter."""
-        self._client.set_payload(
-            collection_name=self._collection,
-            payload=payload,
-            points=None,
-            filter=qm.Filter(must=must),
-            wait=True,
-        )
+
+        def _do() -> None:
+            self._client.set_payload(
+                collection_name=self._collection,
+                payload=payload,
+                points=None,
+                filter=qm.Filter(must=must),
+                wait=True,
+            )
+
+        sync_retry(_do, config=self._retry_cfg(), subsystem="vectorstore", operation="set_payload")
 
     def scroll_points(
         self,
@@ -94,23 +140,26 @@ class QdrantStore:
         max_points: int = 10_000,
     ) -> list[Any]:
         """Return all points matching filter (best-effort) for export/debug."""
-        out: list[Any] = []
-        offset: str | int | None = None
 
-        while True:
-            points, next_offset = self._client.scroll(
-                collection_name=self._collection,
-                scroll_filter=qm.Filter(must=must),
-                limit=int(limit),
-                offset=offset,
-                with_payload=True,
-                with_vectors=False,
-            )
-            out.extend(points)
-            if next_offset is None:
-                break
-            offset = next_offset
-            if len(out) >= int(max_points):
-                break
+        def _do() -> list[Any]:
+            out: list[Any] = []
+            offset: str | int | None = None
 
-        return out
+            while True:
+                points, next_offset = self._client.scroll(
+                    collection_name=self._collection,
+                    scroll_filter=qm.Filter(must=must),
+                    limit=int(limit),
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                out.extend(points)
+                if next_offset is None:
+                    break
+                offset = next_offset
+                if len(out) >= int(max_points):
+                    break
+            return out
+
+        return sync_retry(_do, config=self._retry_cfg(), subsystem="vectorstore", operation="scroll")

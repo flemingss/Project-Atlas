@@ -35,7 +35,7 @@ def main() -> int:
         default=os.environ.get("ATLAS_E2E_MODE", "deterministic"),
         help="Which scenario mode to run.",
     )
-    ap.add_argument("--timeout", type=float, default=20.0)
+    ap.add_argument("--timeout", type=float, default=60.0, help="Health-check wait timeout in seconds.")
     args = ap.parse_args()
 
     _log(f"API: {args.api_url}")

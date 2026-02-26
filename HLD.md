@@ -7,8 +7,14 @@ Key deltas vs original intent:
 - HITL UI: Dify is optional/experimental; the default direction is a purpose-built console (“Control Center”).
 - Retrieval v1: vector-only + metadata filters; hybrid BM25/rerank deferred until a measured failure mode requires it.
 - Rollback v1: doc_version granularity; deep supersedes-chain semantics deferred.
-- Repo inspection: a “Repo Looking Glass” is planned so operators can assess corpus state without exporting.
-
+- Repo inspection: a “Repo Looking Glass” is planned so operators can assess corpus state without exporting.- Judge rubric: expanded from single 1–5 score to four dimensions (faithfulness, formatting, cohesion, hallucination_risk) in v0.4.0.
+- Pipeline: Cleanup node added between Ingest and Judge; unified routing logic; retry/backoff on all external calls.
+- Cleanup rules: v0.5.0 adds a config-driven cleanup rules engine (6 step handlers, first-match-wins, rule-tag routing including CLEANUP→HITL escalation).
+- Cleanup feedback: operator feedback loop with CRUD API + metrics aggregation endpoint.
+- Rule suggestion: v0.5.0 adds LLM-assisted rule suggestion (`POST /admin/cleanup-rules/suggest`) with heuristic fallback and deterministic provider support for CI.
+- Cleanup & Tuning UI: Admin tab card for viewing rules, submitting feedback, browsing metrics, and invoking AI rule suggestion.
+- Chunking: default strategy is semantic with automatic QA + fallback; chunk_with_fallback replaces direct calls.
+- Docling health score: computed after every ingest to surface extraction quality.
 1. System Vision
 
 Project Atlas ingests heterogeneous domain documents and outputs a "Professional Grade" RAG package. The system is local-first (RTX 3090), idempotent, self-refining, and features Human-in-the-Loop (HITL) checkpoints.

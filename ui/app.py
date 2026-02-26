@@ -13,6 +13,7 @@ from typing import Any
 
 import httpx
 import streamlit as st
+import yaml
 
 from ui import components, theme
 from ui.styles import inject_styles
@@ -217,6 +218,12 @@ def _request_json_diag(
     params: dict[str, Any] | None = None,
     timeout_s: float = 60.0,
 ) -> tuple[httpx.Response, Any | None]:
+    """Fire an HTTP request, log diagnostics, and return (response, json).
+
+    On timeout or connection errors a **synthetic 504** response is returned
+    instead of raising — this keeps the UI alive so the user sees a clear
+    ``st.error`` rather than the global crash handler.
+    """
     start = time.perf_counter()
     try:
         resp, data = _request_json(
@@ -239,6 +246,27 @@ def _request_json_diag(
             }
         )
         return resp, data
+    except (httpx.TimeoutException, httpx.ConnectError) as e:
+        # Graceful degradation: return a synthetic 504 so callers can show
+        # ``st.error`` instead of crashing the entire Streamlit session.
+        elapsed_ms = int((time.perf_counter() - start) * 1000)
+        _diag_add(
+            {
+                "type": "timeout",
+                "label": label,
+                "method": method,
+                "url": url,
+                "elapsed_ms": elapsed_ms,
+                "error": repr(e),
+            }
+        )
+        synth = httpx.Response(
+            status_code=504,
+            request=httpx.Request(method, url),
+            content=f"Request timed out after {timeout_s:.0f}s — the backend may still be processing. "
+            f"If using a local LLM, allow more time for inference to complete. ({e})".encode(),
+        )
+        return synth, None
     except Exception as e:
         elapsed_ms = int((time.perf_counter() - start) * 1000)
         _diag_add(
@@ -331,6 +359,27 @@ def main() -> None:
         corpus_id = str(st.session_state.get("scope_corpus_id", default_corpus))
 
         # -- Status -----------------------------------------------------------
+        # Auto-connect on first load when env token is populated so the
+        # operator never needs to manually click "Test connection".
+        _needs_auto_connect = (
+            "health_status" not in st.session_state
+            and bool(api)
+            and bool(_default_admin_token())
+        )
+
+        if _needs_auto_connect:
+            try:
+                h_resp, h_json = _request_json_diag(label="health (auto)", method="GET", url=f"{api}/health")
+                st.session_state["health_status"] = (h_resp.status_code, h_json, h_resp.text)
+                if admin_headers:
+                    a_resp, a_json = _request_json_diag(
+                        label="admin effective config (auto)",
+                        method="GET", url=f"{api}/admin/config/effective", headers=admin_headers,
+                    )
+                    st.session_state["admin_status"] = (a_resp.status_code, a_json, a_resp.text)
+            except Exception:
+                pass  # Graceful — user can still click manually
+
         if st.button("Test connection", use_container_width=True, key="sidebar_test_btn"):
             with st.spinner("Checking..."):
                 h_resp, h_json = _request_json_diag(label="health", method="GET", url=f"{api}/health")
@@ -360,131 +409,13 @@ def main() -> None:
                 components.status_pill("Admin access", ok=int(code) < 400, detail=("" if int(code) < 400 else raw))
 
         # -- Admin tools (collapsed, visually gated) --------------------------
-        with st.expander("Admin tools", expanded=False):
-            components.admin_warning()
+        # Moved to dedicated Admin tab -- sidebar is now a light context rail.
 
-            if not admin_headers:
-                components.auth_gate()
-            else:
-                # Project selector
-                project_options = [
-                    str(p.get("project_id") or "")
-                    for p in reg.get("projects", [])
-                    if str(p.get("tenant_id") or "") == tenant_id and str(p.get("project_id") or "").strip()
-                ]
-                if default_project not in project_options:
-                    project_options = [default_project, *project_options] if default_project else project_options
-                if not project_options:
-                    project_options = [default_project]
-                adm_project = st.selectbox("Project", options=project_options, index=0, key="admin_project_sel")
-                if adm_project != project_id:
-                    st.session_state["scope_project_id"] = adm_project
-
-                if st.button("Refresh groups", key="scope_refresh_btn", use_container_width=True):
-                    st.session_state.pop("group_registry", None)
-                    st.rerun()
-
-                with st.expander("Create workspace / project / collection", expanded=False):
-                    create_kind = st.selectbox("Type", options=["Workspace", "Project", "Collection"], key="scope_create_kind")
-                    new_id = st.text_input("ID", value="", key="scope_create_id")
-                    new_name = st.text_input("Display name (optional)", value="", key="scope_create_name")
-                    if st.button("Create", key="scope_create_btn", use_container_width=True):
-                        kind = (create_kind or "").strip().lower()
-                        if kind == "workspace":
-                            ok, msg = _create_scope_entry(
-                                api=api, admin_headers=admin_headers,
-                                endpoint="/admin/tenants",
-                                payload={"tenant_id": new_id, "display_name": new_name},
-                                label="Workspace",
-                            )
-                        elif kind == "project":
-                            ok, msg = _create_scope_entry(
-                                api=api, admin_headers=admin_headers,
-                                endpoint="/admin/projects",
-                                payload={"tenant_id": tenant_id, "project_id": new_id, "display_name": new_name},
-                                label="Project",
-                            )
-                        else:
-                            ok, msg = _create_scope_entry(
-                                api=api, admin_headers=admin_headers,
-                                endpoint="/admin/corpora",
-                                payload={
-                                    "tenant_id": tenant_id, "project_id": project_id,
-                                    "corpus_id": new_id, "display_name": new_name,
-                                },
-                                label="Collection",
-                            )
-                        if ok:
-                            st.success(msg)
-                            st.session_state["group_registry"] = _load_group_registry(api, admin_headers)
-                        else:
-                            st.error(msg)
-
-            # Diagnostics
-            with st.expander("Diagnostics", expanded=False):
-                st.caption("Records recent API calls and exceptions from this UI session.")
-                _diag_init()
-                _diag_ensure_session_started(api)
-
-                clicked = components.action_bar(
-                    {"label": "Show", "key": "diag_show"},
-                    {"label": "Hide", "key": "diag_hide"},
-                    {"label": "Clear", "key": "diag_clear"},
-                )
-                if clicked[0]:
-                    st.session_state["show_diagnostics"] = True
-                if clicked[1]:
-                    st.session_state["show_diagnostics"] = False
-                if clicked[2]:
-                    st.session_state["diag_events"] = []
-                    st.session_state["diag_session_started"] = False
-                    _diag_ensure_session_started(api)
-
-                st.download_button(
-                    "Download logs (JSON)",
-                    data=_diag_bundle(api),
-                    file_name="atlas_ui_diagnostics.json",
-                    mime="application/json",
-                    use_container_width=True,
-                )
-
-            # DB Reset (danger zone)
-            if admin_headers:
-                with components.danger_zone(
-                    caption="Clears Postgres + Qdrant so you can re-import from scratch.",
-                    warning="This is destructive. Existing runs/docs/chunks will be lost.",
-                ):
-                    confirm = st.text_input("Type RESET to confirm", value="", key="db_reset_confirm")
-                    col1, col2, col3 = st.columns(theme.COL_THIRDS)
-                    with col1:
-                        do_pg = st.checkbox("Reset Postgres", value=True, key="db_reset_pg")
-                    with col2:
-                        do_qd = st.checkbox("Clear Qdrant", value=True, key="db_reset_qdrant")
-                    with col3:
-                        do_art = st.checkbox("Clear artifacts", value=False, key="db_reset_artifacts")
-
-                    if st.button("Reset database -- this cannot be undone", use_container_width=True, key="db_reset_btn"):
-                        with st.spinner("Resetting..."):
-                            resp, data = _request_json_diag(
-                                label="admin db reset",
-                                method="POST",
-                                url=f"{api}/admin/db/reset",
-                                headers=admin_headers,
-                                json_body={
-                                    "confirm": confirm,
-                                    "postgres": bool(do_pg),
-                                    "qdrant": bool(do_qd),
-                                    "artifacts": bool(do_art),
-                                },
-                                timeout_s=120.0,
-                            )
-                        if int(resp.status_code) < 400:
-                            st.success("Database has been reset. All data has been removed.")
-                        else:
-                            st.error(f"Reset failed ({resp.status_code})")
-                        components.detail_expander("Details (JSON)", data=data)
-
-    tabs = st.tabs([theme.TAB_HOME, theme.TAB_UPLOAD, theme.TAB_LIBRARY, theme.TAB_SEARCH, theme.TAB_REVIEW, theme.TAB_VERSIONS, theme.TAB_HISTORY])  # type: ignore[arg-type]
+    # -- Build tab list (Admin tab shown only with valid token) ----------------
+    tab_labels = [theme.TAB_HOME, theme.TAB_UPLOAD, theme.TAB_LIBRARY, theme.TAB_SEARCH, theme.TAB_REVIEW]
+    if admin_headers:
+        tab_labels.append(theme.TAB_ADMIN)
+    tabs = st.tabs(tab_labels)  # type: ignore[arg-type]
 
     # =====================================================================
     # HOME
@@ -499,17 +430,35 @@ def main() -> None:
         )
 
         _connected = bool(st.session_state.get("health_status") and int(st.session_state["health_status"][0]) < 400)
-        _has_docs = bool(st.session_state.get("lib_docs"))
+        _has_docs = bool(st.session_state.get("lib_docs")) or bool(st.session_state.get("last_doc_id"))
         _has_searched = bool(st.session_state.get("last_query"))
-        _has_reviewed = bool(st.session_state.get("hitl_current"))
+        _has_reviewed = bool(st.session_state.get("hitl_last_action"))
 
         with components.card(hero=True):
             components.card_header("Getting started", "Complete these steps to set up your collection.")
+
+            # Step 1 — Connect
             components.checklist_item(_connected, "1.", "Connect to Atlas", "Use the sidebar to set your URL and test the connection.")
+            if not _connected:
+                st.caption("Tip: Set `ATLAS_ADMIN_TOKEN` as an environment variable and the console will auto-connect on load.")
+
+            # Step 2 — Workspace (always done)
             components.checklist_item(True, "2.", "Choose a workspace", "Pick where your documents will live.")
+
+            # Step 3 — Upload
             components.checklist_item(_has_docs, "3.", "Upload your first document", "Go to the Upload tab and add a file or paste text.")
+            if not _has_docs and _connected:
+                st.caption("Navigate to the **Upload** tab above to add your first document.")
+
+            # Step 4 — Search
             components.checklist_item(_has_searched, "4.", "Search your collection", "Head to Search and try a question.")
+            if not _has_searched and _has_docs:
+                st.caption("Navigate to the **Search** tab above to try a question against your documents.")
+
+            # Step 5 — Review
             components.checklist_item(_has_reviewed, "5.", "Review flagged content", "If any documents need review, the Review tab will show them.")
+            if not _has_reviewed and _has_docs:
+                st.caption("Navigate to the **Review** tab above to check for flagged documents.")
 
     # =====================================================================
     # UPLOAD
@@ -525,7 +474,7 @@ def main() -> None:
 
         upload_mode = st.radio(
             "Source",
-            options=["Upload file", "Paste text"],
+            options=["Upload file", "Write or paste content"],
             horizontal=True,
             label_visibility="collapsed",
         )
@@ -554,9 +503,9 @@ def main() -> None:
                 )
 
                 can_upload = uploaded is not None and bool((doc_name or "").strip())
-                do_upload = components.primary_button("Upload and make searchable", disabled=not can_upload, key="upload_file_btn")
+                do_upload = components.primary_button("Upload and index", disabled=not can_upload, key="upload_file_btn")
 
-            else:  # Paste Text
+            else:  # Write or paste content
                 text_doc_name = st.text_input(
                     "Document name",
                     value=st.session_state.get("last_text_doc_name", "Quick note"),
@@ -576,7 +525,8 @@ def main() -> None:
                 )
 
                 do_upload = False
-                do_text = components.primary_button("Upload and make searchable", key="upload_text_btn")
+                can_upload_text = bool((text_doc_name or "").strip()) and bool((text or "").strip())
+                do_text = components.primary_button("Upload and index", key="upload_text_btn", disabled=not can_upload_text)
 
         # -- Card 2: Advanced options (collapsed) -----------------------------
         with st.expander("Advanced options", expanded=False):
@@ -653,30 +603,52 @@ def main() -> None:
                     data["source_mime_type"] = source_mime_type.strip()
 
                 with st.spinner("Uploading and indexing -- this may take a moment..."):
-                    with httpx.Client(timeout=_ui_upload_timeout_s()) as client:
-                        start = time.perf_counter()
-                        resp = client.post(f"{api}/rag/ingest/file", files=files, data=data)
+                    try:
+                        with httpx.Client(timeout=_ui_upload_timeout_s()) as client:
+                            start = time.perf_counter()
+                            resp = client.post(f"{api}/rag/ingest/file", files=files, data=data)
+                            elapsed_ms = int((time.perf_counter() - start) * 1000)
+                            _diag_add(
+                                {
+                                    "type": "http",
+                                    "label": "ingest/file",
+                                    "method": "POST",
+                                    "url": f"{api}/rag/ingest/file",
+                                    "status": int(resp.status_code),
+                                    "elapsed_ms": elapsed_ms,
+                                }
+                            )
+                    except (httpx.TimeoutException, httpx.ConnectError) as _te:
                         elapsed_ms = int((time.perf_counter() - start) * 1000)
                         _diag_add(
                             {
-                                "type": "http",
+                                "type": "timeout",
                                 "label": "ingest/file",
                                 "method": "POST",
                                 "url": f"{api}/rag/ingest/file",
-                                "status": int(resp.status_code),
                                 "elapsed_ms": elapsed_ms,
+                                "error": repr(_te),
                             }
                         )
+                        st.error(
+                            f"Upload timed out after {_ui_upload_timeout_s():.0f}s — the backend may still be processing. ({_te})"
+                        )
+                        st.stop()
 
                 if resp.status_code >= 400:
-                    st.error(f"Upload failed ({resp.status_code}): {resp.text}")
+                    components.friendly_error(
+                        "The file could not be uploaded. Check that the file is a supported format and try again.",
+                        status_code=resp.status_code,
+                        raw_text=resp.text,
+                    )
                     st.stop()
 
                 payload = resp.json() if _is_json_response(resp) else {}
                 title, detail = _summarize_ingest(payload if isinstance(payload, dict) else None)
-                st.success(f"Done! {title}")
-                components.detail_expander("Details (JSON)", data=payload)
 
+                # Structured result card (A2) — plain-language feedback
+                _p = payload if isinstance(payload, dict) else {}
+                _run_id_val: int | None = None
                 if admin_headers:
                     try:
                         r_resp, r_data = _request_json_diag(
@@ -687,22 +659,31 @@ def main() -> None:
                             params={"limit": 50},
                         )
                         if r_resp.status_code < 400 and isinstance(r_data, list):
-                            match = None
                             for r in r_data:
                                 if str(r.get("doc_id")) == str(doc_id) and str(r.get("doc_version")) == str(doc_version):
-                                    match = r
+                                    _run_id_val = int(r["id"])
+                                    st.session_state["last_run_id"] = _run_id_val
                                     break
-                            if match and match.get("id") is not None:
-                                st.info(f"Processing run: #{int(match['id'])} -- check History for status.")
-                                st.session_state["last_run_id"] = int(match["id"])
                     except Exception:
                         pass
 
-        if upload_mode == "Paste text" and do_text:
+                components.ingest_result_card(
+                    doc_name=doc_name or "",
+                    doc_id=doc_id,
+                    chunks=int(_p.get("chunks_upserted") or 0),
+                    searchable=bool(is_finalized),
+                    paused_for_review=bool(_p.get("paused_for_hitl")),
+                    run_id=_run_id_val,
+                    error_message=_p.get("error_message") if _p.get("error_code") else None,
+                )
+                components.detail_expander("Full response (JSON)", data=payload)
+
+        if upload_mode == "Write or paste content" and do_text:
             is_finalized = bool(st.session_state.get("last_is_finalized", True))
             is_sensitive = bool(st.session_state.get("last_is_sensitive", True))
             st.session_state["last_text_doc_name"] = text_doc_name
             st.session_state["last_text_doc_version"] = text_doc_version
+            st.session_state["last_doc_id"] = text_doc_id
             payload = {
                 "doc_id": text_doc_id,
                 "doc_version": text_doc_version,
@@ -721,109 +702,40 @@ def main() -> None:
                     method="POST",
                     url=f"{api}/rag/ingest/text",
                     json_body=payload,
-                    timeout_s=120.0,
+                    timeout_s=300.0,
                 )
             if resp.status_code >= 400:
-                st.error(f"Upload failed ({resp.status_code}): {resp.text}")
+                components.friendly_error(
+                    "The text could not be indexed. Check your input and try again.",
+                    status_code=resp.status_code,
+                    raw_text=resp.text if hasattr(resp, 'text') else "",
+                )
                 st.stop()
 
             title, detail = _summarize_ingest(data if isinstance(data, dict) else None)
-            st.success(f"Done! {title}")
-            components.detail_expander("Details (JSON)", data=data)
 
-    # =====================================================================
-    # SEARCH
-    # =====================================================================
-    with tabs[3]:
-        components.tab_header(
-            "Search",
-            theme.COPY_SEARCH,
-            workspace=tenant_id,
-            collection=corpus_id,
-            project=project_id,
-        )
-
-        # -- Card 1: Query area -----------------------------------------------
-        with components.card(hero=True):
-            components.card_header("Ask a question")
-            query = st.text_input(
-                "What are you looking for?",
-                value=st.session_state.get("last_query", ""),
-                placeholder="Type a question or keyword...",
-                label_visibility="collapsed",
+            # Structured result card (A2)
+            _tp = data if isinstance(data, dict) else {}
+            components.ingest_result_card(
+                doc_name=text_doc_name or "",
+                doc_id=text_doc_id,
+                chunks=int(_tp.get("chunks_upserted") or 0),
+                searchable=bool(is_finalized),
+                paused_for_review=bool(_tp.get("paused_for_hitl")),
+                error_message=_tp.get("error_message") if _tp.get("error_code") else None,
             )
-            qr_col1, qr_col2 = st.columns([3, 1])
-            with qr_col2:
-                top_k = st.number_input("Max results", min_value=1, max_value=50, value=5, label_visibility="collapsed")
+            components.detail_expander("Full response (JSON)", data=data)
 
-            query_s = (query or "").strip()
-            do_search = components.primary_button("Search", disabled=not bool(query_s), key="search_btn")
-
-        # -- Card 2: Results ---------------------------------------------------
-        if do_search:
-            st.session_state["last_query"] = query_s
-            payload = {
-                "query": query_s,
-                "top_k": int(top_k),
-                "tenant_id": tenant_id,
-                "project_id": project_id,
-                "corpus_id": corpus_id,
-            }
-            with st.spinner("Searching..."):
-                resp, data = _request_json_diag(
-                    label="rag/search",
-                    method="POST",
-                    url=f"{api}/rag/search",
-                    json_body=payload,
-                    timeout_s=60.0,
-                )
-            if resp.status_code >= 400:
-                st.error(f"Search failed ({resp.status_code}): {resp.text}")
+        # -- Processing History (B2: absorbed from standalone History tab) -----
+        st.divider()
+        with st.expander("Processing history", expanded=False):
+            if not admin_headers:
+                st.caption("Admin token required to view processing history.")
             else:
-                hits = (data or {}).get("hits") or []
-                if not hits:
-                    components.empty_state("No results found. Try different keywords or check that documents have been uploaded and indexed.")
-                else:
-                    st.caption(f"{len(hits)} result(s)")
-                    for i, h in enumerate(hits, start=1):
-                        payload_h = h.get("payload") or {}
-                        doc_id_h = h.get("doc_id")
-                        doc_ver_h = payload_h.get("doc_version")
-                        filename_h = payload_h.get("source_filename") or ""
-                        score = h.get("score")
-                        snippet = (h.get("text") or "").strip().replace("\n", " ")
-                        if len(snippet) > theme.MAX_SNIPPET_CHARS:
-                            snippet = snippet[:theme.MAX_SNIPPET_CHARS] + "..."
-                        card_title = f"#{i} - {filename_h or doc_id_h}"
-                        metrics = {
-                            "Version": str(doc_ver_h),
-                            "Chunk": str(h.get("chunk_index")),
-                            "Score": f"{float(score or 0.0):.3f}",
-                            "Doc": str(doc_id_h),
-                        }
-                        components.search_hit_card(i, card_title, snippet, metrics, h)
-    
-    # =====================================================================
-    # HISTORY
-    # =====================================================================
-    with tabs[6]:
-        components.tab_header(
-            "History",
-            theme.COPY_HISTORY,
-            workspace=tenant_id,
-            collection=corpus_id,
-            project=project_id,
-        )
-
-        if not admin_headers:
-            components.auth_gate("Admin token required to view processing history.")
-        else:
-            # -- Card 1: Runs table -------------------------------------------
-            with components.card():
                 components.card_header("Processing runs", "Recent ingest and pipeline runs for this workspace.")
-                col1, col2 = st.columns(theme.COL_HALF)
-                limit = col1.number_input("Max rows", min_value=1, max_value=500, value=100, key="runs_limit")
-                refresh = col2.button("Refresh", key="runs_refresh_btn")
+                hist_col1, hist_col2 = st.columns(theme.COL_HALF)
+                limit = hist_col1.number_input("Max rows", min_value=1, max_value=500, value=100, key="runs_limit")
+                refresh = hist_col2.button("Refresh", key="runs_refresh_btn")
 
                 if refresh or "runs_cache" not in st.session_state:
                     resp, data = _request_json_diag(
@@ -856,20 +768,20 @@ def main() -> None:
                 else:
                     st.caption("No runs returned.")
 
-            # -- Card 2: Run details (appears after selection) ----------------
-            if runs_list:
-                run_ids: list[int] = []
-                for r in runs_list:
-                    rid = r.get("id")
-                    if rid is None:
-                        continue
-                    try:
-                        run_ids.append(int(rid))
-                    except Exception:
-                        continue
+                # Run details viewer
+                if runs_list:
+                    run_ids: list[int] = []
+                    for r in runs_list:
+                        rid = r.get("id")
+                        if rid is None:
+                            continue
+                        try:
+                            run_ids.append(int(rid))
+                        except Exception:
+                            continue
 
-                if run_ids:
-                    with components.card():
+                    if run_ids:
+                        st.divider()
                         components.card_header("Run details", "Select a run to inspect steps and artifacts.")
                         default_run = st.session_state.get("last_run_id")
                         if isinstance(default_run, int) and default_run in run_ids:
@@ -909,6 +821,102 @@ def main() -> None:
                                     d3 = []
                                 components.run_detail_card(d1 or {}, d2 or [], d3 or [])
 
+    # =====================================================================
+    # SEARCH
+    # =====================================================================
+    with tabs[3]:
+        components.tab_header(
+            "Search",
+            theme.COPY_SEARCH,
+            workspace=tenant_id,
+            collection=corpus_id,
+            project=project_id,
+        )
+
+        # -- Card 1: Query area -----------------------------------------------
+        with components.card(hero=True):
+            components.card_header("Ask a question")
+            query = st.text_input(
+                "What are you looking for?",
+                value=st.session_state.get("last_query", ""),
+                placeholder="Type a question or keyword...",
+                label_visibility="collapsed",
+                help="Enter a natural language question or keywords. Atlas will find the most relevant passages from your uploaded documents.",
+            )
+            qr_col1, qr_col2, qr_col3 = st.columns([3, 1, 1])
+            with qr_col2:
+                top_k = st.number_input("Max results", min_value=1, max_value=50, value=5, label_visibility="collapsed")
+            with qr_col3:
+                fidelity_mode = st.selectbox(
+                    "Result quality",
+                    options=["Verified only", "Include partially verified", "Show everything"],
+                    index=0,
+                    label_visibility="collapsed",
+                    help="Controls which chunks are included based on quality verification status.",
+                )
+
+            query_s = (query or "").strip()
+            do_search = components.primary_button("Search", disabled=not bool(query_s), key="search_btn")
+
+        # -- Card 2: Results ---------------------------------------------------
+        if do_search:
+            st.session_state["last_query"] = query_s
+            _fidelity_map = {
+                "Verified only": "verified",
+                "Include partially verified": "verified+partial",
+                "Show everything": "all",
+            }
+            payload = {
+                "query": query_s,
+                "top_k": int(top_k),
+                "tenant_id": tenant_id,
+                "project_id": project_id,
+                "corpus_id": corpus_id,
+                "fidelity_mode": _fidelity_map.get(fidelity_mode, "verified"),
+            }
+            with st.spinner("Searching..."):
+                resp, data = _request_json_diag(
+                    label="rag/search",
+                    method="POST",
+                    url=f"{api}/rag/search",
+                    json_body=payload,
+                    timeout_s=120.0,
+                )
+            if resp.status_code >= 400:
+                components.friendly_error(
+                    "Search could not be completed. The server may be busy — try again in a moment.",
+                    status_code=resp.status_code,
+                    raw_text=resp.text,
+                )
+            else:
+                hits = (data or {}).get("hits") or []
+                if not hits:
+                    components.empty_state("No results found. Try different keywords or check that documents have been uploaded and indexed.")
+                else:
+                    st.caption(f"{len(hits)} result(s)")
+                    for i, h in enumerate(hits, start=1):
+                        payload_h = h.get("payload") or {}
+                        doc_id_h = h.get("doc_id")
+                        doc_ver_h = payload_h.get("doc_version")
+                        filename_h = payload_h.get("source_filename") or ""
+                        _fid_flag = payload_h.get("fidelity_flag", "")
+                        _fid_label = {"verified": "Verified", "partial": "Partially verified", "low_confidence": "Needs review", "needs_review": "Needs review"}.get(_fid_flag, _fid_flag)
+                        score = h.get("score")
+                        snippet = (h.get("text") or "").strip().replace("\n", " ")
+                        if len(snippet) > theme.MAX_SNIPPET_CHARS:
+                            snippet = snippet[:theme.MAX_SNIPPET_CHARS] + "..."
+                        # Show source filename prominently; fall back to doc_id
+                        _display_name = filename_h or doc_id_h
+                        card_title = f"#{i} — {_display_name}"
+                        metrics = {
+                            "Source": str(filename_h or doc_id_h),
+                            "Version": str(doc_ver_h),
+                            "Chunk": str(h.get("chunk_index")),
+                            "Score": f"{float(score or 0.0):.3f}",
+                            "Quality": _fid_label,
+                        }
+                        components.search_hit_card(i, card_title, snippet, metrics, h)
+    
     # =====================================================================
     # REVIEW (HITL)
     # =====================================================================
@@ -961,7 +969,11 @@ def main() -> None:
                         params={"assigned_to": assigned_to},
                     )
                     if resp.status_code >= 400:
-                        st.error(f"Could not claim task ({resp.status_code}): {resp.text}")
+                        components.friendly_error(
+                            "No review tasks are available right now. New tasks appear as documents are processed.",
+                            status_code=resp.status_code,
+                            raw_text=resp.text,
+                        )
                     else:
                         st.session_state["hitl_current"] = data
                         st.rerun()
@@ -971,44 +983,117 @@ def main() -> None:
                 with components.card(elevated=True):
                     components.card_header(
                         f"Reviewing: {current.get('doc_id')}",
-                        f"v{current.get('doc_version')} -- priority {current.get('priority_score', '?')}",
+                        f"v{current.get('doc_version')}",
                     )
 
+                    # A3 — Plain-language flagging reason derived from task data
+                    _judge = float(current.get("judge_score") or 0)
+                    _sensitive = bool(current.get("is_sensitive"))
+                    _priority = float(current.get("priority_score") or 0)
+                    _meta_source = ((current.get("meta") or {}).get("source") or "").strip()
+
+                    _reason_parts: list[str] = []
+                    if _judge <= 2:
+                        _reason_parts.append(f"low quality score ({_judge:.0f}/5)")
+                    elif _judge <= 3:
+                        _reason_parts.append(f"borderline quality score ({_judge:.0f}/5)")
+                    if _sensitive:
+                        _reason_parts.append("marked as sensitive")
+                    if _meta_source and _meta_source != "pipeline":
+                        _reason_parts.append(f"source: {_meta_source}")
+
+                    if _reason_parts:
+                        _urgency = "High" if _priority >= 14 else ("Medium" if _priority >= 8 else "Low")
+                        _reason_colour = {"High": theme.DANGER, "Medium": "#E6A817", "Low": theme.MUTED}.get(_urgency, theme.MUTED)
+                        st.markdown(
+                            f'<div style="background:{theme.BG_ALT}; border-left:4px solid {_reason_colour}; '
+                            f'padding:0.5rem 0.75rem; border-radius:4px; margin-bottom:0.75rem; font-size:0.9rem;">'
+                            f'<strong style="color:{_reason_colour};">Urgency: {_urgency}</strong> &mdash; '
+                            f'Flagged because: {", ".join(_reason_parts)}'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+
+                    # A5 — Render Before as rich markdown; keep After editable
                     left, right = st.columns(theme.COL_HALF)
                     with left:
-                        st.markdown("**Before**")
-                        st.text_area("Before", height=theme.TEXT_AREA_MD, value=current.get("before_md") or "", disabled=True, label_visibility="collapsed")
+                        st.markdown("**Before** (original)")
+                        _before_md = current.get("before_md") or ""
+                        with st.container(height=theme.TEXT_AREA_MD + 20):
+                            st.markdown(_before_md)
                     with right:
                         st.markdown("**After** (edit below)")
-                        after_md = st.text_area("After", height=theme.TEXT_AREA_MD, value=current.get("after_md") or "", label_visibility="collapsed")
+                        after_md = st.text_area("After", height=theme.TEXT_AREA_MD, value=current.get("after_md") or current.get("before_md") or "", label_visibility="collapsed")
 
                     reason = st.text_input("Reason for edit", value="review", key="hitl_review_reason")
 
-                    # One primary, secondary, link-style
-                    act_col1, act_col2, act_col3 = st.columns(3)
+                    # A4 — Merged "Approve and continue" (saves + resumes pipeline)
+                    #       plus Skip with reason dropdown
+                    act_col1, act_col2 = st.columns([2, 1])
                     with act_col1:
-                        do_accept = components.primary_button("Save review", key="hitl_accept")
+                        do_approve = components.primary_button("Approve and continue", key="hitl_accept")
                     with act_col2:
-                        do_resume = components.secondary_button("Save and resume indexing", key="hitl_resume_btn")
-                    with act_col3:
+                        _skip_reason = st.selectbox(
+                            "Skip reason",
+                            options=["Not sure", "Looks fine to me", "Needs someone else", "Other"],
+                            key="hitl_skip_reason",
+                            label_visibility="collapsed",
+                        )
                         do_skip = components.secondary_button("Skip", key="hitl_skip")
 
-                if do_accept:
+                # A4 — Single approve action: complete + auto-resume pipeline
+                if do_approve:
                     tid = int(current["id"])
                     payload = {"after_md": after_md, "reason_for_edit": reason}
-                    with st.spinner("Saving review..."):
+                    with st.spinner("Saving review and resuming pipeline..."):
                         resp, data = _request_json_diag(
                             label="admin hitl complete",
                             method="POST",
                             url=f"{api}/admin/hitl/tasks/{tid}/complete",
                             headers=admin_headers,
                             json_body=payload,
-                            timeout_s=60.0,
+                            timeout_s=120.0,
                         )
                     if resp.status_code >= 400:
-                        st.error(f"Save failed ({resp.status_code}): {resp.text}")
+                        components.friendly_error(
+                            "The review could not be saved. Please try again.",
+                            status_code=resp.status_code,
+                            raw_text=resp.text,
+                        )
                     else:
-                        st.success("Review saved! Loading next...")
+                        # Auto-resume pipeline (best-effort)
+                        try:
+                            with httpx.Client(timeout=300.0) as client:
+                                start = time.perf_counter()
+                                _resume_resp = client.post(f"{api}/admin/hitl/tasks/{tid}/resume", headers=admin_headers)
+                                elapsed_ms = int((time.perf_counter() - start) * 1000)
+                                _diag_add(
+                                    {
+                                        "type": "http",
+                                        "label": "admin hitl resume (auto)",
+                                        "method": "POST",
+                                        "url": f"{api}/admin/hitl/tasks/{tid}/resume",
+                                        "status": int(_resume_resp.status_code),
+                                        "elapsed_ms": elapsed_ms,
+                                    }
+                                )
+                        except (httpx.TimeoutException, httpx.ConnectError) as _timeout_err:
+                            elapsed_ms = int((time.perf_counter() - start) * 1000)
+                            _diag_add(
+                                {
+                                    "type": "timeout",
+                                    "label": "admin hitl resume (auto)",
+                                    "method": "POST",
+                                    "url": f"{api}/admin/hitl/tasks/{tid}/resume",
+                                    "elapsed_ms": elapsed_ms,
+                                    "error": repr(_timeout_err),
+                                }
+                            )
+                        except Exception:
+                            pass  # Resume is best-effort; review is already saved
+
+                        st.success("Review saved and pipeline resumed! Loading next...")
+                        st.session_state["hitl_last_action"] = "approved"
                         st.session_state.pop("hitl_current", None)
                         st.session_state.pop("hitl_tasks", None)
                         next_resp, next_data = _request_json_diag(
@@ -1023,45 +1108,38 @@ def main() -> None:
                         st.rerun()
 
                 if do_skip:
-                    st.session_state.pop("hitl_current", None)
-                    st.rerun()
-
-                if do_resume:
                     tid = int(current["id"])
-                    payload = {"after_md": after_md, "reason_for_edit": reason}
-                    with st.spinner("Saving and resuming indexing..."):
-                        save_resp, _ = _request_json_diag(
-                            label="admin hitl complete",
+                    _diag_add({"type": "hitl_skip", "task_id": tid, "reason": _skip_reason})
+                    with st.spinner("Skipping task..."):
+                        skip_resp, _skip_data = _request_json_diag(
+                            label="admin hitl skip",
                             method="POST",
-                            url=f"{api}/admin/hitl/tasks/{tid}/complete",
+                            url=f"{api}/admin/hitl/tasks/{tid}/skip",
                             headers=admin_headers,
-                            json_body=payload,
+                            json_body={"reason": _skip_reason},
                             timeout_s=60.0,
                         )
-                        if save_resp.status_code < 400:
-                            with httpx.Client(timeout=120.0) as client:
-                                start = time.perf_counter()
-                                resp = client.post(f"{api}/admin/hitl/tasks/{tid}/resume", headers=admin_headers)
-                                elapsed_ms = int((time.perf_counter() - start) * 1000)
-                                _diag_add(
-                                    {
-                                        "type": "http",
-                                        "label": "admin hitl resume",
-                                        "method": "POST",
-                                        "url": f"{api}/admin/hitl/tasks/{tid}/resume",
-                                        "status": int(resp.status_code),
-                                        "elapsed_ms": elapsed_ms,
-                                    }
-                                )
-                    if save_resp.status_code >= 400:
-                        st.error(f"Save failed ({save_resp.status_code})")
-                    elif resp.status_code >= 400:
-                        st.error(f"Resume failed ({resp.status_code}): {resp.text}")
+                    if skip_resp.status_code >= 400:
+                        components.friendly_error(
+                            "The task could not be skipped. Please try again.",
+                            status_code=skip_resp.status_code,
+                            raw_text=skip_resp.text,
+                        )
                     else:
-                        st.success("Review saved and indexing resumed!")
-                    st.session_state.pop("hitl_current", None)
-                    st.session_state.pop("hitl_tasks", None)
-                    st.rerun()
+                        st.success("Task skipped. Loading next...")
+                        st.session_state["hitl_last_action"] = "skipped"
+                        st.session_state.pop("hitl_current", None)
+                        st.session_state.pop("hitl_tasks", None)
+                        next_resp, next_data = _request_json_diag(
+                            label="admin hitl next",
+                            method="POST",
+                            url=f"{api}/admin/hitl/tasks/next",
+                            headers=admin_headers,
+                            params={"assigned_to": assigned_to},
+                        )
+                        if next_resp.status_code < 400 and next_data:
+                            st.session_state["hitl_current"] = next_data
+                        st.rerun()
 
                 components.detail_expander("Full task details (JSON)", data=current)
 
@@ -1108,225 +1186,13 @@ def main() -> None:
                     st.caption("Queue is empty.")
 
     # =====================================================================
-    # VERSIONS & EXPORT
-    # =====================================================================
-    with tabs[5]:
-        components.tab_header(
-            "Versions & Export",
-            theme.COPY_VERSIONS,
-            workspace=tenant_id,
-            collection=corpus_id,
-            project=project_id,
-        )
-
-        if not admin_headers:
-            components.auth_gate("Admin token required for version control and export features.")
-        else:
-            corpus_scope = (corpus_id or "").strip() or "default"
-
-            # -- Card 1: Version control ---------------------------------------
-            with components.card():
-                components.card_header(
-                    theme.LABEL_VERSION_ACTIVE,
-                    "Check or change which version of a document is used for search results.",
-                )
-                vc_doc_id = st.text_input("Document ID", value=st.session_state.get("last_doc_id", ""), key="vc_doc_id")
-                new_version = st.text_input("Set version", value="1", key="vc_version")
-                vc_doc_id_s = (vc_doc_id or "").strip()
-
-                vc_col1, vc_col2 = st.columns(theme.COL_HALF)
-                with vc_col1:
-                    vc_show = components.primary_button("Show current version", disabled=not bool(vc_doc_id_s), key="ver_show")
-                with vc_col2:
-                    vc_set = components.secondary_button("Set version", disabled=not bool(vc_doc_id_s), key="ver_set")
-
-                if vc_show:
-                    resp, data = _request_json_diag(
-                        label="admin active version get",
-                        method="GET",
-                        url=f"{api}/admin/docs/{vc_doc_id_s}/active-version",
-                        headers=admin_headers,
-                        params={"tenant_id": tenant_id, "project_id": project_id, "corpus_id": corpus_id},
-                    )
-                    if resp.status_code >= 400:
-                        st.error(f"{resp.status_code}: {resp.text}")
-                    if data is not None:
-                        st.json(data)
-                    else:
-                        _render_response(resp)
-
-                if vc_set:
-                    payload = {
-                        "doc_version": new_version,
-                        "tenant_id": tenant_id,
-                        "project_id": project_id,
-                        "corpus_id": corpus_id,
-                    }
-                    resp, data = _request_json_diag(
-                        label="admin active version set",
-                        method="POST",
-                        url=f"{api}/admin/docs/{vc_doc_id_s}/active-version",
-                        headers=admin_headers,
-                        json_body=payload,
-                    )
-                    if resp.status_code >= 400:
-                        st.error(f"{resp.status_code}: {resp.text}")
-                    if data is not None:
-                        st.success("Version updated.")
-                        st.json(data)
-                    else:
-                        _render_response(resp)
-
-            # -- Card 2: Export ------------------------------------------------
-            with components.card():
-                components.card_header("Export", "Download documents or entire collections as portable packages.")
-
-                se_scope = st.radio(
-                    "What to export",
-                    options=["Entire collection", "Single document"],
-                    horizontal=True,
-                    key="export_scope_radio",
-                )
-
-                se_format = st.radio(
-                    "Format",
-                    options=["Full package (lift & shift)", "Markdown only (lean RAG)"],
-                    horizontal=True,
-                    key="export_format_radio",
-                    help=(
-                        "Full: ZIP with manifests, artifacts, and index data.\n"
-                        "Lean: flat folder of clean .md files - drop into another RAG system."
-                    ),
-                )
-                se_fmt_param = "lean" if "lean" in se_format.lower() else "full"
-
-                if se_scope == "Single document":
-                    exp_doc_id = st.text_input(
-                        "Document ID",
-                        value=st.session_state.get("last_doc_id", ""),
-                        key="export_doc_id",
-                    )
-                    exp_version = st.text_input("Version", value="1", key="export_doc_version")
-                    can_export = bool((exp_doc_id or "").strip())
-                else:
-                    exp_doc_id = ""
-                    exp_version = "1"
-                    can_export = True
-
-                with st.expander("Advanced export options", expanded=False):
-                    se_max_docs = int(st.number_input(
-                        "Max documents",
-                        min_value=1,
-                        max_value=20000,
-                        value=2000,
-                        key="export_max_docs",
-                    ))
-
-                do_export = components.primary_button("Generate export", disabled=not can_export, key="export_go_btn")
-
-                if do_export:
-                    if se_scope == "Single document":
-                        _did = (exp_doc_id or "").strip()
-                        with st.spinner(f"Exporting {_did}..."):
-                            with httpx.Client(timeout=120.0) as _ec:
-                                _er = _ec.get(
-                                    f"{api}/admin/docs/{_did}/export",
-                                    headers=admin_headers,
-                                    params={
-                                        "doc_version": exp_version,
-                                        "tenant_id": tenant_id,
-                                        "project_id": project_id,
-                                        "corpus_id": corpus_scope,
-                                        "format": se_fmt_param,
-                                    },
-                                )
-                        if _er.status_code >= 400:
-                            st.error(f"Export failed ({_er.status_code}): {_er.text}")
-                        else:
-                            _etag = "lean" if se_fmt_param == "lean" else "export"
-                            st.success(f"Ready! {len(_er.content):,} bytes")
-                            st.download_button(
-                                "Download ZIP",
-                                data=_er.content,
-                                file_name=f"atlas_{_etag}_{_did}.zip",
-                                mime="application/zip",
-                                key="export_dl_single",
-                            )
-                    else:
-                        with st.spinner("Generating collection export..."):
-                            with httpx.Client(timeout=300.0) as _ce_client:
-                                _ce_resp = _ce_client.get(
-                                    f"{api}/admin/corpora/{corpus_scope}/export",
-                                    headers=admin_headers,
-                                    params={
-                                        "tenant_id": tenant_id,
-                                        "project_id": project_id,
-                                        "max_docs": se_max_docs,
-                                        "format": se_fmt_param,
-                                    },
-                                )
-                        if _ce_resp.status_code >= 400:
-                            st.error(f"Export failed ({_ce_resp.status_code}): {_ce_resp.text}")
-                        else:
-                            _ce_tag = "lean" if se_fmt_param == "lean" else "export"
-                            st.success(f"Ready! {len(_ce_resp.content):,} bytes")
-                            st.download_button(
-                                "Download collection ZIP",
-                                data=_ce_resp.content,
-                                file_name=f"atlas_corpus_{_ce_tag}_{corpus_scope}.zip",
-                                mime="application/zip",
-                                key="export_dl_corpus",
-                            )
-
-            # -- Card 3: Corpus import (admin) --------------------------------
-            with components.admin_section("Admin -- Corpus import"):
-                st.caption("Upload a previously exported collection ZIP to restore or migrate data.")
-                imp = st.file_uploader("Choose a ZIP file", type=["zip"], key="corpus_import_zip")
-                if components.secondary_button("Import collection", disabled=imp is None, key="export_import_btn"):
-                    if imp is None:
-                        st.warning("Pick a ZIP file first.")
-                    else:
-                        files = {"file": (imp.name, imp.getvalue(), "application/zip")}
-                        data = {
-                            "tenant_id": tenant_id,
-                            "project_id": project_id,
-                            "is_finalized": json.dumps(True),
-                            "is_sensitive": json.dumps(True),
-                        }
-                        with st.spinner("Importing collection..."):
-                            with httpx.Client(timeout=600.0) as client:
-                                start = time.perf_counter()
-                                resp = client.post(
-                                    f"{api}/admin/corpora/{corpus_scope}/import",
-                                    headers=admin_headers,
-                                    files=files,
-                                    data=data,
-                                )
-                                elapsed_ms = int((time.perf_counter() - start) * 1000)
-                                _diag_add(
-                                    {
-                                        "type": "http",
-                                        "label": "admin corpus import",
-                                        "method": "POST",
-                                        "url": f"{api}/admin/corpora/{corpus_scope}/import",
-                                        "status": int(resp.status_code),
-                                        "elapsed_ms": elapsed_ms,
-                                    }
-                                )
-                        if resp.status_code >= 400:
-                            st.error(f"Import failed ({resp.status_code}): {resp.text}")
-                        else:
-                            st.success("Import complete!")
-                            components.detail_expander("Details (JSON)", data=resp.json() if _is_json_response(resp) else None)
-
-    # =====================================================================
-    # LIBRARY
+    # MY COLLECTION (formerly Library + Versions & Export)
     # =====================================================================
     with tabs[2]:
         import pandas as _pd  # local import - pandas is available via the atlas venv
 
         components.tab_header(
-            "Library",
+            "My Collection",
             theme.COPY_LIBRARY,
             workspace=tenant_id,
             collection=corpus_id,
@@ -1395,11 +1261,8 @@ def main() -> None:
                 )
 
             if not visible:
-                components.empty_state(
-                    "No documents in this collection yet.",
-                    button_label="Go to Upload",
-                    button_key="lib_go_upload",
-                )
+                components.empty_state("No documents in this collection yet.")
+                st.caption("Use the Upload tab to add your first document.")
             else:
                 # -- Card 2: Documents table ----------------------------------
                 with components.card():
@@ -1508,26 +1371,30 @@ def main() -> None:
                                 key="lib_export_single_btn",
                             ):
                                 _did = selected_doc_ids[0]
-                                with st.spinner(f"Exporting {_did}..."):
-                                    with httpx.Client(timeout=120.0) as _ec:
-                                        _er = _ec.get(
-                                            f"{api}/admin/docs/{_did}/export",
-                                            headers=admin_headers,
-                                            params={
-                                                "tenant_id": tenant_id,
-                                                "project_id": project_id,
-                                                "corpus_id": corpus_scope,
-                                                "format": lib_sel_fmt_param,
-                                            },
-                                        )
-                                if _er.status_code >= 400:
+                                try:
+                                    with st.spinner(f"Exporting {_did}..."):
+                                        with httpx.Client(timeout=180.0) as _ec:
+                                            _er = _ec.get(
+                                                f"{api}/admin/docs/{_did}/export",
+                                                headers=admin_headers,
+                                                params={
+                                                    "tenant_id": tenant_id,
+                                                    "project_id": project_id,
+                                                    "corpus_id": corpus_scope,
+                                                    "format": lib_sel_fmt_param,
+                                                },
+                                            )
+                                except (httpx.TimeoutException, httpx.ConnectError) as _te:
+                                    st.error(f"Export timed out \u2014 the backend may still be working. ({_te})")
+                                    _er = None
+                                if _er is not None and _er.status_code >= 400:
                                     st.error(f"{_er.status_code}: {_er.text}")
-                                else:
+                                elif _er is not None:
                                     _etag = "lean" if lib_sel_fmt_param == "lean" else "export"
                                     st.download_button(
                                         "Download ZIP",
                                         data=_er.content,
-                                        file_name=f"atlas_{_etag}_{_did}.zip",
+                                        file_name=f"{_did}_{_etag}.zip",
                                         mime="application/zip",
                                         key="lib_dl_single",
                                     )
@@ -1543,7 +1410,7 @@ def main() -> None:
                                     for _did in selected_doc_ids:
                                         with st.spinner(f"Exporting {_did}..."):
                                             try:
-                                                with httpx.Client(timeout=120.0) as _ec:
+                                                with httpx.Client(timeout=180.0) as _ec:
                                                     _er = _ec.get(
                                                         f"{api}/admin/docs/{_did}/export",
                                                         headers=admin_headers,
@@ -1569,7 +1436,7 @@ def main() -> None:
                                 st.download_button(
                                     f"Download combined ZIP ({len(selected_doc_ids)} docs)",
                                     data=_multi_buf.getvalue(),
-                                    file_name=f"atlas_{_etag}_multi_{len(selected_doc_ids)}docs.zip",
+                                    file_name=f"{corpus_scope}_{_etag}_{len(selected_doc_ids)}docs.zip",
                                     mime="application/zip",
                                     key="lib_dl_multi",
                                 )
@@ -1592,7 +1459,7 @@ def main() -> None:
                             _del_errors: list[str] = []
                             for _did in selected_doc_ids:
                                 try:
-                                    with httpx.Client(timeout=30.0) as _dc:
+                                    with httpx.Client(timeout=60.0) as _dc:
                                         _dr = _dc.delete(
                                             f"{api}/admin/docs/{_did}",
                                             headers=admin_headers,
@@ -1616,30 +1483,870 @@ def main() -> None:
                 else:
                     st.caption("Tick one or more rows above to export or delete.")
 
-    if bool(st.session_state.get("show_diagnostics")):
-        st.divider()
-        components.section_header("Diagnostics")
-        _diag_init()
-        events = list(st.session_state.get("diag_events") or [])
-        if not events:
-            st.caption("No diagnostics yet. Click 'Test connection' or run an action.")
-        else:
-            events = list(reversed(events))
-            rows = []
-            for e in events[:theme.MAX_DIAG_ROWS]:
-                rows.append(
-                    {
-                        "ts": e.get("ts"),
-                        "type": e.get("type"),
-                        "label": e.get("label"),
-                        "method": e.get("method"),
-                        "status": e.get("status"),
-                        "elapsed_ms": e.get("elapsed_ms"),
-                        "url": e.get("url"),
-                        "error": e.get("error"),
-                    }
+            # -- Version control (B1: absorbed from Versions & Export tab) -----
+            st.divider()
+            with components.card():
+                components.card_header(
+                    theme.LABEL_VERSION_ACTIVE,
+                    "Check or change which version of a document is used for search results.",
                 )
-            components.data_table(rows)
+                vc_doc_id = st.text_input("Document ID", value=st.session_state.get("last_doc_id", ""), key="vc_doc_id")
+                new_version = st.text_input("Set version", value="1", key="vc_version")
+                vc_doc_id_s = (vc_doc_id or "").strip()
+
+                vc_col1, vc_col2 = st.columns(theme.COL_HALF)
+                with vc_col1:
+                    vc_show = components.secondary_button("Show current version", disabled=not bool(vc_doc_id_s), key="ver_show")
+                with vc_col2:
+                    vc_set = components.secondary_button("Set version", disabled=not bool(vc_doc_id_s), key="ver_set")
+
+                if vc_show:
+                    resp, data = _request_json_diag(
+                        label="admin active version get",
+                        method="GET",
+                        url=f"{api}/admin/docs/{vc_doc_id_s}/active-version",
+                        headers=admin_headers,
+                        params={"tenant_id": tenant_id, "project_id": project_id, "corpus_id": corpus_id},
+                    )
+                    if resp.status_code >= 400:
+                        st.error(f"{resp.status_code}: {resp.text}")
+                    if data is not None:
+                        st.json(data)
+                    else:
+                        _render_response(resp)
+
+                if vc_set:
+                    payload = {
+                        "doc_version": new_version,
+                        "tenant_id": tenant_id,
+                        "project_id": project_id,
+                        "corpus_id": corpus_id,
+                    }
+                    resp, data = _request_json_diag(
+                        label="admin active version set",
+                        method="POST",
+                        url=f"{api}/admin/docs/{vc_doc_id_s}/active-version",
+                        headers=admin_headers,
+                        json_body=payload,
+                    )
+                    if resp.status_code >= 400:
+                        st.error(f"{resp.status_code}: {resp.text}")
+                    if data is not None:
+                        st.success("Version updated.")
+                        st.json(data)
+                    else:
+                        _render_response(resp)
+
+            # -- Collection export (B1: absorbed from Versions & Export tab) ---
+            with components.card():
+                components.card_header("Collection export", "Download the entire collection as a portable package.")
+
+                se_format = st.radio(
+                    "Format",
+                    options=["Full package (lift & shift)", "Markdown only (lean RAG)"],
+                    horizontal=True,
+                    key="export_format_radio",
+                    help=(
+                        "Full: ZIP with manifests, artifacts, and index data.\n"
+                        "Lean: flat folder of clean .md files - drop into another RAG system."
+                    ),
+                )
+                se_fmt_param = "lean" if "lean" in se_format.lower() else "full"
+
+                with st.expander("Advanced export options", expanded=False):
+                    se_max_docs = int(st.number_input(
+                        "Max documents",
+                        min_value=1,
+                        max_value=20000,
+                        value=2000,
+                        key="export_max_docs",
+                    ))
+
+                do_coll_export = components.primary_button("Generate collection export", key="export_go_btn")
+
+                if do_coll_export:
+                    try:
+                        with st.spinner("Generating collection export..."):
+                            with httpx.Client(timeout=600.0) as _ce_client:
+                                _ce_resp = _ce_client.get(
+                                    f"{api}/admin/corpora/{corpus_scope}/export",
+                                    headers=admin_headers,
+                                    params={
+                                        "tenant_id": tenant_id,
+                                        "project_id": project_id,
+                                        "max_docs": se_max_docs,
+                                        "format": se_fmt_param,
+                                    },
+                                )
+                    except (httpx.TimeoutException, httpx.ConnectError) as _te:
+                        st.error(f"Collection export timed out — the backend may still be working. ({_te})")
+                        _ce_resp = None
+                    if _ce_resp is not None and _ce_resp.status_code >= 400:
+                        st.error(f"Export failed ({_ce_resp.status_code}): {_ce_resp.text}")
+                    elif _ce_resp is not None:
+                        _ce_tag = "lean" if se_fmt_param == "lean" else "export"
+                        st.success(f"Ready! {len(_ce_resp.content):,} bytes")
+                        st.download_button(
+                            "Download collection ZIP",
+                            data=_ce_resp.content,
+                            file_name=f"{corpus_scope}_{_ce_tag}.zip",
+                            mime="application/zip",
+                            key="export_dl_corpus",
+                        )
+
+    # =====================================================================
+    # ADMIN (only present when admin token is set)
+    # =====================================================================
+    if admin_headers:
+        with tabs[5]:
+            components.tab_header(
+                "Admin tools",
+                theme.COPY_ADMIN,
+                workspace=tenant_id,
+                collection=corpus_id,
+                project=project_id,
+            )
+
+            admin_tabs = st.tabs([
+                "Health & Metrics",
+                "Cleanup & Feedback",
+                "Groups",
+                "Danger Zone",
+            ])
+
+            # =============================================================
+            # Admin sub-tab 0: Health & Metrics
+            # =============================================================
+            with admin_tabs[0]:
+
+                # -- Card 1: Pipeline metrics ---------------------------------
+                with components.card(hero=True):
+                    components.card_header(
+                        "Pipeline health",
+                        "Processing metrics for this workspace and collection.",
+                    )
+                    if components.primary_button("Load metrics", key="ct_metrics_btn"):
+                        resp_m, metrics_data = _request_json_diag(
+                            label="pipeline metrics",
+                            method="GET",
+                            url=f"{api}/admin/looking-glass/metrics",
+                            headers=admin_headers,
+                            params={"tenant_id": tenant_id, "project_id": project_id, "corpus_id": corpus_id},
+                        )
+                        if int(resp_m.status_code) < 400 and isinstance(metrics_data, dict):
+                            mcol1, mcol2, mcol3, mcol4 = st.columns(theme.COL_QUARTERS)
+                            with mcol1:
+                                st.metric("Runs", metrics_data.get("workflow_runs", {}).get("total", 0))
+                            with mcol2:
+                                completion_rate = metrics_data.get("workflow_runs", {}).get("completion_rate")
+                                if isinstance(completion_rate, (int, float)):
+                                    st.metric("Success rate", f"{completion_rate * 100:.1f}%")
+                                else:
+                                    st.metric("Success rate", "N/A")
+                            with mcol3:
+                                st.metric("HITL tasks", metrics_data.get("hitl", {}).get("total", 0))
+                            with mcol4:
+                                st.metric("Feedback items", metrics_data.get("cleanup_feedback", {}).get("total", 0))
+                            components.detail_expander("Full metrics JSON", data=metrics_data)
+                        else:
+                            st.error(f"Failed to load metrics ({resp_m.status_code})")
+
+                # -- Card 2: Session diagnostics (inlined) --------------------
+                with components.card():
+                    components.card_header(
+                        "Session diagnostics",
+                        "API call log and exception capture for this browser session.",
+                    )
+
+                    _diag_init()
+                    _diag_ensure_session_started(api)
+
+                    diag_events = list(st.session_state.get("diag_events") or [])
+                    st.metric("Recorded events", len(diag_events))
+
+                    adm_diag_col1, adm_diag_col2 = st.columns(theme.COL_HALF)
+                    with adm_diag_col1:
+                        if st.button("Clear log", use_container_width=True, key="adm_diag_clear"):
+                            st.session_state["diag_events"] = []
+                            st.session_state["diag_session_started"] = False
+                            _diag_ensure_session_started(api)
+                    with adm_diag_col2:
+                        st.download_button(
+                            "Download logs (JSON)",
+                            data=_diag_bundle(api),
+                            file_name="atlas_ui_diagnostics.json",
+                            mime="application/json",
+                            use_container_width=True,
+                            key="adm_diag_download",
+                        )
+
+                    # Inline event table (replaces global diagnostics panel)
+                    if not diag_events:
+                        st.caption("No diagnostics yet. Click 'Test connection' or run an action.")
+                    else:
+                        events = list(reversed(diag_events))
+                        rows = []
+                        for e in events[:theme.MAX_DIAG_ROWS]:
+                            rows.append(
+                                {
+                                    "ts": e.get("ts"),
+                                    "type": e.get("type"),
+                                    "label": e.get("label"),
+                                    "method": e.get("method"),
+                                    "status": e.get("status"),
+                                    "elapsed_ms": e.get("elapsed_ms"),
+                                    "url": e.get("url"),
+                                    "error": e.get("error"),
+                                }
+                            )
+                        components.data_table(rows)
+
+            # =============================================================
+            # Admin sub-tab 1: Cleanup & Feedback
+            # =============================================================
+            with admin_tabs[1]:
+
+                # -- Card 1: Active cleanup rules -----------------------------
+                with components.card():
+                    components.card_header(
+                        "Active cleanup rules",
+                        "Rules from the effective config (YAML defaults + DB overrides). "
+                        "Applied rules take effect immediately — no restart required.",
+                    )
+                    cfg_resp, cfg_data = _request_json(
+                        method="GET",
+                        url=f"{api}/admin/config/effective",
+                        headers=admin_headers,
+                    )
+                    eff_rules: list[dict[str, Any]] = []
+                    config_source_db = False
+                    if cfg_data and isinstance(cfg_data, dict):
+                        pipeline_cfg = cfg_data.get("pipeline") or {}
+                        eff_rules = pipeline_cfg.get("cleanup_rules") or []
+                        config_source_db = bool((cfg_data.get("source") or {}).get("db"))
+                    if config_source_db:
+                        st.caption("Rules loaded from DB config version (overrides YAML defaults).")
+                    else:
+                        st.caption("Rules loaded from pipeline.yaml (no DB override active).")
+                    if eff_rules:
+                        for idx, rule in enumerate(eff_rules):
+                            rule_name = rule.get("name", f"rule_{idx}")
+                            with st.expander(f"Rule: {rule_name}"):
+                                # Editable YAML view
+                                _edit_key = f"ct_rule_yaml_{idx}"
+                                _orig_yaml = yaml.dump(rule, default_flow_style=False, sort_keys=False)
+                                edited_yaml = st.text_area(
+                                    "Rule YAML (editable)",
+                                    value=_orig_yaml,
+                                    height=theme.TEXT_AREA_MD,
+                                    key=_edit_key,
+                                )
+                                _is_dirty = edited_yaml.strip() != _orig_yaml.strip()
+                                if _is_dirty:
+                                    st.info("Unsaved changes detected.")
+
+                                btn_cols = st.columns([1, 1, 1, 1])
+                                with btn_cols[0]:
+                                    _validate_clicked = components.secondary_button(
+                                        "Validate", key=f"ct_val_rule_{idx}",
+                                    )
+                                with btn_cols[1]:
+                                    _save_clicked = components.primary_button(
+                                        "Save changes", key=f"ct_save_rule_{idx}",
+                                        disabled=not _is_dirty,
+                                    )
+                                with btn_cols[2]:
+                                    _dryrun_clicked = components.secondary_button(
+                                        "Dry-run", key=f"ct_dry_rule_{idx}",
+                                    )
+                                with btn_cols[3]:
+                                    _remove_clicked = components.danger_button(
+                                        f"Remove", key=f"ct_remove_rule_{idx}",
+                                    )
+
+                                # --- Validate action ---
+                                if _validate_clicked:
+                                    try:
+                                        _parsed_edit = yaml.safe_load(edited_yaml)
+                                        _as_list = [_parsed_edit] if isinstance(_parsed_edit, dict) else _parsed_edit
+                                        resp_v, v_data = _request_json_diag(
+                                            label=f"validate rule {rule_name}",
+                                            method="POST",
+                                            url=f"{api}/admin/config/validate-rules",
+                                            headers=admin_headers,
+                                            json_body=_as_list,
+                                            timeout_s=15.0,
+                                        )
+                                        if int(resp_v.status_code) < 400 and isinstance(v_data, dict):
+                                            if v_data.get("valid"):
+                                                st.success("Rule is valid.")
+                                            else:
+                                                for _ve in v_data.get("errors", []):
+                                                    st.warning(f"Validation: {_ve}")
+                                        else:
+                                            st.error(f"Validation request failed ({resp_v.status_code})")
+                                    except yaml.YAMLError as _ye:
+                                        st.error(f"YAML parse error: {_ye}")
+
+                                # --- Save action ---
+                                if _save_clicked:
+                                    with st.spinner("Saving rule..."):
+                                        resp_s, s_data = _request_json_diag(
+                                            label=f"save rule {rule_name}",
+                                            method="POST",
+                                            url=f"{api}/admin/cleanup-rules/apply",
+                                            headers=admin_headers,
+                                            json_body={"rule_yaml": edited_yaml},
+                                            timeout_s=30.0,
+                                        )
+                                    if int(resp_s.status_code) < 400:
+                                        st.success("Rule saved. Active immediately.")
+                                        st.rerun()
+                                    else:
+                                        st.error(f"Save failed ({resp_s.status_code})")
+                                        components.detail_expander("Error details", data=s_data)
+
+                                # --- Dry-run action ---
+                                if _dryrun_clicked:
+                                    _dr_key = f"_dryrun_sample_{idx}"
+                                    _dr_sample = st.session_state.get(_dr_key, "")
+                                    _dr_sample = st.text_area(
+                                        "Paste markdown sample for dry-run",
+                                        value=_dr_sample,
+                                        height=theme.TEXT_AREA_SM,
+                                        key=f"ct_dr_input_{idx}",
+                                        placeholder="Paste a markdown snippet to test this rule against...",
+                                    )
+                                    if _dr_sample.strip():
+                                        with st.spinner("Running dry-run..."):
+                                            resp_dr, dr_data = _request_json_diag(
+                                                label=f"dry-run rule {rule_name}",
+                                                method="POST",
+                                                url=f"{api}/admin/cleanup-rules/dry-run",
+                                                headers=admin_headers,
+                                                json_body={
+                                                    "markdown_sample": _dr_sample,
+                                                    "tenant_id": tenant_id,
+                                                    "project_id": project_id,
+                                                    "corpus_id": corpus_id,
+                                                },
+                                                timeout_s=30.0,
+                                            )
+                                        if int(resp_dr.status_code) < 400 and isinstance(dr_data, dict):
+                                            _matched = dr_data.get("matched_rule")
+                                            _changed = dr_data.get("changed", False)
+                                            if _matched:
+                                                st.caption(f"Matched rule: **{_matched}** | Changed: {'Yes' if _changed else 'No'}")
+                                            else:
+                                                st.warning("No rule matched this document context.")
+                                            if _changed:
+                                                st.text_area(
+                                                    "Cleaned output",
+                                                    value=dr_data.get("cleaned_markdown", ""),
+                                                    height=theme.TEXT_AREA_SM,
+                                                    disabled=True,
+                                                    key=f"ct_dr_out_{idx}",
+                                                )
+                                            _fix_counts = dr_data.get("fix_counts", {})
+                                            if _fix_counts:
+                                                st.caption(f"Fix counts: {_fix_counts}")
+                                        else:
+                                            st.error(f"Dry-run failed ({resp_dr.status_code})")
+                                            components.detail_expander("Details", data=dr_data)
+                                    else:
+                                        st.caption("Enter a markdown sample above and it will be processed automatically.")
+
+                                # --- Remove action ---
+                                if _remove_clicked:
+                                    with st.spinner(f"Removing rule '{rule_name}'..."):
+                                        resp_rm, rm_data = _request_json_diag(
+                                            label=f"remove cleanup rule {rule_name}",
+                                            method="DELETE",
+                                            url=f"{api}/admin/cleanup-rules/{rule_name}",
+                                            headers=admin_headers,
+                                            timeout_s=30.0,
+                                        )
+                                    if int(resp_rm.status_code) < 400:
+                                        st.success(f"Rule '{rule_name}' removed.")
+                                        st.rerun()
+                                    else:
+                                        st.error(f"Remove failed ({resp_rm.status_code})")
+                                        components.detail_expander("Error details", data=rm_data)
+                    else:
+                        st.caption("No cleanup rules configured. Use the suggestion card below to create one.")
+
+                # -- Card 2: Quality feedback ---------------------------------
+                with components.card():
+                    components.card_header(
+                        "Quality feedback",
+                        "Report cleanup issues so patterns can be tracked. "
+                        "Feedback is recorded for developer review \u2014 it does not "
+                        "automatically change processing.",
+                    )
+                    fb_cols = st.columns([2, 1])
+                    with fb_cols[0]:
+                        fb_doc_id = st.text_input("Document ID", key="ct_fb_doc_id", placeholder="e.g. my-doc-abc123")
+                    with fb_cols[1]:
+                        fb_category = st.selectbox(
+                            "Category",
+                            options=["formatting", "missing_content", "ocr_artifact", "hallucination", "other"],
+                            key="ct_fb_category",
+                        )
+                    fb_comment = st.text_area("Comment / description", key="ct_fb_comment", height=theme.TEXT_AREA_SM)
+                    if components.secondary_button("Submit feedback", key="ct_fb_submit", disabled=not bool((fb_doc_id or "").strip())):
+                        fb_body = {
+                            "tenant_id": tenant_id,
+                            "project_id": project_id,
+                            "corpus_id": corpus_id,
+                            "doc_id": (fb_doc_id or "").strip(),
+                            "category": fb_category,
+                            "description": fb_comment or "",
+                        }
+                        resp_fb, data_fb = _request_json_diag(
+                            label="submit cleanup feedback",
+                            method="POST",
+                            url=f"{api}/admin/cleanup-feedback",
+                            headers=admin_headers,
+                            json_body=fb_body,
+                        )
+                        if int(resp_fb.status_code) < 400:
+                            st.success("Feedback recorded.")
+                            st.caption(
+                                "This is tracked for pattern analysis \u2014 "
+                                "a developer or admin can review trends and create cleanup rules "
+                                "to address recurring issues. Feedback does not automatically "
+                                "change processing."
+                            )
+                        else:
+                            st.error(f"Failed ({resp_fb.status_code})")
+                        components.detail_expander("Response", data=data_fb)
+
+                    st.divider()
+
+                    # --- Feedback overview (categories) ---
+                    components.card_section("Feedback overview")
+                    if st.button("Load feedback categories", key="ct_fb_cats_btn", use_container_width=True):
+                        resp_cats, cats_data = _request_json_diag(
+                            label="feedback categories",
+                            method="GET",
+                            url=f"{api}/admin/cleanup-feedback/categories",
+                            headers=admin_headers,
+                            params={"tenant_id": tenant_id, "project_id": project_id, "corpus_id": corpus_id},
+                        )
+                        if int(resp_cats.status_code) < 400 and isinstance(cats_data, dict):
+                            if cats_data:
+                                cat_rows = [{"category": k, "count": v} for k, v in cats_data.items()]
+                                components.data_table(cat_rows)
+                            else:
+                                st.caption("No feedback recorded yet.")
+                        else:
+                            st.error(f"Failed to load categories ({resp_cats.status_code})")
+
+                # -- Card 3: AI rule suggestion -------------------------------
+                with components.card():
+                    components.card_header(
+                        "Suggest a cleanup rule",
+                        "Paste problematic markdown and describe the issues. "
+                        "Atlas will suggest a rule you can add to pipeline.yaml.",
+                    )
+                    sug_sample = st.text_area(
+                        "Sample markdown", key="ct_sug_sample", height=theme.TEXT_AREA_MD,
+                        placeholder="Paste a representative markdown snippet here...",
+                    )
+                    sug_issues = st.text_area(
+                        "Observed issues", key="ct_sug_issues", height=theme.TEXT_AREA_SM,
+                        placeholder="e.g. Page numbers appear in every chunk, headings are inconsistent...",
+                    )
+                    if components.primary_button("Suggest rule", key="ct_sug_btn", disabled=not bool((sug_sample or "").strip())):
+                        sug_body: dict[str, Any] = {
+                            "markdown_sample": sug_sample or "",
+                            "issues": sug_issues or "",
+                            "context": {
+                                "tenant_id": tenant_id,
+                                "project_id": project_id,
+                                "corpus_id": corpus_id,
+                            },
+                        }
+                        with st.spinner("Asking the LLM for a rule suggestion -- this may take a few minutes with local models..."):
+                            resp_sug, sug_data = _request_json_diag(
+                                label="suggest cleanup rule",
+                                method="POST",
+                                url=f"{api}/admin/cleanup-rules/suggest",
+                                headers=admin_headers,
+                                json_body=sug_body,
+                                timeout_s=300.0,
+                            )
+                        if int(resp_sug.status_code) < 400 and isinstance(sug_data, dict):
+                            rule_yaml = sug_data.get("rule_yaml", "")
+                            rationale = sug_data.get("rationale", "")
+                            validation_errors = sug_data.get("validation_errors", [])
+                            # Persist suggestion in session state so it survives reruns
+                            st.session_state["_pending_rule"] = {
+                                "rule_yaml": rule_yaml,
+                                "rationale": rationale,
+                                "validation_errors": validation_errors,
+                            }
+                        else:
+                            st.error(f"Suggestion failed ({resp_sug.status_code})")
+                            components.detail_expander("Error details", data=sug_data)
+                            st.session_state.pop("_pending_rule", None)
+
+                    # -- Display pending suggestion (persisted across reruns) --
+                    pending = st.session_state.get("_pending_rule")
+                    if pending:
+                        rule_yaml = pending["rule_yaml"]
+                        rationale = pending["rationale"]
+                        validation_errors = pending.get("validation_errors", [])
+                        if rule_yaml:
+                            st.success("Rule suggested! Review and edit below, then apply.")
+                            st.markdown(f"**Rationale:** {rationale}")
+
+                            # Editable YAML — user can tweak the LLM suggestion
+                            edited_sug = st.text_area(
+                                "Suggested rule YAML (editable)",
+                                value=rule_yaml,
+                                height=theme.TEXT_AREA_MD,
+                                key="ct_sug_yaml_edit",
+                            )
+
+                            # Live re-validate if the user edited the suggestion
+                            _sug_val_errors = validation_errors
+                            if edited_sug.strip() != rule_yaml.strip():
+                                st.caption("You edited the suggestion — re-validating...")
+                                try:
+                                    _sug_parsed = yaml.safe_load(edited_sug)
+                                    _sug_as_list = [_sug_parsed] if isinstance(_sug_parsed, dict) else _sug_parsed
+                                    _rv, _rvd = _request_json_diag(
+                                        label="re-validate edited suggestion",
+                                        method="POST",
+                                        url=f"{api}/admin/config/validate-rules",
+                                        headers=admin_headers,
+                                        json_body=_sug_as_list,
+                                        timeout_s=15.0,
+                                    )
+                                    if int(_rv.status_code) < 400 and isinstance(_rvd, dict):
+                                        _sug_val_errors = _rvd.get("errors", [])
+                                        if not _sug_val_errors:
+                                            st.success("Edited rule is valid.")
+                                    else:
+                                        _sug_val_errors = [f"Validation request failed ({_rv.status_code})"]
+                                except yaml.YAMLError as _ye:
+                                    _sug_val_errors = [f"YAML parse error: {_ye}"]
+
+                            if _sug_val_errors:
+                                st.warning(f"{len(_sug_val_errors)} validation issue(s) — fix before applying.")
+                                for ve in _sug_val_errors:
+                                    st.caption(f"- {ve}")
+
+                            apply_col, dryrun_col, dismiss_col = st.columns(3)
+                            with apply_col:
+                                if components.primary_button(
+                                    "Apply rule to live config",
+                                    key="ct_apply_rule_btn",
+                                    disabled=bool(_sug_val_errors),
+                                ):
+                                    with st.spinner("Applying rule..."):
+                                        resp_apply, apply_data = _request_json_diag(
+                                            label="apply cleanup rule",
+                                            method="POST",
+                                            url=f"{api}/admin/cleanup-rules/apply",
+                                            headers=admin_headers,
+                                            json_body={"rule_yaml": edited_sug},
+                                            timeout_s=30.0,
+                                        )
+                                    if int(resp_apply.status_code) < 400:
+                                        applied_names = (apply_data or {}).get("applied", [])
+                                        st.success(
+                                            f"Rule applied! ({', '.join(applied_names)}) "
+                                            "Active immediately — no restart required."
+                                        )
+                                        st.session_state.pop("_pending_rule", None)
+                                        st.rerun()
+                                    else:
+                                        st.error(f"Apply failed ({resp_apply.status_code})")
+                                        components.detail_expander("Error details", data=apply_data)
+                            with dryrun_col:
+                                if components.secondary_button("Dry-run preview", key="ct_sug_dryrun_btn"):
+                                    st.session_state["_sug_dryrun_open"] = True
+                            with dismiss_col:
+                                if st.button("Dismiss suggestion", key="ct_dismiss_sug"):
+                                    st.session_state.pop("_pending_rule", None)
+                                    st.session_state.pop("_sug_dryrun_open", None)
+                                    st.rerun()
+
+                            # Dry-run panel for suggestions
+                            if st.session_state.get("_sug_dryrun_open"):
+                                st.divider()
+                                components.card_section("Dry-run preview")
+                                _sug_dr_sample = st.text_area(
+                                    "Paste markdown sample",
+                                    height=theme.TEXT_AREA_SM,
+                                    key="ct_sug_dr_input",
+                                    placeholder="Paste markdown to test the rule against...",
+                                )
+                                if _sug_dr_sample.strip():
+                                    with st.spinner("Running dry-run..."):
+                                        resp_dr, dr_data = _request_json_diag(
+                                            label="dry-run suggestion",
+                                            method="POST",
+                                            url=f"{api}/admin/cleanup-rules/dry-run",
+                                            headers=admin_headers,
+                                            json_body={
+                                                "markdown_sample": _sug_dr_sample,
+                                                "tenant_id": tenant_id,
+                                                "project_id": project_id,
+                                                "corpus_id": corpus_id,
+                                            },
+                                            timeout_s=30.0,
+                                        )
+                                    if int(resp_dr.status_code) < 400 and isinstance(dr_data, dict):
+                                        _m = dr_data.get("matched_rule")
+                                        _c = dr_data.get("changed", False)
+                                        st.caption(f"Matched: **{_m or 'None'}** | Changed: {'Yes' if _c else 'No'}")
+                                        if _c:
+                                            st.text_area(
+                                                "Cleaned output",
+                                                value=dr_data.get("cleaned_markdown", ""),
+                                                height=theme.TEXT_AREA_SM,
+                                                disabled=True,
+                                                key="ct_sug_dr_out",
+                                            )
+                                        _fc = dr_data.get("fix_counts", {})
+                                        if _fc:
+                                            st.caption(f"Fix counts: {_fc}")
+                                    else:
+                                        st.error(f"Dry-run failed ({resp_dr.status_code})")
+                        else:
+                            st.info(f"No rule suggested. {rationale}")
+                            st.session_state.pop("_pending_rule", None)
+
+            # =============================================================
+            # Admin sub-tab 2: Groups
+            # =============================================================
+            with admin_tabs[2]:
+
+                # -- Card 1: Group overview + create --------------------------
+                with components.card():
+                    components.card_header(
+                        "Group management",
+                        "Create and inspect workspaces, projects, and collections.",
+                    )
+
+                    if st.button("Refresh groups", key="adm_scope_refresh_btn", use_container_width=True):
+                        st.session_state.pop("group_registry", None)
+                        st.rerun()
+
+                    reg = st.session_state.get("group_registry", {"tenants": [], "projects": [], "corpora": []})
+
+                    grp_col1, grp_col2, grp_col3 = st.columns(theme.COL_THIRDS)
+                    with grp_col1:
+                        st.metric("Workspaces", len(reg.get("tenants", [])))
+                    with grp_col2:
+                        st.metric("Projects", len(reg.get("projects", [])))
+                    with grp_col3:
+                        st.metric("Collections", len(reg.get("corpora", [])))
+
+                    with st.expander("View all groups", expanded=False):
+                        grp_tab1, grp_tab2, grp_tab3 = st.tabs(["Workspaces", "Projects", "Collections"])
+                        with grp_tab1:
+                            if reg.get("tenants"):
+                                components.data_table([{"tenant_id": t.get("tenant_id"), "display_name": t.get("display_name", "")} for t in reg["tenants"]])
+                            else:
+                                st.caption("No workspaces found.")
+                        with grp_tab2:
+                            if reg.get("projects"):
+                                components.data_table([{"tenant_id": p.get("tenant_id"), "project_id": p.get("project_id"), "display_name": p.get("display_name", "")} for p in reg["projects"]])
+                            else:
+                                st.caption("No projects found.")
+                        with grp_tab3:
+                            if reg.get("corpora"):
+                                components.data_table([{"tenant_id": c.get("tenant_id"), "project_id": c.get("project_id"), "corpus_id": c.get("corpus_id"), "display_name": c.get("display_name", "")} for c in reg["corpora"]])
+                            else:
+                                st.caption("No collections found.")
+
+                    st.divider()
+                    components.card_section("Create new")
+                    create_kind = st.selectbox("Type", options=["Workspace", "Project", "Collection"], key="adm_scope_create_kind")
+                    new_id = st.text_input("ID", value="", key="adm_scope_create_id")
+                    new_name = st.text_input("Display name (optional)", value="", key="adm_scope_create_name")
+                    if components.secondary_button("Create", disabled=not bool((new_id or "").strip()), key="adm_scope_create_btn"):
+                        kind = (create_kind or "").strip().lower()
+                        if kind == "workspace":
+                            ok, msg = _create_scope_entry(
+                                api=api, admin_headers=admin_headers,
+                                endpoint="/admin/tenants",
+                                payload={"tenant_id": new_id, "display_name": new_name},
+                                label="Workspace",
+                            )
+                        elif kind == "project":
+                            ok, msg = _create_scope_entry(
+                                api=api, admin_headers=admin_headers,
+                                endpoint="/admin/projects",
+                                payload={"tenant_id": tenant_id, "project_id": new_id, "display_name": new_name},
+                                label="Project",
+                            )
+                        else:
+                            ok, msg = _create_scope_entry(
+                                api=api, admin_headers=admin_headers,
+                                endpoint="/admin/corpora",
+                                payload={
+                                    "tenant_id": tenant_id, "project_id": project_id,
+                                    "corpus_id": new_id, "display_name": new_name,
+                                },
+                                label="Collection",
+                            )
+                        if ok:
+                            st.success(msg)
+                            st.session_state["group_registry"] = _load_group_registry(api, admin_headers)
+                        else:
+                            st.error(msg)
+
+            # =============================================================
+            # Admin sub-tab 3: Danger Zone
+            # =============================================================
+            with admin_tabs[3]:
+
+                # -- Card 1: Database reset -----------------------------------
+                with components.card():
+                    components.card_header(
+                        "Database reset",
+                        "Clears Postgres tables, Qdrant vectors, and/or artifact files. "
+                        "This cannot be undone.",
+                    )
+                    st.warning(
+                        "This is destructive. Clears Postgres tables, Qdrant vectors, "
+                        "and/or artifact files so you can re-import from scratch. "
+                        "**Existing runs, documents, and chunks will be permanently lost.**"
+                    )
+                    confirm = st.text_input("Type RESET to confirm", value="", key="adm_db_reset_confirm")
+                    col1, col2, col3 = st.columns(theme.COL_THIRDS)
+                    with col1:
+                        do_pg = st.checkbox("Reset Postgres", value=True, key="adm_db_reset_pg")
+                    with col2:
+                        do_qd = st.checkbox("Clear Qdrant", value=True, key="adm_db_reset_qdrant")
+                    with col3:
+                        do_art = st.checkbox("Clear artifacts", value=False, key="adm_db_reset_artifacts")
+
+                    if components.danger_button(
+                        "Reset database -- this cannot be undone",
+                        key="adm_db_reset_btn",
+                        disabled=(confirm.strip().upper() != "RESET"),
+                    ):
+                        with st.spinner("Resetting..."):
+                            resp, data = _request_json_diag(
+                                label="admin db reset",
+                                method="POST",
+                                url=f"{api}/admin/db/reset",
+                                headers=admin_headers,
+                                json_body={
+                                    "confirm": confirm,
+                                    "postgres": bool(do_pg),
+                                    "qdrant": bool(do_qd),
+                                    "artifacts": bool(do_art),
+                                },
+                                timeout_s=120.0,
+                            )
+                        if int(resp.status_code) < 400:
+                            st.success("Database has been reset. All data has been removed.")
+                        else:
+                            st.error(f"Reset failed ({resp.status_code})")
+                        components.detail_expander("Details (JSON)", data=data)
+
+                # -- Card 2: Restore stock config -----------------------------
+                with components.card():
+                    components.card_header(
+                        "Restore stock config",
+                        "Reset pipeline.yaml and/or models.yaml to the shipped defaults. "
+                        "Any custom cleanup rules or model overrides will be lost.",
+                    )
+                    st.info(
+                        "This overwrites the live configuration files with the stock "
+                        "`.example` copies that shipped with the repo. Useful when "
+                        "bad edits break the pipeline or before committing to Git."
+                    )
+                    rc1, rc2 = st.columns(2)
+                    with rc1:
+                        restore_pipe = st.checkbox("Restore pipeline.yaml", value=True, key="adm_restore_pipeline")
+                    with rc2:
+                        restore_models = st.checkbox("Restore models.yaml", value=True, key="adm_restore_models")
+                    restore_confirm = st.text_input("Type RESTORE to confirm", value="", key="adm_restore_confirm")
+                    if components.danger_button(
+                        "Restore stock config",
+                        key="adm_restore_stock_btn",
+                        disabled=(restore_confirm.strip().upper() != "RESTORE"),
+                    ):
+                        with st.spinner("Restoring stock configuration..."):
+                            resp, data = _request_json_diag(
+                                label="admin restore stock config",
+                                method="POST",
+                                url=f"{api}/admin/config/restore-stock",
+                                headers=admin_headers,
+                                json_body={
+                                    "confirm": restore_confirm,
+                                    "pipeline": bool(restore_pipe),
+                                    "models": bool(restore_models),
+                                },
+                                timeout_s=30.0,
+                            )
+                        if int(resp.status_code) < 400:
+                            restored_files = (data or {}).get("restored", [])
+                            st.success(f"Stock config restored: {', '.join(restored_files) if restored_files else 'none'}")
+                        else:
+                            st.error(f"Restore failed ({resp.status_code})")
+                        components.detail_expander("Details (JSON)", data=data)
+
+                # -- Card 3: Corpus import ------------------------------------
+                with components.card():
+                    components.card_header(
+                        "Collection import",
+                        "Upload a previously exported collection ZIP to restore or migrate data.",
+                    )
+                    corpus_scope_adm = (corpus_id or "").strip() or "default"
+                    imp = st.file_uploader("Choose a ZIP file", type=["zip"], key="adm_corpus_import_zip")
+                    if components.secondary_button("Import collection", disabled=imp is None, key="adm_import_btn"):
+                        if imp is None:
+                            st.warning("Pick a ZIP file first.")
+                        else:
+                            files = {"file": (imp.name, imp.getvalue(), "application/zip")}
+                            imp_data = {
+                                "tenant_id": tenant_id,
+                                "project_id": project_id,
+                                "is_finalized": json.dumps(True),
+                                "is_sensitive": json.dumps(True),
+                            }
+                            with st.spinner("Importing collection \u2014 this may take several minutes for large archives..."):
+                                try:
+                                    with httpx.Client(timeout=600.0) as client:
+                                        start = time.perf_counter()
+                                        resp = client.post(
+                                            f"{api}/admin/corpora/{corpus_scope_adm}/import",
+                                            headers=admin_headers,
+                                            files=files,
+                                            data=imp_data,
+                                        )
+                                        elapsed_ms = int((time.perf_counter() - start) * 1000)
+                                        _diag_add(
+                                            {
+                                                "type": "http",
+                                                "label": "admin corpus import",
+                                                "method": "POST",
+                                                "url": f"{api}/admin/corpora/{corpus_scope_adm}/import",
+                                                "status": int(resp.status_code),
+                                                "elapsed_ms": elapsed_ms,
+                                            }
+                                        )
+                                except (httpx.TimeoutException, httpx.ConnectError) as exc:
+                                    _diag_add({"type": "error", "label": "admin corpus import timeout", "error": str(exc)})
+                                    st.error("Corpus import timed out \u2014 the backend may still be processing. Check server logs.")
+                                    resp = None
+                            if resp is not None and resp.status_code >= 400:
+                                st.error(f"Import failed ({resp.status_code}): {resp.text}")
+                            elif resp is not None:
+                                st.success("Import complete!")
+                                components.detail_expander(
+                                    "Details (JSON)",
+                                    data=resp.json() if _is_json_response(resp) else None,
+                                )
 
 
 if __name__ == "__main__":

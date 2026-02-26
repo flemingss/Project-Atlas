@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from atlas.llm.deterministic import DeterministicProvider
-from atlas.pipeline.judge import JudgeNode, _prompt_hash
+from atlas.pipeline.judge import JUDGE_DIMENSIONS, JudgeNode, _prompt_hash
 from atlas.pipeline.metadata import MetadataNode
 from atlas.pipeline.refine import RefineNode
 from atlas.schemas import FidelityFlag
@@ -74,6 +74,9 @@ async def test_judge_grades_good_document() -> None:
     assert result.score >= 4
     assert not result.needs_refinement
     assert result.judge_version
+    # Multi-dimensional sub_scores must be present
+    assert set(result.sub_scores.keys()) == set(JUDGE_DIMENSIONS)
+    assert all(1 <= v <= 5 for v in result.sub_scores.values())
 
 
 @pytest.mark.asyncio
@@ -82,6 +85,7 @@ async def test_judge_grades_corrupt_document() -> None:
     result = await node.grade_document(markdown="[UNFIXABLE]\n\n\uFFFD\uFFFD\uFFFD gibberish")
     assert result.score == 1
     assert result.needs_refinement
+    assert all(v == 1 for v in result.sub_scores.values())
 
 
 @pytest.mark.asyncio
@@ -89,22 +93,36 @@ async def test_judge_returns_fallback_on_model_error() -> None:
     """If the LLM returns an unparseable response the fallback score (3) is returned."""
     node = _judge_node()
     # Directly test the parser with garbage input.
-    score, rationale = node._parse_response("totally unparseable")
-    assert 1 <= score <= 5
+    sub_scores, rationale = node._parse_response("totally unparseable")
+    assert all(1 <= v <= 5 for v in sub_scores.values())
     assert isinstance(rationale, str) and rationale
 
 
-def test_judge_parse_valid_response() -> None:
+def test_judge_parse_multi_dim_response() -> None:
     node = _judge_node()
-    score, rationale = node._parse_response("SCORE: 4\nRATIONALE: Mostly readable.")
-    assert score == 4
+    resp = "FAITHFULNESS: 5\nFORMATTING: 4\nCOHESION: 3\nHALLUCINATION_RISK: 5\nRATIONALE: Mostly readable."
+    sub_scores, rationale = node._parse_response(resp)
+    assert sub_scores == {"faithfulness": 5, "formatting": 4, "cohesion": 3, "hallucination_risk": 5}
+    assert "readable" in rationale
+
+
+def test_judge_parse_legacy_single_score_fallback() -> None:
+    """A legacy SCORE-only response is spread across all dimensions."""
+    node = _judge_node()
+    sub_scores, rationale = node._parse_response("SCORE: 4\nRATIONALE: Mostly readable.")
+    assert all(v == 4 for v in sub_scores.values())
+    assert set(sub_scores.keys()) == set(JUDGE_DIMENSIONS)
     assert "readable" in rationale
 
 
 def test_judge_parse_clamped_on_out_of_range() -> None:
     node = _judge_node()
-    score, _ = node._parse_response("SCORE: 99\nRATIONALE: x")
-    assert 1 <= score <= 5
+    resp = "FAITHFULNESS: 99\nFORMATTING: -1\nCOHESION: 3\nHALLUCINATION_RISK: 0\nRATIONALE: x"
+    sub_scores, _ = node._parse_response(resp)
+    assert all(1 <= v <= 5 for v in sub_scores.values())
+    assert sub_scores["faithfulness"] == 5  # clamped
+    assert sub_scores["formatting"] == 1    # clamped
+    assert sub_scores["hallucination_risk"] == 1  # clamped
 
 
 # ---------------------------------------------------------------------------
