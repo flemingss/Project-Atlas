@@ -19,14 +19,14 @@ Status note (Feb 2026): `/rag/ingest/*` is pipeline-backed (text + file). All no
   - Docling-based parsing is supported as an optional dependency (best-effort; see `TECHNICAL_DESIGN.md` Phase 4)
 
 - **`cleanup.py`** - Deterministic markdown cleanup node
-  - Five built-in transforms: normalise whitespace, strip broken links, repair heading hierarchy, strip trailing whitespace, static checks
+  - Five built-in transforms plus five configurable builtin extraction-artifact fixes (`html_unescape`, `fix_ligatures`, `strip_zero_width_chars`, `strip_page_numbers`, `strip_repetitive_lines` — first three ON by default, last two OFF by default)
   - Runs between Ingest and Judge; no LLM calls
   - Accepts optional `doc_context` and `config` to apply config-driven cleanup rules after built-in transforms
   - Produces `CleanupResult` with per-transform change flags + rule-engine fields (`rules_applied`, `rules_failed`, `fix_counts`, `rule_tags`)
 
 - **`cleanup_rules.py`** - Config-driven cleanup rules engine
   - Declarative, first-match-wins rule resolution based on tenant_id, project_id, corpus_id, mime_type, filename_pattern
-  - Six step handlers: `strip_lines_matching`, `rewrite_pattern`, `strip_headers_footers`, `normalize_headings`, `merge_hardwrapped_paragraphs`, `fix_bullets`
+  - Seven step handlers: `strip_lines_matching`, `rewrite_pattern`, `strip_headers_footers`, `normalize_headings`, `merge_hardwrapped_paragraphs`, `fix_bullets`, `html_unescape`
   - Rule tags (`hard_failure`, `suspicious_content`, `auto_fix_only`) influence routing decisions
   - Rules configured in `pipeline.yaml` `cleanup_rules:` section
 
@@ -37,7 +37,9 @@ Status note (Feb 2026): `/rag/ingest/*` is pipeline-backed (text + file). All no
   - Versioned `judge_version` (model + prompt hash)
 
 - **`refine.py`** - Document refinement node
-  - Scaffold for refinement + retry + HITL escalation
+  - Content-safety guardrails: tightened system prompt ("MUST NOT summarise, condense, or omit"), `min_preservation_ratio` (default 0.6) rejects outputs shorter than 60% of input
+  - Versioned `refine_version` (v2) with prompt hash tracking
+  - Configurable max retries → HITL escalation when exhausted
 
 - **`metadata.py`** - Tiered metadata generation
   - Scaffold for tiered metadata generation
@@ -200,6 +202,25 @@ Streamlit Admin tab card (Phase 7E) for operator self-service:
 - **Pipeline metrics** — summary dashboard from `GET /admin/looking-glass/metrics`
 - **AI rule suggestion** — paste markdown + describe issues → calls `POST /admin/cleanup-rules/suggest` → inline YAML preview
 
+### Normalize (`atlas.rag.normalize`)
+
+Formatting-only markdown normalization applied before chunking:
+
+- **Formatting cleanup** — collapses excessive blank lines, normalises line breaks
+- **No content removal** — page-number stripping and noise removal moved to `cleanup.py` builtins (`strip_page_numbers`, `strip_repetitive_lines`)
+- **Tracked as a pipeline node run** for auditability
+
+### Runner Consolidation (`atlas.pipeline.runner`)
+
+Unified pipeline runner (~996 lines) with shared helpers:
+
+- **`_record_pipeline_node_runs()`** — writes node-run rows to the workflow ledger
+- **`_record_normalize_node_run()`** — records normalize as a tracked pipeline step
+- **`_persist_markdown_artifact()`** — writes markdown artifacts to the filesystem store
+- **`_handle_hitl_pause()`** — creates HITL tasks and pauses the pipeline
+- **`_commit_chunks_to_qdrant()`** — chunks, embeds, and upserts to Qdrant
+- All silent `except: pass` blocks replaced with `log.warning` for observability
+
 ### Enhanced Chunking (`atlas.rag.chunking`)
 
 Three chunking strategies available (configurable via `pipeline.yaml`). Default is `semantic` (token-aware markdown-heading chunker). All chunking sites use `chunk_with_fallback()` for automatic QA + fallback.
@@ -245,7 +266,7 @@ Three chunking strategies available (configurable via `pipeline.yaml`). Default 
 
 ## Testing
 
-Current automated coverage (**265 tests passing**, 0 failures):
+Current automated coverage (**338 tests passing**, 0 failures):
 - Schema creation and validation (incl. `CleanupResult`, `JudgeResult.sub_scores`)
 - Diagnostics and error handling
 - Pipeline state transitions (11 nodes)
@@ -262,10 +283,11 @@ Current automated coverage (**265 tests passing**, 0 failures):
 - **Cleanup feedback API** (`test_cleanup_feedback.py` — 7 tests)
 - **Metrics aggregation** (`test_metrics_aggregation.py` — 3 tests)
 - **Rule suggestion** (`test_rule_suggestion.py` — 13 tests)
+- **Phase refactors** (`test_phase_refactors.py` — 40 tests): refine guardrails, normalize boundary, runner consolidation, html_unescape dedup
 
 Run tests:
 ```bash
-pytest -q                    # All tests (265 passing)
+pytest -q                    # All tests (338 passing)
 pytest -m integration        # Integration tests only
 ```
 
@@ -274,7 +296,7 @@ pytest -m integration        # Integration tests only
 The current implementation (v0.5.0) provides:
 - ✅ All core data models (incl. multi-dimensional judge, cleanup results, cleanup feedback)
 - ✅ Full 11-node pipeline (Ingest → Cleanup → Judge → Refine → Metadata → Embeddings → Chunking → Commit + HITL/COMPLETED/FAILED)
-- ✅ Config-driven cleanup rules engine (6 step types, first-match-wins, rule-tag routing)
+- ✅ Config-driven cleanup rules engine (7 step types, first-match-wins, rule-tag routing)
 - ✅ Cleanup feedback capture + metrics aggregation API
 - ✅ LLM-assisted rule suggestion (`POST /admin/cleanup-rules/suggest`)
 - ✅ Cleanup & Tuning UI card in Admin tab
@@ -288,6 +310,9 @@ The current implementation (v0.5.0) provides:
 - ✅ Fidelity mode search filter
 
 All Phase 7 items (7A–7E) are complete.
+- ✅ Refine content-safety guardrails (min_preservation_ratio, tightened prompt, refine_version v2)
+- ✅ Normalize refactored to formatting-only (whitespace/line-break normalization); page-number and noise stripping moved to cleanup builtins
+- ✅ Runner consolidation (5 shared helpers, 37% line reduction)
 - 🔄 Prompt/rubric tuning as real-world usage data accumulates
 - 🔄 Retrieval upgrades (hybrid/rerank) are explicitly deferred unless a measured failure mode requires them
 - 🔄 Semantic cache implementation

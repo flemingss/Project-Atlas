@@ -2,7 +2,7 @@
 
 Local-first RAG system with a running FastAPI service (admin + RAG MVP), config versioning, and a repeatable black-box E2E runner.
 
-Pipeline: **Ingest → Cleanup → Judge → Refine → Metadata → Embeddings → Chunking → Commit** (11 nodes). Features config-driven cleanup rules engine, cleanup feedback API, metrics aggregation, LLM-assisted rule suggestion, Cleanup & Tuning UI, multi-dimensional judge rubric, retry/backoff on all external calls, chunk QA with automatic fallback, Docling health scoring, unified routing with fail-fast and rule-tag escalation, and fidelity mode search filtering.
+Pipeline: **Ingest → Cleanup → Judge → Refine → Metadata → Embeddings → Chunking → Commit** (11 nodes). Features config-driven cleanup rules engine, cleanup feedback API, metrics aggregation, LLM-assisted rule suggestion, Cleanup & Tuning UI, multi-dimensional judge rubric, refine content-safety guardrails (min_preservation_ratio), retry/backoff on all external calls, chunk QA with automatic fallback, Docling health scoring, unified routing with fail-fast and rule-tag escalation, fidelity mode search filtering, and five configurable builtin extraction-artifact fixes.
 
 Design source of truth: `TECHNICAL_DESIGN.md` (build-continuity plan; current reality vs target end-state). `HLD.md` is retained as historical original intent.
 
@@ -89,6 +89,14 @@ Cleanup feedback:
 
 Cleanup rule suggestion:
 - `POST /admin/cleanup-rules/suggest`
+
+Cleanup rule management:
+- `POST /admin/cleanup-rules/apply`
+- `DELETE /admin/cleanup-rules/{name}`
+
+Config validation & restore:
+- `POST /admin/config/validate-rules`
+- `POST /admin/config/restore-stock`
 
 HITL:
 - `GET /admin/hitl/tasks`
@@ -275,7 +283,9 @@ Key `pipeline.yaml` sections:
 - `judge_dim_floors:` — per-dimension minimum scores (faithfulness, formatting, cohesion, hallucination_risk)
 - `fail_fast_score:` — composite score at or below which the pipeline fails immediately
 - `cleanup_rejudge:` — toggle for re-running cleanup when formatting score is low but content is OK
-- `cleanup_rules:` — declarative per-corpus/per-mime-type cleanup rules (6 step handlers, rule tags for routing)
+- `cleanup_rules:` — declarative per-corpus/per-mime-type cleanup rules (7 step handlers, rule tags for routing)
+- `builtin_cleanup:` — toggle individual builtin extraction-artifact fixes (`html_unescape`, `fix_ligatures`, `strip_zero_width_chars`, `strip_page_numbers`, `strip_repetitive_lines`)
+- `refine_min_preservation_ratio:` — minimum output/input length ratio for refine (default 0.6; prevents content loss)
 
 Goal: change models and thresholds without code edits by updating YAML and/or DB-stored config versions.
 

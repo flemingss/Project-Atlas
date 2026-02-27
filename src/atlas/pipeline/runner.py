@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -13,8 +14,11 @@ from starlette.concurrency import run_in_threadpool
 from atlas.config_manager import ConfigManager
 from atlas.config_versions import get_active_config_version
 from atlas.artifacts import write_bytes, write_json, write_text
+from atlas.doc_versions import set_active_doc_version
 from atlas.hitl_ledger import HitlTaskCreateRequest, create_hitl_task
+from atlas.ingest.docling_health import compute_health as _compute_health
 from atlas.llm.registry import ModelRegistry
+from atlas.models import ArtifactRef as ArtifactRefModel, WorkflowRun
 from atlas.pipeline.ingest import IngestNode
 from atlas.pipeline.judge import JudgeNode
 from atlas.pipeline.metadata import MetadataNode
@@ -30,6 +34,8 @@ from atlas.settings import Settings
 from atlas.vectorstore.qdrant_store import QdrantStore
 from atlas.workflow_ledger import ArtifactRefCreateRequest, WorkflowRunCreateRequest, add_artifact_ref, create_workflow_run
 from atlas.workflow_ledger import NodeRunCreateRequest, create_node_run
+
+log = logging.getLogger(__name__)
 
 
 async def _activate_doc_version(
@@ -48,8 +54,6 @@ async def _activate_doc_version(
     """
 
     try:
-        from atlas.doc_versions import set_active_doc_version
-
         with session_factory() as session:
             set_active_doc_version(
                 session,
@@ -60,8 +64,7 @@ async def _activate_doc_version(
                 corpus_id=corpus_id,
             )
     except Exception:
-        # If DB update fails, we still try to set Qdrant payloads.
-        pass
+        log.warning("Failed to set active doc version in DB", exc_info=True)
 
     base_must = [
         qm.FieldCondition(key="tenant_id", match=qm.MatchValue(value=tenant_id)),
@@ -79,7 +82,7 @@ async def _activate_doc_version(
         await run_in_threadpool(store.set_payload, payload={"is_active_version": False}, must=base_must)
         await run_in_threadpool(store.set_payload, payload={"is_active_version": True}, must=version_must)
     except Exception:
-        pass
+        log.warning("Failed to set active doc version in Qdrant", exc_info=True)
 
 
 def _artifact_ext(*, mime_type: str, filename: str | None) -> str:
@@ -134,7 +137,7 @@ def _build_orchestrator(*, settings: Settings, models_cfg: dict[str, Any], pipel
         tier2_provider = registry.provider_for(meta2.provider_name)
         tier2_model = meta2.model_name
     except Exception:
-        meta2 = None  # noqa: F841
+        pass
 
     ingest_node = IngestNode()
     judge_node = JudgeNode(provider=judge_provider, model_name=judge.model_name, model_params=judge.params)
@@ -146,6 +149,11 @@ def _build_orchestrator(*, settings: Settings, models_cfg: dict[str, Any], pipel
             (pipeline_cfg.get("limits", {}) or {}).get(
                 "refine_max_retries",
                 (pipeline_cfg.get("thresholds", {}) or {}).get("refine_max_retries", 2),
+            )
+        ),
+        min_preservation_ratio=float(
+            (pipeline_cfg.get("thresholds", {}) or {}).get(
+                "refine_min_preservation_ratio", 0.6
             )
         ),
     )
@@ -193,151 +201,30 @@ def _compute_fidelity_flag(*, judge: dict[str, Any], refine_retries: int, max_re
     return FidelityFlag.PARTIAL.value
 
 
-async def ingest_text_via_pipeline(
+# ---------------------------------------------------------------------------
+# Shared post-orchestration helpers (used by both ingestion paths)
+# ---------------------------------------------------------------------------
+
+def _record_pipeline_node_runs(
     *,
-    config_manager: ConfigManager,
     session_factory: sessionmaker[Session],
-    existing_run_id: int | None = None,
-    doc_id: str,
-    doc_version: str,
-    tenant_id: str,
-    project_id: str,
-    corpus_id: str,
-    text: str,
-    source_mime_type: str,
-    is_finalized: bool,
-    is_sensitive: bool,
-    metadata: dict[str, Any],
-) -> dict[str, Any]:
-    settings = Settings()
-    effective, source_info = _effective_config_payload(config_manager=config_manager, session_factory=session_factory)
-    pipeline_cfg = effective.get("pipeline", {}) or {}
-    models_cfg = effective.get("models", {}) or {}
-
-    limits = (pipeline_cfg.get("limits", {}) or {})
-    max_chars = int(limits.get("chunk_max_chars", 1000))
-
-    normalize_cfg = (pipeline_cfg.get("normalize", {}) or {})
-    normalize_enabled = bool(normalize_cfg.get("enabled", True))
-
-    chunking_cfg = (pipeline_cfg.get("chunking", {}) or {})
-    chunk_strategy = str(chunking_cfg.get("strategy", "semantic"))
-    target_tokens = int(chunking_cfg.get("target_tokens", 320))
-    max_tokens = int(chunking_cfg.get("max_tokens", 400))
-
-    orch, registry = _build_orchestrator(settings=settings, models_cfg=models_cfg, pipeline_cfg=pipeline_cfg)
-
-    # Create or reuse durable run
-    run_id: int
-    if existing_run_id is None:
-        with session_factory() as session:
-            run = create_workflow_run(
-                session,
-                req=WorkflowRunCreateRequest(
-                    tenant_id=tenant_id,
-                    project_id=project_id,
-                    doc_id=doc_id,
-                    doc_version=doc_version,
-                    status="running",
-                    current_node="ingest",
-                    meta={
-                        "source_mime_type": source_mime_type,
-                        "is_finalized": bool(is_finalized),
-                        "is_sensitive": bool(is_sensitive),
-                        "corpus_id": corpus_id,
-                        "config": source_info,
-                        "request_metadata": metadata or {},
-                    },
-                ),
-            )
-            run_id = int(run.id)
-    else:
-        run_id = int(existing_run_id)
-        with session_factory() as session:
-            from atlas.models import WorkflowRun
-
-            w = session.execute(select(WorkflowRun).where(WorkflowRun.id == run_id)).scalars().first()
-            if w is not None:
-                w.status = "running"
-                w.current_node = "ingest"
-                # Keep existing meta but refresh config snapshot.
-                m = w.meta or {}
-                m["config"] = source_info
-                m.setdefault("corpus_id", corpus_id)
-                w.meta = m
-                session.commit()
-
-    # Ingest (text -> markdown)
-    ingest_node = IngestNode()
-    ingest_res = await ingest_node.process_text(text=text, mime_type=source_mime_type)
-    ctx = create_pipeline_context(
-        doc_id=doc_id,
-        doc_version=doc_version,
-        tenant_id=tenant_id,
-        project_id=project_id,
-        corpus_id=corpus_id,
-        source_mime_type=source_mime_type,
-        max_refine_retries=int(pipeline_cfg.get("thresholds", {}).get("refine_max_retries", 2)),
-    )
-    ctx.state.markdown_projection = ingest_res.markdown_projection
-
-    # Compute Docling health score for downstream routing/diagnostics.
-    from atlas.ingest.docling_health import compute_health as _compute_health
-
-    _health = _compute_health(
-        meta=ingest_res.meta,
-        markdown_length=len(ingest_res.markdown_projection),
-        parse_profile=str(ingest_res.parse_profile),
-    )
-    ctx.set_docling_health(_health.to_dict())
-
-    ctx = await orch.process_document(ctx)
-
-    # Normalize final markdown before chunking/embedding.
-    if normalize_enabled:
-        ctx.state.markdown_projection = normalize_markdown(ctx.state.markdown_projection)
-
-    # Persist markdown projection as an artifact (best-effort).
-    try:
-        md_art = write_text(
-            artifacts_dir=Path(settings.atlas_artifacts_dir),
-            rel_path=f"runs/{run_id}/ingest/markdown.md",
-            text=ctx.state.markdown_projection,
-            mime_type="text/markdown",
-        )
-        with session_factory() as session:
-            add_artifact_ref(
-                session,
-                run_id=run_id,
-                req=ArtifactRefCreateRequest(
-                    kind="markdown_projection",
-                    path=md_art.rel_path,
-                    sha256=md_art.sha256,
-                    mime_type=md_art.mime_type,
-                    meta={},
-                ),
-            )
-    except Exception:
-        pass
-
-    # Record node runs best-effort (durable trace)
+    run_id: int,
+    ctx: Any,
+) -> None:
+    """Persist node run records for judge/refine/metadata/cleanup (best-effort)."""
     try:
         with session_factory() as session:
-            create_node_run(
-                session,
-                run_id=run_id,
-                req=NodeRunCreateRequest(
-                    node_name="ingest",
-                    status="completed",
-                    input_ref="text",
-                    output_ref=_json_ref(
-                        {
-                            "parse_profile": str(ingest_res.parse_profile),
-                            "docling_schema_version": ingest_res.docling_schema_version,
-                        }
+            if "cleanup" in ctx.results:
+                create_node_run(
+                    session,
+                    run_id=run_id,
+                    req=NodeRunCreateRequest(
+                        node_name="cleanup",
+                        status="completed",
+                        input_ref=str(ctx.results["cleanup"].get("chars_before", "")),
+                        output_ref=_json_ref(ctx.results.get("cleanup")),
                     ),
-                ),
-            )
+                )
 
             if "judge" in ctx.results:
                 create_node_run(
@@ -375,59 +262,166 @@ async def ingest_text_via_pipeline(
                     ),
                 )
     except Exception:
-        pass
+        log.warning("Failed to record pipeline node runs for run %s", run_id, exc_info=True)
 
-    # If HITL, create task and pause.
-    if PipelineNode(ctx.state.current_node) == PipelineNode.HITL:
+
+def _record_normalize_node_run(
+    *,
+    session_factory: sessionmaker[Session],
+    run_id: int,
+    chars_before: int,
+    chars_after: int,
+) -> None:
+    """Persist a node run record for the normalize step (best-effort)."""
+    try:
         with session_factory() as session:
-            from atlas.models import WorkflowRun
-
-            w = session.execute(select(WorkflowRun).where(WorkflowRun.id == run_id)).scalars().first()
-            if w is not None:
-                w.status = "hitl"
-                w.current_node = "hitl"
-                session.commit()
-
-            judge_score = float(ctx.state.mean_judge_score or 0.0)
-            create_hitl_task(
+            create_node_run(
                 session,
-                req=HitlTaskCreateRequest(
-                    run_id=run_id,
-                    tenant_id=tenant_id,
-                    project_id=project_id,
-                    doc_id=doc_id,
-                    doc_version=doc_version,
-                    chunk_id="doc",
-                    is_sensitive=bool(is_sensitive),
-                    judge_score=judge_score,
-                    before_md=ctx.state.markdown_projection,
-                    meta={"source": "pipeline", "config": source_info, "corpus_id": corpus_id},
+                run_id=run_id,
+                req=NodeRunCreateRequest(
+                    node_name="normalize",
+                    status="completed",
+                    input_ref=str(chars_before),
+                    output_ref=_json_ref({"chars_before": chars_before, "chars_after": chars_after}),
                 ),
             )
+    except Exception:
+        log.warning("Failed to record normalize node run for run %s", run_id, exc_info=True)
 
-            try:
-                create_node_run(
-                    session,
-                    run_id=run_id,
-                    req=NodeRunCreateRequest(
-                        node_name="hitl",
-                        status="waiting",
-                        input_ref=_json_ref({"judge_score": float(ctx.state.mean_judge_score or 0.0)}),
-                        output_ref="",
-                    ),
-                )
-            except Exception:
-                pass
 
-        return {
-            "ok": True,
-            "run_id": run_id,
-            "collection": "atlas_chunks",
-            "chunks_upserted": 0,
-            "paused_for_hitl": True,
-        }
+def _persist_markdown_artifact(
+    *,
+    session_factory: sessionmaker[Session],
+    artifacts_dir: Path,
+    run_id: int,
+    text: str,
+    update_existing: bool = False,
+) -> None:
+    """Write (or overwrite) the markdown projection artifact and its DB ref."""
+    try:
+        md_art = write_text(
+            artifacts_dir=artifacts_dir,
+            rel_path=f"runs/{run_id}/ingest/markdown.md",
+            text=text,
+            mime_type="text/markdown",
+        )
+        with session_factory() as session:
+            if update_existing:
+                existing = session.execute(
+                    select(ArtifactRefModel).where(
+                        ArtifactRefModel.run_id == run_id,
+                        ArtifactRefModel.kind == "markdown_projection",
+                    )
+                ).scalars().first()
+                if existing is not None:
+                    existing.sha256 = md_art.sha256
+                    session.commit()
+                    return
+            # Fresh insert
+            add_artifact_ref(
+                session,
+                run_id=run_id,
+                req=ArtifactRefCreateRequest(
+                    kind="markdown_projection",
+                    path=md_art.rel_path,
+                    sha256=md_art.sha256,
+                    mime_type=md_art.mime_type,
+                    meta={},
+                ),
+            )
+    except Exception:
+        log.warning("Failed to persist markdown artifact for run %s", run_id, exc_info=True)
 
-    # Commit embeddings/chunks to Qdrant
+
+def _handle_hitl_pause(
+    *,
+    session_factory: sessionmaker[Session],
+    run_id: int,
+    ctx: Any,
+    tenant_id: str,
+    project_id: str,
+    doc_id: str,
+    doc_version: str,
+    is_sensitive: bool,
+    source_info: dict[str, Any],
+    corpus_id: str,
+) -> dict[str, Any]:
+    """Create HITL task, update workflow status, return paused response."""
+    with session_factory() as session:
+        w = session.execute(select(WorkflowRun).where(WorkflowRun.id == run_id)).scalars().first()
+        if w is not None:
+            w.status = "hitl"
+            w.current_node = "hitl"
+            session.commit()
+
+        judge_score = float(ctx.state.mean_judge_score or 0.0)
+        create_hitl_task(
+            session,
+            req=HitlTaskCreateRequest(
+                run_id=run_id,
+                tenant_id=tenant_id,
+                project_id=project_id,
+                doc_id=doc_id,
+                doc_version=doc_version,
+                chunk_id="doc",
+                is_sensitive=bool(is_sensitive),
+                judge_score=judge_score,
+                before_md=ctx.state.markdown_projection,
+                meta={"source": "pipeline", "config": source_info, "corpus_id": corpus_id},
+            ),
+        )
+
+        try:
+            create_node_run(
+                session,
+                run_id=run_id,
+                req=NodeRunCreateRequest(
+                    node_name="hitl",
+                    status="waiting",
+                    input_ref=_json_ref({"judge_score": judge_score}),
+                    output_ref="",
+                ),
+            )
+        except Exception:
+            log.warning("Failed to record HITL node run for run %s", run_id, exc_info=True)
+
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "collection": "atlas_chunks",
+        "chunks_upserted": 0,
+        "paused_for_hitl": True,
+    }
+
+
+async def _commit_chunks_to_qdrant(
+    *,
+    session_factory: sessionmaker[Session],
+    settings: Settings,
+    registry: ModelRegistry,
+    ctx: Any,
+    run_id: int,
+    pipeline_cfg: dict[str, Any],
+    chunking_cfg: dict[str, Any],
+    tenant_id: str,
+    project_id: str,
+    corpus_id: str,
+    doc_id: str,
+    doc_version: str,
+    source_mime_type: str,
+    source_filename: str,
+    is_finalized: bool,
+    is_sensitive: bool,
+    metadata: dict[str, Any],
+    source_info: dict[str, Any],
+) -> dict[str, Any]:
+    """Embed, chunk, purge stale, upsert to Qdrant, and finalize the run."""
+
+    chunk_strategy = str(chunking_cfg.get("strategy", "semantic"))
+    target_tokens = int(chunking_cfg.get("target_tokens", 320))
+    max_tokens = int(chunking_cfg.get("max_tokens", 400))
+    max_chars = int((pipeline_cfg.get("limits", {}) or {}).get("chunk_max_chars", 1000))
+
     resolved_embed = registry.resolve("embed_model")
     embed_provider = registry.provider_for(resolved_embed.provider_name)
 
@@ -448,6 +442,19 @@ async def ingest_text_via_pipeline(
 
     store = QdrantStore(url=settings.atlas_qdrant_url, api_key=None, collection="atlas_chunks")
     await run_in_threadpool(store.ensure_collection, vector_size=len(vectors[0]))
+
+    # Purge stale chunks for this doc_id + doc_version before upserting.
+    stale_filter = [
+        qm.FieldCondition(key="tenant_id", match=qm.MatchValue(value=tenant_id)),
+        qm.FieldCondition(key="project_id", match=qm.MatchValue(value=project_id)),
+        qm.FieldCondition(key="corpus_id", match=qm.MatchValue(value=corpus_id)),
+        qm.FieldCondition(key="doc_id", match=qm.MatchValue(value=doc_id)),
+        qm.FieldCondition(key="doc_version", match=qm.MatchValue(value=doc_version)),
+    ]
+    try:
+        await run_in_threadpool(store.delete_by_filter, must=stale_filter)
+    except Exception:
+        log.warning("Failed to purge stale chunks for run %s", run_id, exc_info=True)
 
     now = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -491,6 +498,7 @@ async def ingest_text_via_pipeline(
             "is_sensitive": bool(is_sensitive),
             "is_active_version": True,
             "source_mime_type": source_mime_type,
+            "source_filename": source_filename,
             "chunking_strategy": strategy_used,
             "chunk_qa": chunk_qa.to_dict(),
             "section_path": getattr(c, "section_path", []) or [],
@@ -527,6 +535,7 @@ async def ingest_text_via_pipeline(
                         "project_id": project_id,
                         "corpus_id": corpus_id,
                         "source_mime_type": source_mime_type,
+                        "source_filename": source_filename,
                         "has_table": bool(feats.has_table),
                         "is_procedure": bool(feats.is_procedure),
                         "has_code": bool(feats.has_code),
@@ -563,7 +572,7 @@ async def ingest_text_via_pipeline(
                 ),
             )
     except Exception:
-        pass
+        log.warning("Failed to persist chunk manifest for run %s", run_id, exc_info=True)
 
     # Activate this doc_version for the doc (best-effort).
     await _activate_doc_version(
@@ -577,8 +586,6 @@ async def ingest_text_via_pipeline(
     )
 
     with session_factory() as session:
-        from atlas.models import WorkflowRun
-
         w = session.execute(select(WorkflowRun).where(WorkflowRun.id == run_id)).scalars().first()
         if w is not None:
             w.status = "completed"
@@ -597,9 +604,181 @@ async def ingest_text_via_pipeline(
                 ),
             )
         except Exception:
-            pass
+            log.warning("Failed to record commit node run for run %s", run_id, exc_info=True)
 
     return {"ok": True, "run_id": run_id, "collection": store.collection, "chunks_upserted": len(points)}
+
+
+async def ingest_text_via_pipeline(
+    *,
+    config_manager: ConfigManager,
+    session_factory: sessionmaker[Session],
+    existing_run_id: int | None = None,
+    doc_id: str,
+    doc_version: str,
+    tenant_id: str,
+    project_id: str,
+    corpus_id: str,
+    text: str,
+    source_mime_type: str,
+    is_finalized: bool,
+    is_sensitive: bool,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    settings = Settings()
+    artifacts_dir = Path(settings.atlas_artifacts_dir)
+    effective, source_info = _effective_config_payload(config_manager=config_manager, session_factory=session_factory)
+    pipeline_cfg = effective.get("pipeline", {}) or {}
+    models_cfg = effective.get("models", {}) or {}
+
+    normalize_cfg = (pipeline_cfg.get("normalize", {}) or {})
+    normalize_enabled = bool(normalize_cfg.get("enabled", True))
+
+    chunking_cfg = (pipeline_cfg.get("chunking", {}) or {})
+
+    orch, registry = _build_orchestrator(settings=settings, models_cfg=models_cfg, pipeline_cfg=pipeline_cfg)
+
+    # Create or reuse durable run
+    run_id: int
+    if existing_run_id is None:
+        with session_factory() as session:
+            run = create_workflow_run(
+                session,
+                req=WorkflowRunCreateRequest(
+                    tenant_id=tenant_id,
+                    project_id=project_id,
+                    doc_id=doc_id,
+                    doc_version=doc_version,
+                    status="running",
+                    current_node="ingest",
+                    meta={
+                        "source_mime_type": source_mime_type,
+                        "is_finalized": bool(is_finalized),
+                        "is_sensitive": bool(is_sensitive),
+                        "corpus_id": corpus_id,
+                        "config": source_info,
+                        "request_metadata": metadata or {},
+                    },
+                ),
+            )
+            run_id = int(run.id)
+    else:
+        run_id = int(existing_run_id)
+        with session_factory() as session:
+            w = session.execute(select(WorkflowRun).where(WorkflowRun.id == run_id)).scalars().first()
+            if w is not None:
+                w.status = "running"
+                w.current_node = "ingest"
+                # Keep existing meta but refresh config snapshot.
+                m = w.meta or {}
+                m["config"] = source_info
+                m.setdefault("corpus_id", corpus_id)
+                w.meta = m
+                session.commit()
+
+    # Ingest (text -> markdown)
+    ingest_node = IngestNode()
+    ingest_res = await ingest_node.process_text(text=text, mime_type=source_mime_type)
+    ctx = create_pipeline_context(
+        doc_id=doc_id,
+        doc_version=doc_version,
+        tenant_id=tenant_id,
+        project_id=project_id,
+        corpus_id=corpus_id,
+        source_mime_type=source_mime_type,
+        max_refine_retries=int(pipeline_cfg.get("thresholds", {}).get("refine_max_retries", 2)),
+    )
+    ctx.state.markdown_projection = ingest_res.markdown_projection
+
+    # Compute Docling health score for downstream routing/diagnostics.
+    _health = _compute_health(
+        meta=ingest_res.meta,
+        markdown_length=len(ingest_res.markdown_projection),
+        parse_profile=str(ingest_res.parse_profile),
+    )
+    ctx.set_docling_health(_health.to_dict())
+
+    ctx = await orch.process_document(ctx)
+
+    # Normalize final markdown before chunking/embedding.
+    if normalize_enabled:
+        chars_before = len(ctx.state.markdown_projection)
+        ctx.state.markdown_projection = normalize_markdown(ctx.state.markdown_projection)
+        _record_normalize_node_run(
+            session_factory=session_factory,
+            run_id=run_id,
+            chars_before=chars_before,
+            chars_after=len(ctx.state.markdown_projection),
+        )
+
+    # Persist markdown projection as an artifact.
+    _persist_markdown_artifact(
+        session_factory=session_factory,
+        artifacts_dir=artifacts_dir,
+        run_id=run_id,
+        text=ctx.state.markdown_projection,
+    )
+
+    # Record ingest node run (best-effort).
+    try:
+        with session_factory() as session:
+            create_node_run(
+                session,
+                run_id=run_id,
+                req=NodeRunCreateRequest(
+                    node_name="ingest",
+                    status="completed",
+                    input_ref="text",
+                    output_ref=_json_ref(
+                        {
+                            "parse_profile": str(ingest_res.parse_profile),
+                            "docling_schema_version": ingest_res.docling_schema_version,
+                        }
+                    ),
+                ),
+            )
+    except Exception:
+        log.warning("Failed to record ingest node run for run %s", run_id, exc_info=True)
+
+    # Record pipeline node runs (cleanup/judge/refine/metadata).
+    _record_pipeline_node_runs(session_factory=session_factory, run_id=run_id, ctx=ctx)
+
+    # If HITL, create task and pause.
+    if PipelineNode(ctx.state.current_node) == PipelineNode.HITL:
+        return _handle_hitl_pause(
+            session_factory=session_factory,
+            run_id=run_id,
+            ctx=ctx,
+            tenant_id=tenant_id,
+            project_id=project_id,
+            doc_id=doc_id,
+            doc_version=doc_version,
+            is_sensitive=is_sensitive,
+            source_info=source_info,
+            corpus_id=corpus_id,
+        )
+
+    # Commit embeddings/chunks to Qdrant.
+    return await _commit_chunks_to_qdrant(
+        session_factory=session_factory,
+        settings=settings,
+        registry=registry,
+        ctx=ctx,
+        run_id=run_id,
+        pipeline_cfg=pipeline_cfg,
+        chunking_cfg=chunking_cfg,
+        tenant_id=tenant_id,
+        project_id=project_id,
+        corpus_id=corpus_id,
+        doc_id=doc_id,
+        doc_version=doc_version,
+        source_mime_type=source_mime_type,
+        source_filename="",
+        is_finalized=is_finalized,
+        is_sensitive=is_sensitive,
+        metadata=metadata,
+        source_info=source_info,
+    )
 
 
 async def ingest_file_via_pipeline(
@@ -624,16 +803,10 @@ async def ingest_file_via_pipeline(
     pipeline_cfg = effective.get("pipeline", {}) or {}
     models_cfg = effective.get("models", {}) or {}
 
-    limits = (pipeline_cfg.get("limits", {}) or {})
-    max_chars = int(limits.get("chunk_max_chars", 1000))
-
     normalize_cfg = (pipeline_cfg.get("normalize", {}) or {})
     normalize_enabled = bool(normalize_cfg.get("enabled", True))
 
     chunking_cfg = (pipeline_cfg.get("chunking", {}) or {})
-    chunk_strategy = str(chunking_cfg.get("strategy", "semantic"))
-    target_tokens = int(chunking_cfg.get("target_tokens", 320))
-    max_tokens = int(chunking_cfg.get("max_tokens", 400))
 
     orch, registry = _build_orchestrator(settings=settings, models_cfg=models_cfg, pipeline_cfg=pipeline_cfg)
 
@@ -683,13 +856,13 @@ async def ingest_file_via_pipeline(
                 ),
             )
     except Exception:
-        pass
+        log.warning("Failed to store source artifact for run %s", run_id, exc_info=True)
 
     # Ingest via Docling
     ingest_node = IngestNode()
     ingest_res = await ingest_node.process_document(content=file_bytes, mime_type=source_mime_type)
 
-    # Record ingest node run and persist artifacts (best-effort)
+    # Record ingest node run and persist docling artifacts (best-effort)
     ingest_node_run_id: int | None = None
     try:
         with session_factory() as session:
@@ -713,7 +886,7 @@ async def ingest_file_via_pipeline(
             )
             ingest_node_run_id = int(nr.id)
 
-        # Persist ground truth + projection
+        # Persist docling.json ground truth + initial markdown projection
         docling_art = write_json(
             artifacts_dir=artifacts_dir,
             rel_path=f"runs/{run_id}/ingest/docling.json",
@@ -751,12 +924,10 @@ async def ingest_file_via_pipeline(
                 ),
             )
     except Exception:
-        pass
+        log.warning("Failed to record ingest node/artifacts for run %s", run_id, exc_info=True)
 
     if not ingest_res.success:
         with session_factory() as session:
-            from atlas.models import WorkflowRun
-
             w = session.execute(select(WorkflowRun).where(WorkflowRun.id == run_id)).scalars().first()
             if w is not None:
                 w.status = "failed"
@@ -785,8 +956,6 @@ async def ingest_file_via_pipeline(
     ctx.state.markdown_projection = ingest_res.markdown_projection
 
     # Compute Docling health score for downstream routing/diagnostics.
-    from atlas.ingest.docling_health import compute_health as _compute_health
-
     _health = _compute_health(
         meta=ingest_res.meta,
         markdown_length=len(ingest_res.markdown_projection),
@@ -798,232 +967,63 @@ async def ingest_file_via_pipeline(
 
     # Normalize final markdown before chunking/embedding.
     if normalize_enabled:
+        chars_before = len(ctx.state.markdown_projection)
         ctx.state.markdown_projection = normalize_markdown(ctx.state.markdown_projection)
+        _record_normalize_node_run(
+            session_factory=session_factory,
+            run_id=run_id,
+            chars_before=chars_before,
+            chars_after=len(ctx.state.markdown_projection),
+        )
+
+    # Overwrite the markdown artifact with the post-cleanup/normalized text.
+    _persist_markdown_artifact(
+        session_factory=session_factory,
+        artifacts_dir=artifacts_dir,
+        run_id=run_id,
+        text=ctx.state.markdown_projection,
+        update_existing=True,
+    )
+
+    # Record pipeline node runs (cleanup/judge/refine/metadata).
+    _record_pipeline_node_runs(session_factory=session_factory, run_id=run_id, ctx=ctx)
 
     # If HITL, create task and pause.
     if PipelineNode(ctx.state.current_node) == PipelineNode.HITL:
-        with session_factory() as session:
-            from atlas.models import WorkflowRun
-
-            w = session.execute(select(WorkflowRun).where(WorkflowRun.id == run_id)).scalars().first()
-            if w is not None:
-                w.status = "hitl"
-                w.current_node = "hitl"
-                session.commit()
-
-            judge_score = float(ctx.state.mean_judge_score or 0.0)
-            create_hitl_task(
-                session,
-                req=HitlTaskCreateRequest(
-                    run_id=run_id,
-                    tenant_id=tenant_id,
-                    project_id=project_id,
-                    doc_id=doc_id,
-                    doc_version=doc_version,
-                    chunk_id="doc",
-                    is_sensitive=bool(is_sensitive),
-                    judge_score=judge_score,
-                    before_md=ctx.state.markdown_projection,
-                    meta={"source": "pipeline", "config": source_info, "corpus_id": corpus_id},
-                ),
-            )
-            try:
-                create_node_run(
-                    session,
-                    run_id=run_id,
-                    req=NodeRunCreateRequest(
-                        node_name="hitl",
-                        status="waiting",
-                        input_ref=_json_ref({"judge_score": float(ctx.state.mean_judge_score or 0.0)}),
-                        output_ref="",
-                    ),
-                )
-            except Exception:
-                pass
-
-        return {
-            "ok": True,
-            "run_id": run_id,
-            "collection": "atlas_chunks",
-            "chunks_upserted": 0,
-            "paused_for_hitl": True,
-        }
-
-    # Commit embeddings/chunks to Qdrant
-    resolved_embed = registry.resolve("embed_model")
-    embed_provider = registry.provider_for(resolved_embed.provider_name)
-
-    qa_bounds = (chunking_cfg.get("qa") or {}) if chunking_cfg else {}
-    chunks, strategy_used, chunk_qa = chunk_with_fallback(
-        text=ctx.state.markdown_projection,
-        strategy=chunk_strategy,
-        target_tokens=target_tokens,
-        max_tokens=max_tokens,
-        max_chars=max_chars,
-        qa_bounds=qa_bounds if qa_bounds else None,
-    )
-    texts = [c.text for c in chunks]
-    if not texts:
-        return {"ok": True, "run_id": run_id, "collection": "atlas_chunks", "chunks_upserted": 0}
-
-    vectors = await embed_provider.embed(model=resolved_embed.model_name, texts=texts, params=resolved_embed.params)
-
-    store = QdrantStore(url=settings.atlas_qdrant_url, api_key=None, collection="atlas_chunks")
-    await run_in_threadpool(store.ensure_collection, vector_size=len(vectors[0]))
-
-    now = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
-
-    judge = ctx.results.get("judge") or {}
-    meta = ctx.results.get("metadata") or {}
-    limits_cfg = pipeline_cfg.get("limits") or {}
-    thresholds_cfg = pipeline_cfg.get("thresholds") or {}
-    max_retries_cfg = int(
-        limits_cfg.get("refine_max_retries", thresholds_cfg.get("refine_max_retries", 2))
-    )
-    fidelity_flag = _compute_fidelity_flag(
-        judge=judge,
-        refine_retries=int(ctx.state.refine_retries),
-        max_retries=max_retries_cfg,
-    )
-
-    points: list[qm.PointStruct] = []
-    manifest_lines: list[str] = []
-    for c, v in zip(chunks, vectors, strict=True):
-        content_hash = sha256_hex(c.text)
-        pid = deterministic_chunk_id(
+        return _handle_hitl_pause(
+            session_factory=session_factory,
+            run_id=run_id,
+            ctx=ctx,
             tenant_id=tenant_id,
             project_id=project_id,
-            corpus_id=corpus_id,
             doc_id=doc_id,
             doc_version=doc_version,
-            content_hash=content_hash,
-            chunk_index=c.index,
-        )
-        feats = infer_chunk_features(c.text)
-        payload: dict[str, Any] = {
-            "tenant_id": tenant_id,
-            "project_id": project_id,
-            "corpus_id": corpus_id,
-            "doc_id": doc_id,
-            "doc_version": doc_version,
-            "chunk_index": c.index,
-            "text": c.text,
-            "content_hash": content_hash,
-            "is_finalized": bool(is_finalized),
-            "is_sensitive": bool(is_sensitive),
-            "is_active_version": True,
-            "source_mime_type": source_mime_type,
-            "source_filename": filename or "",
-            "chunking_strategy": strategy_used,
-            "chunk_qa": chunk_qa.to_dict(),
-            "section_path": getattr(c, "section_path", []) or [],
-            "parent_header_id": getattr(c, "parent_header_id", None),
-            "sibling_ids": getattr(c, "sibling_ids", []) or [],
-            "has_table": bool(feats.has_table),
-            "is_procedure": bool(feats.is_procedure),
-            "has_code": bool(feats.has_code),
-            "embedding_provider": resolved_embed.provider_name,
-            "embedding_model": resolved_embed.model_name,
-            "embedding_params": resolved_embed.params,
-            "judge_score": judge.get("score"),
-            "judge_version": judge.get("judge_version"),
-            "confidence_rationale": judge.get("confidence_rationale"),
-            "fidelity_flag": fidelity_flag,
-            "metadata_tier": meta.get("tier"),
-            "metadata_tags": meta.get("tags"),
-            "created_at": now,
-            **(metadata or {}),
-        }
-        points.append(qm.PointStruct(id=pid, vector=v, payload=payload))
-
-        manifest_lines.append(
-            json.dumps(
-                {
-                    "chunk_id": pid,
-                    "doc_id": doc_id,
-                    "doc_version": doc_version,
-                    "chunk_index": c.index,
-                    "heading_path": payload.get("section_path") or [],
-                    "text": c.text,
-                    "metadata": {
-                        "tenant_id": tenant_id,
-                        "project_id": project_id,
-                        "corpus_id": corpus_id,
-                        "source_mime_type": source_mime_type,
-                        "source_filename": filename or "",
-                        "has_table": bool(feats.has_table),
-                        "is_procedure": bool(feats.is_procedure),
-                        "has_code": bool(feats.has_code),
-                        "embedding_model": resolved_embed.model_name,
-                        "embedding_provider": resolved_embed.provider_name,
-                        "embedding_params": resolved_embed.params,
-                        "metadata_tags": meta.get("tags"),
-                    },
-                },
-                ensure_ascii=False,
-            )
+            is_sensitive=is_sensitive,
+            source_info=source_info,
+            corpus_id=corpus_id,
         )
 
-    await run_in_threadpool(store.upsert_points, points=points)
-
-    # Persist chunk manifest as an artifact (best-effort).
-    try:
-        mf_art = write_text(
-            artifacts_dir=Path(settings.atlas_artifacts_dir),
-            rel_path=f"runs/{run_id}/chunks/manifest.jsonl",
-            text="\n".join(manifest_lines) + "\n",
-            mime_type="application/x-ndjson",
-        )
-        with session_factory() as session:
-            add_artifact_ref(
-                session,
-                run_id=run_id,
-                req=ArtifactRefCreateRequest(
-                    kind="chunk_manifest",
-                    path=mf_art.rel_path,
-                    sha256=mf_art.sha256,
-                    mime_type=mf_art.mime_type,
-                    meta={"chunks": len(points)},
-                ),
-            )
-    except Exception:
-        pass
-
-    # Activate this doc_version for the doc (best-effort).
-    await _activate_doc_version(
+    # Commit embeddings/chunks to Qdrant.
+    return await _commit_chunks_to_qdrant(
         session_factory=session_factory,
-        store=store,
+        settings=settings,
+        registry=registry,
+        ctx=ctx,
+        run_id=run_id,
+        pipeline_cfg=pipeline_cfg,
+        chunking_cfg=chunking_cfg,
         tenant_id=tenant_id,
         project_id=project_id,
         corpus_id=corpus_id,
         doc_id=doc_id,
         doc_version=doc_version,
+        source_mime_type=source_mime_type,
+        source_filename=filename or "",
+        is_finalized=is_finalized,
+        is_sensitive=is_sensitive,
+        metadata=metadata,
+        source_info=source_info,
     )
-
-    with session_factory() as session:
-        from atlas.models import WorkflowRun
-
-        w = session.execute(select(WorkflowRun).where(WorkflowRun.id == run_id)).scalars().first()
-        if w is not None:
-            w.status = "completed"
-            w.current_node = "completed"
-            session.commit()
-
-        try:
-            create_node_run(
-                session,
-                run_id=run_id,
-                req=NodeRunCreateRequest(
-                    node_name="commit",
-                    status="completed",
-                    input_ref=_json_ref({"collection": store.collection}),
-                    output_ref=_json_ref({"chunks_upserted": len(points)}),
-                ),
-            )
-        except Exception:
-            pass
-
-    return {"ok": True, "run_id": run_id, "collection": store.collection, "chunks_upserted": len(points)}
 
 
 async def resume_completed_hitl_task(
@@ -1033,10 +1033,7 @@ async def resume_completed_hitl_task(
     task_id: int,
 ) -> dict[str, Any]:
     """Resume a pipeline run from a completed HITL task and commit finalized chunks."""
-    import datetime as _dt
-
     from atlas.hitl_ledger import get_hitl_task
-    from atlas.models import WorkflowRun
 
     with session_factory() as session:
         task = get_hitl_task(session, task_id=task_id)
@@ -1066,7 +1063,7 @@ async def resume_completed_hitl_task(
         if markdown.strip() == "":
             raise ValueError("task has empty after_md")
 
-        resumed_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
+        resumed_at = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
         run.status = "running"
         run.current_node = "ingest"
         # Record resume provenance in run metadata.

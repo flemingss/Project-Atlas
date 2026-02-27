@@ -99,8 +99,49 @@ def _validate_config_shapes(*, config_manager: ConfigManager) -> None:
     # Load retry/backoff configuration from pipeline.yaml → retry section.
     load_retry_configs(pipeline.get("retry"))
 
+    # Validate builtin_cleanup toggles (if present).
+    _validate_builtin_cleanup(pipeline.get("builtin_cleanup"))
+
     # Validate cleanup_rules structure (if present).
     _validate_cleanup_rules(pipeline.get("cleanup_rules", []))
+
+
+# ---------------------------------------------------------------------------
+# Builtin cleanup validation
+# ---------------------------------------------------------------------------
+
+_VALID_BUILTIN_KEYS = frozenset({
+    "html_unescape", "fix_ligatures", "strip_zero_width_chars",
+    "strip_page_numbers", "strip_repetitive_lines",
+    "repetitive_line_threshold", "repetitive_line_max_chars",
+})
+
+
+def _validate_builtin_cleanup(raw: Any) -> None:
+    """Validate builtin_cleanup section — must be a mapping with boolean values."""
+    if raw is None:
+        return  # absent is fine — defaults to all-on
+    if not isinstance(raw, dict):
+        raise RuntimeError("pipeline.yaml builtin_cleanup must be a mapping")
+    unknown = set(raw.keys()) - _VALID_BUILTIN_KEYS
+    if unknown:
+        _log.warning("builtin_cleanup: unknown keys %s (will be ignored)", sorted(unknown))
+    # Boolean toggles
+    _BOOL_KEYS = {"html_unescape", "fix_ligatures", "strip_zero_width_chars",
+                  "strip_page_numbers", "strip_repetitive_lines"}
+    for key in _BOOL_KEYS:
+        val = raw.get(key)
+        if val is not None and not isinstance(val, bool):
+            raise RuntimeError(
+                f"pipeline.yaml builtin_cleanup.{key} must be a boolean (got {type(val).__name__})"
+            )
+    # Integer parameters
+    for key in ("repetitive_line_threshold", "repetitive_line_max_chars"):
+        val = raw.get(key)
+        if val is not None and not isinstance(val, int):
+            raise RuntimeError(
+                f"pipeline.yaml builtin_cleanup.{key} must be an integer (got {type(val).__name__})"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +155,7 @@ _VALID_STEP_KINDS = frozenset({
     "normalize_headings",
     "merge_hardwrapped_paragraphs",
     "fix_bullets",
+    "html_unescape",
 })
 
 _VALID_MATCH_KEYS = frozenset({

@@ -19,6 +19,7 @@ from atlas.pipeline.cleanup_rules import (
     _step_normalize_headings,
     _step_merge_hardwrapped,
     _step_fix_bullets,
+    _step_html_unescape,
 )
 from atlas.pipeline.cleanup import CleanupNode
 
@@ -205,6 +206,36 @@ class TestSteps:
         result, count = _step_fix_bullets(text, {})
         assert "* keep" in result
         assert count == 0
+
+    def test_html_unescape_named_entities(self) -> None:
+        text = "Veeam Backup &amp; Replication &lt;v12&gt;"
+        result, count = _step_html_unescape(text, {})
+        assert result == "Veeam Backup & Replication <v12>"
+        assert count == 3
+
+    def test_html_unescape_decimal_entity(self) -> None:
+        text = "em-dash&#8212;here"
+        result, count = _step_html_unescape(text, {})
+        assert result == "em-dash\u2014here"
+        assert count == 1
+
+    def test_html_unescape_hex_entity(self) -> None:
+        text = "smart&#x2019;quote"
+        result, count = _step_html_unescape(text, {})
+        assert result == "smart\u2019quote"
+        assert count == 1
+
+    def test_html_unescape_no_entities(self) -> None:
+        text = "No entities here & just text."
+        result, count = _step_html_unescape(text, {})
+        assert result == text
+        assert count == 0
+
+    def test_html_unescape_nbsp(self) -> None:
+        text = "word&nbsp;word"
+        result, count = _step_html_unescape(text, {})
+        assert result == "word\xa0word"  # non-breaking space
+        assert count == 1
 
 
 # ---------------------------------------------------------------------------

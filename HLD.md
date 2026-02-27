@@ -9,12 +9,15 @@ Key deltas vs original intent:
 - Rollback v1: doc_version granularity; deep supersedes-chain semantics deferred.
 - Repo inspection: a “Repo Looking Glass” is planned so operators can assess corpus state without exporting.- Judge rubric: expanded from single 1–5 score to four dimensions (faithfulness, formatting, cohesion, hallucination_risk) in v0.4.0.
 - Pipeline: Cleanup node added between Ingest and Judge; unified routing logic; retry/backoff on all external calls.
-- Cleanup rules: v0.5.0 adds a config-driven cleanup rules engine (6 step handlers, first-match-wins, rule-tag routing including CLEANUP→HITL escalation).
+- Cleanup rules: v0.5.0 adds a config-driven cleanup rules engine (7 step handlers, first-match-wins, rule-tag routing including CLEANUP→HITL escalation).
 - Cleanup feedback: operator feedback loop with CRUD API + metrics aggregation endpoint.
 - Rule suggestion: v0.5.0 adds LLM-assisted rule suggestion (`POST /admin/cleanup-rules/suggest`) with heuristic fallback and deterministic provider support for CI.
 - Cleanup & Tuning UI: Admin tab card for viewing rules, submitting feedback, browsing metrics, and invoking AI rule suggestion.
 - Chunking: default strategy is semantic with automatic QA + fallback; chunk_with_fallback replaces direct calls.
 - Docling health score: computed after every ingest to surface extraction quality.
+- Refine guardrails: v0.6.0 adds content-safety guardrails (min_preservation_ratio, tightened prompt, refine_version v2) to prevent LLM content loss.
+- Normalize boundary: v0.6.0 refactors normalize to formatting-only; page-number and noise stripping moved to cleanup builtins (`strip_page_numbers`, `strip_repetitive_lines`).
+- Runner consolidation: v0.6.0 consolidates the pipeline runner (5 shared helpers, 37% line reduction) with all silent exceptions replaced by logged warnings.
 1. System Vision
 
 Project Atlas ingests heterogeneous domain documents and outputs a "Professional Grade" RAG package. The system is local-first (RTX 3090), idempotent, self-refining, and features Human-in-the-Loop (HITL) checkpoints.

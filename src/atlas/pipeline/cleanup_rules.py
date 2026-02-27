@@ -23,11 +23,15 @@ Step types
   into a single paragraph (common OCR artefact).
 - ``fix_bullets``:           normalise mixed bullet styles (``*``, ``-``, ``+``)
   to a single canonical marker.
+- ``html_unescape``:         decode all HTML/XML character entities
+  (``&amp;`` → ``&``, ``&#8212;`` → ``—``, ``&nbsp;`` → " ", etc.)
+  in a single pass via :func:`html.unescape`.
 """
 
 from __future__ import annotations
 
 import fnmatch
+import html
 import logging
 import re
 from dataclasses import dataclass, field
@@ -312,6 +316,31 @@ def _step_fix_bullets(text: str, params: dict[str, Any]) -> tuple[str, int]:
     return "\n".join(result), count
 
 
+def _step_html_unescape(text: str, _params: dict[str, Any]) -> tuple[str, int]:
+    """Decode all HTML/XML character entities via :func:`html.unescape`.
+
+    Handles named entities (``&amp;``, ``&lt;``, ``&nbsp;``), decimal
+    (``&#8212;``), and hex (``&#x2019;``) forms in a single pass.
+    No parameters required.
+
+    .. note::
+        This step is redundant when the ``html_unescape`` builtin cleanup
+        toggle is enabled (ON by default).  The builtin runs *before*
+        user-defined rules, so enabling both is harmless (idempotent).
+    """
+    from atlas.pipeline.cleanup import _builtin_html_unescape
+
+    result = _builtin_html_unescape(text)
+    # Count changes by diffing on '&' — each entity starts with '&'
+    # A more precise count: number of entity occurrences in original
+    import re as _re
+    count = len(_re.findall(r"&(?:#[xX]?[0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);?", text))
+    # But only count the ones that actually changed
+    if result == text:
+        count = 0
+    return result, count
+
+
 _STEP_REGISTRY: dict[str, Any] = {
     "strip_lines_matching": _step_strip_lines_matching,
     "rewrite_pattern": _step_rewrite_pattern,
@@ -319,6 +348,7 @@ _STEP_REGISTRY: dict[str, Any] = {
     "normalize_headings": _step_normalize_headings,
     "merge_hardwrapped_paragraphs": _step_merge_hardwrapped,
     "fix_bullets": _step_fix_bullets,
+    "html_unescape": _step_html_unescape,
 }
 
 
@@ -344,13 +374,13 @@ def apply_rule(rule: CleanupRule, markdown: str) -> RuleApplicationResult:
             new_text, fixes = handler(text, step.params)
             if new_text != text:
                 steps_applied.append(step.kind)
-                fix_counts[step.kind] = fixes
+                fix_counts[step.kind] = fix_counts.get(step.kind, 0) + fixes
                 text = new_text
             else:
-                fix_counts[step.kind] = 0
+                fix_counts.setdefault(step.kind, 0)
         except Exception:
             log.warning("Step '%s' in rule '%s' raised – skipping", step.kind, rule.name, exc_info=True)
-            fix_counts[step.kind] = -1  # sentinel for error
+            fix_counts[step.kind] = fix_counts.get(step.kind, 0) - 1  # sentinel for error
 
     return RuleApplicationResult(
         rule_name=rule.name,

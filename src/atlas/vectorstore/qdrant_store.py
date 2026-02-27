@@ -132,6 +132,20 @@ class QdrantStore:
 
         sync_retry(_do, config=self._retry_cfg(), subsystem="vectorstore", operation="set_payload")
 
+    def delete_by_filter(self, *, must: list[qm.FieldCondition]) -> None:
+        """Delete all points matching a filter."""
+
+        def _do() -> None:
+            self._client.delete(
+                collection_name=self._collection,
+                points_selector=qm.FilterSelector(
+                    filter=qm.Filter(must=must),
+                ),
+                wait=True,
+            )
+
+        sync_retry(_do, config=self._retry_cfg(), subsystem="vectorstore", operation="delete")
+
     def scroll_points(
         self,
         *,

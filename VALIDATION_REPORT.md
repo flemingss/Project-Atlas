@@ -12,12 +12,13 @@ Project Atlas has undergone a comprehensive top-down review to ensure all featur
 
 ### Key Findings
 
-- ✅ **265 unit/E2E tests passing** (100% pass rate, 0 skipped)
+- ✅ **338 unit/E2E tests passing** (100% pass rate, 0 skipped)
 - ✅ **1 integration test passing** (with live Qdrant service)
 - ✅ **All linting checks passing** (ruff)
 - ✅ **Comprehensive E2E test suite** with 9 workflow tests
 - ✅ **Black-box scenario tests** with deterministic and local LLM modes
 - ✅ **Well-documented architecture** (README, E2E_TEST_GUIDE, TECHNICAL_DESIGN, HLD)
+- ✅ **v0.6.0 additions**: refine content-safety guardrails (min_preservation_ratio, tightened prompt, refine_version v2), two new cleanup builtins (strip_page_numbers, strip_repetitive_lines), normalize refactored to formatting-only, runner consolidation (5 shared helpers, 37% line reduction), html_unescape dedup
 - ✅ **v0.5.0 additions**: config-driven cleanup rules engine, cleanup feedback API, metrics aggregation endpoint, rule-tag-aware routing (CLEANUP→HITL), LLM-assisted rule suggestion endpoint, Cleanup & Tuning UI card
 - ✅ **v0.4.0 pipeline enhancements**: cleanup node, multi-dimensional judge, unified routing, retry/backoff, chunk QA + fallback, Docling health scoring, fidelity mode search filter
 
@@ -40,7 +41,7 @@ Project Atlas has undergone a comprehensive top-down review to ensure all featur
 - Qdrant vector store with multi-tenant isolation
 - Pluggable LLM providers (deterministic, OpenAI-compatible, local models)
 - Comprehensive pipeline: Ingest → Cleanup → Judge → Refine → Metadata → Embeddings → Chunking → Commit (11 nodes)
-- Config-driven cleanup rules engine (6 step handlers, rule-tag routing)
+- Config-driven cleanup rules engine (7 step handlers, rule-tag routing)
 - Cleanup feedback API (5 endpoints) + metrics aggregation endpoint
 - LLM-assisted rule suggestion (`POST /admin/cleanup-rules/suggest`)
 - Cleanup & Tuning UI card in Admin tab (rules viewer, feedback, metrics, AI suggestion)
@@ -61,8 +62,9 @@ Project Atlas has undergone a comprehensive top-down review to ensure all featur
 - **Chunking**: Three strategies (semantic default, paragraph, hierarchical) with QA + fallback chain
 - **Embeddings**: Pluggable providers with traceability
 - **Commit**: Qdrant upsert with tenant/project/corpus isolation
-- **Cleanup Node**: Deterministic markdown cleanup (5 built-in transforms) between Ingest and Judge, plus config-driven rules engine (6 step types)
+- **Cleanup Node**: Deterministic markdown cleanup (5 built-in transforms + 5 configurable builtins) between Ingest and Judge, plus config-driven rules engine (7 step types)
 - **Routing**: Unified `decide_next_step()` with fail-fast, floor checks, cleanup-rejudge, rule-tag-aware escalation (CLEANUP→HITL for `suspicious_content`, CLEANUP→FAILED for `hard_failure`)
+- **Refine Guardrails**: Content-safety guardrails (min_preservation_ratio 0.6, tightened prompt, refine_version v2) prevent LLM content loss
 - **Retry/Backoff**: Config-driven exponential backoff on all external calls
 - **Docling Health**: Composite 1–5 health score computed after every ingest
 
@@ -101,7 +103,7 @@ Project Atlas has undergone a comprehensive top-down review to ensure all featur
 
 ## Test Coverage Analysis
 
-### Unit Tests (252 tests: 252 passing, 0 skipped)
+### Unit Tests (338 tests: 338 passing, 0 skipped)
 
 | Test Category | Tests | Status | Coverage |
 |--------------|-------|--------|----------|
@@ -120,10 +122,11 @@ Project Atlas has undergone a comprehensive top-down review to ensure all featur
 | **Cleanup Node** | 15 | ✅ PASS | All 5 transforms + edge cases |
 | **Docling Health** | 15 | ✅ PASS | All signal combinations |
 | **Routing** | 21 | ✅ PASS | All routing decision paths |
-| **Cleanup Rules Engine** | 34 | ✅ PASS | Parse, match, 6 step handlers, integration, tag routing |
+| **Cleanup Rules Engine** | 34 | ✅ PASS | Parse, match, 7 step handlers, integration, tag routing |
 | **Cleanup Feedback API** | 7 | ✅ PASS | Full CRUD + scoped list + categories |
 | **Metrics Aggregation** | 3 | ✅ PASS | Unscoped, scoped, empty metrics |
 | **Rule Suggestion** | 13 | ✅ PASS | Deterministic provider, heuristic fallback (6), API endpoint |
+| **Phase Refactors** | 40 | ✅ PASS | Refine guardrails, normalize boundary, runner consolidation, html_unescape dedup |
 | **Other** | 29+ | ✅ PASS | Models, schemas, deep merge, etc. |
 
 ### E2E Workflow Tests (9 comprehensive tests)
@@ -274,10 +277,10 @@ All checks passed!
 
 - ✅ Solid core architecture (pipeline nodes, HITL, diagnostics, multi-tenancy)
 - ✅ Comprehensive API (40+ endpoints covering all operations)
-- ✅ Excellent test coverage (252 unit/E2E tests passing, 12 black-box scenarios)
+- ✅ Excellent test coverage (338 unit/E2E tests passing, 12 black-box scenarios)
 - ✅ Strong documentation (README, E2E guide, technical design)
 - ✅ Clean codebase (all linting checks passing)
-- ✅ No regressions (252 passing tests, 0 skipped)
+- ✅ No regressions (338 passing tests, 0 skipped)
 
 The repository demonstrates best practices in software engineering:
 - Testable architecture with dependency injection
@@ -295,7 +298,7 @@ The repository demonstrates best practices in software engineering:
 ```bash
 # Unit/E2E Tests
 $ pytest -q
-252 passed in 29.02s
+338 passed in 32.15s
 
 # Integration Tests
 $ pytest -m integration -v

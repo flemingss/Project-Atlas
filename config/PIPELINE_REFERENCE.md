@@ -19,6 +19,7 @@
   - [`cache`](#cache)
   - [`privacy`](#privacy)
   - [`retry`](#retry)
+  - [`builtin_cleanup`](#builtin_cleanup)
   - [`cleanup_rules`](#cleanup_rules)
 - [Cleanup Rules — Full Reference](#cleanup-rules--full-reference)
   - [Rule Structure](#rule-structure)
@@ -292,6 +293,35 @@ retry:
 
 ---
 
+### `builtin_cleanup`
+
+Toggles for automatic extraction-artifact fixes that run during the Cleanup
+node **after** the five hardcoded transforms and **before** config-driven
+cleanup rules. All toggles default to `true` (ON) when the section is absent
+or a key is omitted.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `html_unescape` | `bool` | `true` | Decode all HTML/XML character entities (`&amp;` → `&`, `&#8212;` → —, `&nbsp;` → non-breaking space). Uses Python's `html.unescape()`. |
+| `fix_ligatures` | `bool` | `true` | Decompose common Unicode ligatures to ASCII equivalents (ﬁ → fi, ﬂ → fl, ﬀ → ff, ﬃ → ffi, ﬄ → ffl). |
+| `strip_zero_width_chars` | `bool` | `true` | Remove zero-width and invisible Unicode characters (BOM, zero-width space/joiner/non-joiner, soft hyphen, word joiner, etc.). |
+
+```yaml
+builtin_cleanup:
+  html_unescape: true
+  fix_ligatures: true
+  strip_zero_width_chars: true
+```
+
+To disable a specific toggle:
+
+```yaml
+builtin_cleanup:
+  fix_ligatures: false  # keep ligatures as-is
+```
+
+---
+
 ### `cleanup_rules`
 
 An ordered list of rules that apply deterministic text transforms to the
@@ -445,6 +475,20 @@ Normalise bullet markers to a canonical character.
 ```yaml
 - kind: fix_bullets
   marker: "-"
+```
+
+#### `html_unescape`
+
+Decode all HTML/XML character entities in a single pass via Python's
+`html.unescape()`. Handles named entities (`&amp;` → `&`, `&lt;` → `<`,
+`&nbsp;` → non-breaking space), decimal (`&#8212;` → —), and hex
+(`&#x2019;` → ') forms. No parameters required.
+
+This is the recommended approach for Docling-extracted documents that contain
+HTML-escaped characters instead of using multiple `rewrite_pattern` steps.
+
+```yaml
+- kind: html_unescape
 ```
 
 ---
@@ -610,6 +654,9 @@ These run **unconditionally** before config-driven rules, in this order:
 | 3 | `repair_heading_hierarchy` | Demote headings that skip levels (e.g. H1 → H4 becomes H1 → H2) |
 | 4 | `strip_trailing_whitespace` | Right-strip every line |
 | 5 | *Static quality warnings* | Log warnings for leftover HTML tags, OCR whitespace artefacts, very short output (<50 chars). No mutations. |
+| 6 | `builtin:html_unescape` | Decode HTML/XML entities. Configurable via `builtin_cleanup.html_unescape` (default: ON). |
+| 7 | `builtin:fix_ligatures` | Decompose Unicode ligatures (ﬁ→fi, ﬂ→fl). Configurable via `builtin_cleanup.fix_ligatures` (default: ON). |
+| 8 | `builtin:strip_zero_width_chars` | Strip invisible Unicode chars. Configurable via `builtin_cleanup.strip_zero_width_chars` (default: ON). |
 
 ---
 

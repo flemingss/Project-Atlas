@@ -1807,17 +1807,28 @@ def main() -> None:
                                         components.detail_expander("Error details", data=s_data)
 
                                 # --- Dry-run action ---
+                                _dr_open_key = f"_dryrun_open_{idx}"
                                 if _dryrun_clicked:
-                                    _dr_key = f"_dryrun_sample_{idx}"
-                                    _dr_sample = st.session_state.get(_dr_key, "")
+                                    st.session_state[_dr_open_key] = not st.session_state.get(_dr_open_key, False)
+
+                                if st.session_state.get(_dr_open_key):
+                                    st.divider()
+                                    st.caption("Paste a markdown snippet below, then click **Run** to test this rule.")
                                     _dr_sample = st.text_area(
-                                        "Paste markdown sample for dry-run",
-                                        value=_dr_sample,
+                                        "Markdown sample",
                                         height=theme.TEXT_AREA_SM,
                                         key=f"ct_dr_input_{idx}",
                                         placeholder="Paste a markdown snippet to test this rule against...",
                                     )
-                                    if _dr_sample.strip():
+                                    _dr_btn_cols = st.columns([1, 1, 4])
+                                    with _dr_btn_cols[0]:
+                                        _run_dr = components.primary_button("Run", key=f"ct_dr_run_{idx}")
+                                    with _dr_btn_cols[1]:
+                                        if st.button("Close", key=f"ct_dr_close_{idx}"):
+                                            st.session_state.pop(_dr_open_key, None)
+                                            st.rerun()
+
+                                    if _run_dr and _dr_sample.strip():
                                         with st.spinner("Running dry-run..."):
                                             resp_dr, dr_data = _request_json_diag(
                                                 label=f"dry-run rule {rule_name}",
@@ -1853,8 +1864,8 @@ def main() -> None:
                                         else:
                                             st.error(f"Dry-run failed ({resp_dr.status_code})")
                                             components.detail_expander("Details", data=dr_data)
-                                    else:
-                                        st.caption("Enter a markdown sample above and it will be processed automatically.")
+                                    elif _run_dr:
+                                        st.warning("Paste a markdown sample first.")
 
                                 # --- Remove action ---
                                 if _remove_clicked:

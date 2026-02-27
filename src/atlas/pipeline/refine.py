@@ -14,13 +14,27 @@ from atlas.llm.provider import ChatMessage
 from atlas.schemas import FidelityFlag, RefineResult
 
 
-REFINE_SYSTEM_PROMPT = """You are a document refinement assistant. Improve the given markdown document by:
-1. Fixing OCR errors
-2. Improving structure and formatting
-3. Clarifying unclear sections
-4. Preserving all original information
+REFINE_SYSTEM_PROMPT = """You are a document refinement assistant.
 
-Return only the improved markdown. Do not add explanations."""
+Your ONLY permitted actions:
+1. Fix OCR errors and typos
+2. Repair broken markdown formatting (headings, lists, tables)
+3. Preserve ALL original information — every section, heading, table,
+   list item, and data point MUST appear in your output
+
+You MUST NOT:
+- Summarise, condense, or omit any content
+- Add new information or commentary
+- Restructure the document layout beyond fixing formatting errors
+- Remove sections even if they seem redundant
+
+Return ONLY the improved markdown. Do not add explanations."""
+
+# Minimum ratio of refined output length to input length.  If the refined
+# text is shorter than this fraction of the original the refinement is
+# rejected and the original text is kept.  Configurable via
+# ``thresholds.refine_min_preservation_ratio`` in pipeline.yaml.
+_DEFAULT_MIN_PRESERVATION_RATIO = 0.6
 
 
 class RefineNode:
@@ -40,15 +54,17 @@ class RefineNode:
         model_name: str,
         model_params: dict[str, Any],
         max_retries: int = 2,
+        min_preservation_ratio: float = _DEFAULT_MIN_PRESERVATION_RATIO,
     ):
         self.provider = provider
         self.model_name = model_name
         self.model_params = model_params
         self.max_retries = max_retries
+        self.min_preservation_ratio = min_preservation_ratio
         self.diagnostics = get_diagnostics()
 
         # Create refine version identifier
-        self.refine_version = f"{model_name}:v1"
+        self.refine_version = f"{model_name}:v2"
 
     async def refine_document(
         self, *, markdown: str, judge_score: int, retry_count: int
@@ -90,6 +106,31 @@ class RefineNode:
                 # Call refinement model
                 refined_markdown = await self._call_refine_model(prompt)
 
+                # ----------------------------------------------------------
+                # Length-preservation guardrail: reject if the LLM
+                # summarised or dropped significant content.
+                # ----------------------------------------------------------
+                input_len = len(markdown.strip())
+                output_len = len(refined_markdown.strip())
+                if input_len > 0 and output_len < input_len * self.min_preservation_ratio:
+                    self.diagnostics.log_warning(
+                        component="refine",
+                        message=(
+                            f"Refinement rejected — output too short "
+                            f"({output_len}/{input_len} = "
+                            f"{output_len / input_len:.0%}, "
+                            f"threshold {self.min_preservation_ratio:.0%}). "
+                            f"Keeping original text."
+                        ),
+                    )
+                    return RefineResult(
+                        refined_markdown=markdown,
+                        improvements_made=["refinement_rejected:output_too_short"],
+                        refine_version=self.refine_version,
+                        success=False,
+                        timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    )
+
                 # Analyze improvements
                 improvements = self._analyze_improvements(markdown, refined_markdown)
 
@@ -125,15 +166,17 @@ class RefineNode:
                 )
 
     def _build_prompt(self, markdown: str, judge_score: int) -> str:
-        """Build refinement prompt."""
-        return f"""{REFINE_SYSTEM_PROMPT}
+        """Build refinement prompt.
 
-Judge Score: {judge_score}/5 (needs improvement)
-
-Original Document:
-{markdown}
-
-Improved Document:"""
+        Note: the system prompt is sent separately via the ``system`` role
+        message in :meth:`_call_refine_model`; we do NOT embed it in the
+        user text to avoid sending the instructions twice.
+        """
+        return (
+            f"Judge Score: {judge_score}/5 (needs improvement)\n\n"
+            f"Original Document:\n{markdown}\n\n"
+            f"Improved Document:"
+        )
 
     async def _call_refine_model(self, prompt: str) -> str:
         """Call the refine model to improve the document."""

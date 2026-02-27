@@ -11,6 +11,9 @@ from atlas.pipeline.cleanup import (
     _static_checks,
     _strip_broken_links,
     _strip_trailing_whitespace,
+    _builtin_html_unescape,
+    _builtin_fix_ligatures,
+    _builtin_strip_zero_width,
 )
 
 
@@ -114,3 +117,84 @@ async def test_cleanup_node_returns_cleanup_result_fields() -> None:
     assert result.timestamp
     assert isinstance(result.transforms_applied, list)
     assert isinstance(result.warnings, list)
+
+
+# ---------------------------------------------------------------------------
+# Builtin extraction-artifact cleanup functions
+# ---------------------------------------------------------------------------
+
+def test_builtin_html_unescape_entities() -> None:
+    assert _builtin_html_unescape("&amp;") == "&"
+    assert _builtin_html_unescape("&lt;tag&gt;") == "<tag>"
+    assert _builtin_html_unescape("&#8212;") == "\u2014"
+    assert _builtin_html_unescape("no entities") == "no entities"
+
+
+def test_builtin_fix_ligatures() -> None:
+    assert _builtin_fix_ligatures("\ufb01le") == "file"
+    assert _builtin_fix_ligatures("\ufb02oor") == "floor"
+    assert _builtin_fix_ligatures("\ufb00") == "ff"
+    assert _builtin_fix_ligatures("\ufb03") == "ffi"
+    assert _builtin_fix_ligatures("\ufb04") == "ffl"
+    assert _builtin_fix_ligatures("no ligatures") == "no ligatures"
+
+
+def test_builtin_strip_zero_width() -> None:
+    assert _builtin_strip_zero_width("hello\u200bworld") == "helloworld"
+    assert _builtin_strip_zero_width("\ufeffBOM") == "BOM"
+    assert _builtin_strip_zero_width("soft\u00adhyphen") == "softhyphen"
+    assert _builtin_strip_zero_width("clean text") == "clean text"
+
+
+# ---------------------------------------------------------------------------
+# CleanupNode builtin toggles integration
+# ---------------------------------------------------------------------------
+
+async def test_cleanup_node_builtin_html_unescape_default_on() -> None:
+    """html_unescape runs by default (no config needed)."""
+    node = CleanupNode()
+    md = "Veeam Backup &amp; Replication"
+    result = await node.clean(markdown=md)
+    assert "&amp;" not in result.cleaned_markdown
+    assert "Veeam Backup & Replication" in result.cleaned_markdown
+    assert "builtin:html_unescape" in result.transforms_applied
+
+
+async def test_cleanup_node_builtin_ligatures_default_on() -> None:
+    node = CleanupNode()
+    md = "The \ufb01le was \ufb02at."
+    result = await node.clean(markdown=md)
+    assert "file" in result.cleaned_markdown
+    assert "flat" in result.cleaned_markdown
+    assert "builtin:fix_ligatures" in result.transforms_applied
+
+
+async def test_cleanup_node_builtin_zero_width_default_on() -> None:
+    node = CleanupNode()
+    md = "\ufeffHello\u200bworld"
+    result = await node.clean(markdown=md)
+    assert result.cleaned_markdown.replace("\n", "") == "Helloworld"
+    assert "builtin:strip_zero_width_chars" in result.transforms_applied
+
+
+async def test_cleanup_node_builtin_can_be_disabled() -> None:
+    """Setting a toggle to false skips that builtin."""
+    node = CleanupNode()
+    md = "Keep &amp; entities"
+    config = {"builtin_cleanup": {"html_unescape": False}}
+    result = await node.clean(markdown=md, config=config)
+    assert "&amp;" in result.cleaned_markdown
+    assert "builtin:html_unescape" not in result.transforms_applied
+
+
+async def test_cleanup_node_builtin_partial_disable() -> None:
+    """Only the disabled toggle is skipped; others still run."""
+    node = CleanupNode()
+    md = "\ufb01le &amp; \u200bstuff"
+    config = {"builtin_cleanup": {"fix_ligatures": False}}
+    result = await node.clean(markdown=md, config=config)
+    # ligatures preserved
+    assert "\ufb01" in result.cleaned_markdown
+    # html_unescape and zero-width still ran
+    assert "&amp;" not in result.cleaned_markdown
+    assert "\u200b" not in result.cleaned_markdown

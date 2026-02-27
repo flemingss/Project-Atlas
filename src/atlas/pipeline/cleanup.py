@@ -11,12 +11,22 @@ Transforms (executed in order):
    (e.g. ``# H1`` followed by ``#### H4`` → ``## H2``).
 4. **Trailing-whitespace strip**: right-strip every line.
 5. **Static quality checks**: detect leftover HTML tags, OCR artefacts, etc.
+6. **Builtin extraction-artifact fixes** (configurable toggles via
+   ``pipeline.yaml`` → ``builtin_cleanup:`` section):
+   - ``html_unescape`` (ON): decode HTML/XML character entities.
+   - ``fix_ligatures`` (ON): decompose Unicode ligatures (ﬁ→fi, ﬂ→fl, etc.).
+   - ``strip_zero_width_chars`` (ON): remove zero-width/invisible Unicode chars.
+   - ``strip_page_numbers`` (ON): remove standalone page-number lines.
+   - ``strip_repetitive_lines`` (**OFF by default**): remove short lines that
+     repeat ≥N times (configurable threshold/max_chars).
 """
 
 from __future__ import annotations
 
+import html
 import re
 import logging
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any
 
@@ -83,6 +93,115 @@ def _repair_heading_hierarchy(text: str) -> str:
 def _strip_trailing_whitespace(text: str) -> str:
     """Right-strip every line."""
     return "\n".join(line.rstrip() for line in text.split("\n"))
+
+
+# ---------------------------------------------------------------------------
+# Builtin extraction-artifact fixes (configurable toggles, all ON by default)
+# ---------------------------------------------------------------------------
+
+# Common Unicode ligatures that PDF extractors emit as single codepoints.
+# Decomposing them to ASCII equivalents improves search and matching.
+_LIGATURE_MAP: dict[str, str] = {
+    "\ufb00": "ff",
+    "\ufb01": "fi",
+    "\ufb02": "fl",
+    "\ufb03": "ffi",
+    "\ufb04": "ffl",
+    "\ufb05": "st",  # long-s-t ligature
+    "\ufb06": "st",
+}
+_LIGATURE_RE = re.compile("[" + "".join(_LIGATURE_MAP.keys()) + "]")
+
+# Zero-width / invisible Unicode characters that serve no purpose in
+# extracted markdown.  BOM, zero-width space/joiner/non-joiner, soft hyphen,
+# word joiner, and several other common PDF extraction artefacts.
+_ZERO_WIDTH_RE = re.compile(
+    "["
+    "\ufeff"   # BOM / ZWNBSP
+    "\u200b"   # zero-width space
+    "\u200c"   # zero-width non-joiner
+    "\u200d"   # zero-width joiner
+    "\u00ad"   # soft hyphen
+    "\u2060"   # word joiner
+    "\u2063"   # invisible separator
+    "\u2064"   # invisible plus
+    "\ufffe"   # non-character
+    "]"
+)
+
+# Regex for standalone page-number lines.
+_RE_PAGE_NUMBER = re.compile(
+    r"^(?:page\s+)?\d+(?:\s*/\s*\d+|\s+of\s+\d+)?\s*$",
+    flags=re.IGNORECASE,
+)
+
+
+def _builtin_html_unescape(text: str) -> str:
+    """Decode all HTML/XML character entities (named, decimal, hex)."""
+    return html.unescape(text)
+
+
+def _builtin_fix_ligatures(text: str) -> str:
+    """Decompose common Unicode ligatures to their ASCII equivalents."""
+    return _LIGATURE_RE.sub(lambda m: _LIGATURE_MAP[m.group()], text)
+
+
+def _builtin_strip_zero_width(text: str) -> str:
+    """Strip zero-width and invisible Unicode characters."""
+    return _ZERO_WIDTH_RE.sub("", text)
+
+
+def _builtin_strip_page_numbers(text: str) -> str:
+    """Remove standalone page-number lines.
+
+    Matches lines like ``3``, ``Page 5``, ``2 / 10``, ``3 of 10``.
+    """
+    lines = text.split("\n")
+    out: list[str] = []
+    for ln in lines:
+        if _RE_PAGE_NUMBER.match(ln.strip()):
+            out.append("")  # blank instead of dropping to preserve line structure
+        else:
+            out.append(ln)
+    return "\n".join(out)
+
+
+def _builtin_strip_repetitive_lines(
+    text: str,
+    *,
+    threshold: int = 8,
+    max_chars: int = 80,
+) -> str:
+    """Remove non-empty lines ≤ *max_chars* that appear ≥ *threshold* times.
+
+    This targets repeated headers, footers, and watermarks that PDF
+    extractors replicate on every page.  The default threshold (8) is
+    deliberately conservative to avoid dropping legitimate repeated
+    content.
+    """
+    lines = text.split("\n")
+    freq: dict[str, int] = {}
+    for ln in lines:
+        s = ln.strip()
+        if not s or len(s) > max_chars:
+            continue
+        freq[s] = freq.get(s, 0) + 1
+    repetitive = {s for s, c in freq.items() if c >= threshold}
+    if not repetitive:
+        return text
+    return "\n".join("" if ln.strip() in repetitive else ln for ln in lines)
+
+
+# Registry of builtin cleanup toggles: config key → function.
+# Order matters — html_unescape should run first (entity decoding may
+# produce characters that the later passes handle).
+_BUILTIN_CLEANUP_REGISTRY: list[tuple[str, Any]] = [
+    ("html_unescape", _builtin_html_unescape),
+    ("fix_ligatures", _builtin_fix_ligatures),
+    ("strip_zero_width_chars", _builtin_strip_zero_width),
+    ("strip_page_numbers", _builtin_strip_page_numbers),
+    ("strip_repetitive_lines", _builtin_strip_repetitive_lines),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +292,24 @@ class CleanupNode:
 
         # 5. Static quality checks (warnings only)
         warnings = _static_checks(cleaned)
+
+        # 6. Builtin extraction-artifact fixes (configurable toggles)
+        builtin_cfg = (config or {}).get("builtin_cleanup", {})
+        for toggle_key, handler in _BUILTIN_CLEANUP_REGISTRY:
+            # Default to True (ON) when the key is absent — EXCEPT
+            # strip_repetitive_lines which defaults to OFF for safety.
+            default_on = toggle_key != "strip_repetitive_lines"
+            if builtin_cfg.get(toggle_key, default_on):
+                before = cleaned
+                # strip_repetitive_lines accepts optional threshold/max_chars
+                if toggle_key == "strip_repetitive_lines":
+                    threshold = int(builtin_cfg.get("repetitive_line_threshold", 8))
+                    max_ch = int(builtin_cfg.get("repetitive_line_max_chars", 80))
+                    cleaned = handler(cleaned, threshold=threshold, max_chars=max_ch)
+                else:
+                    cleaned = handler(cleaned)
+                if cleaned != before:
+                    transforms_applied.append(f"builtin:{toggle_key}")
 
         # --- Config-driven rule engine (Phase 7A) ---
         rules_applied: list[str] = []

@@ -77,6 +77,32 @@ def test_validate_config_shapes_missing_version(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Builtin cleanup validation
+# ---------------------------------------------------------------------------
+
+from atlas.startup_validation import _validate_builtin_cleanup
+
+
+class TestValidateBuiltinCleanup:
+    def test_none_is_valid(self) -> None:
+        _validate_builtin_cleanup(None)  # no error
+
+    def test_empty_dict_is_valid(self) -> None:
+        _validate_builtin_cleanup({})  # no error
+
+    def test_valid_booleans(self) -> None:
+        _validate_builtin_cleanup({"html_unescape": True, "fix_ligatures": False})
+
+    def test_non_dict_raises(self) -> None:
+        with pytest.raises(RuntimeError, match="must be a mapping"):
+            _validate_builtin_cleanup("not a dict")
+
+    def test_non_bool_value_raises(self) -> None:
+        with pytest.raises(RuntimeError, match="must be a boolean"):
+            _validate_builtin_cleanup({"html_unescape": "yes"})
+
+
+# ---------------------------------------------------------------------------
 # Cleanup-rules schema validation
 # ---------------------------------------------------------------------------
 

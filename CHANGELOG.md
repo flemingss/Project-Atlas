@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-03-01
+
+### Added
+- **Refine content-safety guardrails** (`src/atlas/pipeline/refine.py`): Tightened `REFINE_SYSTEM_PROMPT` with explicit "MUST NOT summarise, condense, or omit" instruction. Added `min_preservation_ratio` (default 0.6) — post-refine length check rejects outputs shorter than 60% of the input, falling back to the original text. Bumped `refine_version` to v2. Fixed double system-prompt bug in `_build_prompt()`. Configurable via `pipeline.yaml` `refine_min_preservation_ratio`.
+- **New cleanup builtins** (`src/atlas/pipeline/cleanup.py`): `strip_page_numbers` (ON by default) and `strip_repetitive_lines` (OFF by default) — two new configurable builtin extraction-artifact fixes. Total builtins now five (`html_unescape`, `fix_ligatures`, `strip_zero_width_chars`, `strip_page_numbers`, `strip_repetitive_lines`).
+- **Runner consolidation** (`src/atlas/pipeline/runner.py`): Five shared helpers extracted (`_record_pipeline_node_runs`, `_record_normalize_node_run`, `_persist_markdown_artifact`, `_handle_hitl_pause`, `_commit_chunks_to_qdrant`). Both ingest paths (text + file) rewritten to use shared helpers. 37% line reduction (1572 → 996 lines). All silent `except: pass` blocks replaced with `log.warning`. Hoisted all inline imports to module top.
+- **html_unescape deduplication**: `cleanup_rules._step_html_unescape` now delegates to `cleanup._builtin_html_unescape`, eliminating duplicate logic.
+- 40 new tests in `test_phase_refactors.py`: refine guardrails, normalize boundary, runner consolidation, html_unescape dedup.
+
+### Changed
+- **Normalize refactored to formatting-only** (`src/atlas/rag/normalize.py`): `strip_noise_markdown` removed entirely. Normalize now performs whitespace/line-break formatting only. Page-number stripping and repetitive-line removal moved to cleanup builtins where they belong.
+- **Normalize tracked as node run**: Normalize step now records a pipeline node run for auditability.
+- `startup_validation.py` updated to recognize new builtin keys (`strip_page_numbers`, `strip_repetitive_lines`).
+- Test count: **338 passed** (up from 265 in v0.5.0).
+
 ## [0.5.0] - 2026-02-26
 
 ### Added
@@ -16,7 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Pre-commit hook** (`scripts/pre_commit_config_check.py`): Blocks commits that accidentally stage divergent live config files.
 - **Rule suggestion sanitization** (`src/atlas/rule_suggester.py`): AI-suggested rules are now validated against the schema before display; `validation_errors` list and warning appended to response.
 - 13 new cleanup-rules schema validation tests in `test_startup_validation.py`.
-- **Config-driven cleanup rules engine** (`src/atlas/pipeline/cleanup_rules.py`): Declarative, first-match-wins rule engine for per-corpus / per-mime-type markdown cleanup. Six step handlers: `strip_lines_matching`, `rewrite_pattern`, `strip_headers_footers`, `normalize_headings`, `merge_hardwrapped_paragraphs`, `fix_bullets`. Rules declared in `pipeline.yaml` `cleanup_rules:` section.
+- **Config-driven cleanup rules engine** (`src/atlas/pipeline/cleanup_rules.py`): Declarative, first-match-wins rule engine for per-corpus / per-mime-type markdown cleanup. Seven step handlers: `strip_lines_matching`, `rewrite_pattern`, `strip_headers_footers`, `normalize_headings`, `merge_hardwrapped_paragraphs`, `fix_bullets`, `html_unescape`. Rules declared in `pipeline.yaml` `cleanup_rules:` section.
+- **Builtin extraction-artifact cleanup** (`src/atlas/pipeline/cleanup.py`): Five configurable builtin cleanup toggles (`html_unescape`, `fix_ligatures`, `strip_zero_width_chars`, `strip_page_numbers`, `strip_repetitive_lines`) that run automatically during the Cleanup node before user-defined rules. First three default to ON, last two to OFF. Configured via `pipeline.yaml` `builtin_cleanup:` section.
 - **Cleanup rules integration** (`src/atlas/pipeline/cleanup.py`): `CleanupNode.clean()` now accepts optional `doc_context` and `config` parameters. After built-in transforms, matches and applies the first matching rule from config. Fully backwards compatible — omitting the new params returns identical results.
 - **Rule-tag-aware routing** (`src/atlas/pipeline/routing.py`): `decide_next_step()` reads `rule_tags` from cleanup results. `hard_failure` tag → FAILED, `suspicious_content` tag → HITL escalation, other tags or no tags → standard cleanup→judge path.
 - **CLEANUP→HITL transition** (`src/atlas/pipeline/state.py`): Added HITL to valid transitions from CLEANUP node to support rule-tag-based escalation.

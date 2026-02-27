@@ -15,6 +15,10 @@ thresholds:
   # Composite score at or below which the document is immediately FAILED
   # (skipping refine entirely).  Set to 0 to disable.
   fail_fast_score: 0
+  # Minimum ratio of refined output length to input length.  If the LLM
+  # refine step produces text shorter than input × this ratio, the
+  # refinement is rejected and the original text is kept.
+  refine_min_preservation_ratio: 0.6
   # When true, a document whose formatting sub-score is below cutoff but
   # whose content dimensions are above cutoff is re-routed through CLEANUP
   # instead of REFINE.
@@ -68,6 +72,21 @@ retry:
     max_delay_s: 30.0
 
 # ---------------------------------------------------------------------------
+# Builtin extraction-artifact cleanup (toggles, all ON by default)
+# ---------------------------------------------------------------------------
+# These run automatically during the Cleanup node BEFORE user-defined rules.
+# They fix common PDF/HTML-to-markdown extraction artefacts that are always
+# safe to repair.  Set any toggle to false to disable it.
+builtin_cleanup:
+  html_unescape: true        # Decode HTML entities (&amp; → &, &#8212; → —)
+  fix_ligatures: true         # Decompose ligatures (ﬁ → fi, ﬂ → fl)
+  strip_zero_width_chars: true  # Remove zero-width/invisible Unicode chars
+  strip_page_numbers: true    # Remove standalone page-number lines (Page 3, 2/10, etc.)
+  strip_repetitive_lines: false  # Remove short lines repeating ≥ threshold times (OFF by default)
+  # repetitive_line_threshold: 8   # Min occurrences to consider a line repetitive
+  # repetitive_line_max_chars: 80  # Only lines ≤ this length are candidates
+
+# ---------------------------------------------------------------------------
 # Config-driven cleanup rules (Phase 7A)
 # ---------------------------------------------------------------------------
 # Rules are evaluated in declaration order; the FIRST matching rule is applied
@@ -75,7 +94,8 @@ retry:
 #
 # Supported step kinds:
 #   strip_lines_matching, rewrite_pattern, strip_headers_footers,
-#   normalize_headings, merge_hardwrapped_paragraphs, fix_bullets
+#   normalize_headings, merge_hardwrapped_paragraphs, fix_bullets,
+#   html_unescape
 #
 # cleanup_rules:
 #   - name: pdf_scanned_defaults

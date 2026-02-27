@@ -94,7 +94,7 @@ Notes:
   - writes a durable run ledger row + node runs + artifact refs
   - deterministic chunk IDs (`tenant_id` + `project_id` + `corpus_id` + `doc_id` + `doc_version` + `content_hash` + `chunk_index`)
   - computes and stores `fidelity_flag` on each chunk (verified / partial / low_confidence / needs_review)
-  - normalizes markdown (page-number/noise stripping) before chunking when enabled
+  - normalizes markdown (formatting-only: whitespace and line-break normalization) before chunking
 
 - ✅ `POST /rag/ingest/file`
   - stores the original file as an artifact
@@ -128,16 +128,16 @@ Notes:
 
 - ✅ Pipeline state machine (`PipelineStateManager`) and orchestrator (`PipelineOrchestrator`) under `src/atlas/pipeline/*`
 - ✅ 11-node pipeline: INGEST → CLEANUP → JUDGE → REFINE → METADATA → EMBEDDINGS → CHUNKING → COMMIT (+ HITL, COMPLETED, FAILED)
-- ✅ **Cleanup node** (`pipeline/cleanup.py`): deterministic markdown cleanup between Ingest and Judge. Five built-in transforms (normalise whitespace, strip broken links, repair heading hierarchy, strip trailing whitespace, static checks). Produces `CleanupResult`. Accepts optional `doc_context` and `config` to apply config-driven cleanup rules after built-in transforms.
-- ✅ **Cleanup rules engine** (`pipeline/cleanup_rules.py`): declarative, first-match-wins rule engine for per-corpus / per-mime-type cleanup. Six step handlers: `strip_lines_matching`, `rewrite_pattern`, `strip_headers_footers`, `normalize_headings`, `merge_hardwrapped_paragraphs`, `fix_bullets`. Rules configured in `pipeline.yaml` `cleanup_rules:` section. Rule tags (`hard_failure`, `suspicious_content`, `auto_fix_only`) influence routing decisions.
+- ✅ **Cleanup node** (`pipeline/cleanup.py`): deterministic markdown cleanup between Ingest and Judge. Five built-in transforms (normalise whitespace, strip broken links, repair heading hierarchy, strip trailing whitespace, static checks) plus five configurable builtin extraction-artifact fixes (`html_unescape`, `fix_ligatures`, `strip_zero_width_chars` — ON by default; `strip_page_numbers` — ON by default; `strip_repetitive_lines` — OFF by default; via `builtin_cleanup:` config section). Produces `CleanupResult`. Accepts optional `doc_context` and `config` to apply config-driven cleanup rules after built-in transforms.
+- ✅ **Cleanup rules engine** (`pipeline/cleanup_rules.py`): declarative, first-match-wins rule engine for per-corpus / per-mime-type cleanup. Seven step handlers: `strip_lines_matching`, `rewrite_pattern`, `strip_headers_footers`, `normalize_headings`, `merge_hardwrapped_paragraphs`, `fix_bullets`, `html_unescape`. Rules configured in `pipeline.yaml` `cleanup_rules:` section. Rule tags (`hard_failure`, `suspicious_content`, `auto_fix_only`) influence routing decisions. `html_unescape` handler delegates to the shared builtin implementation.
 - ✅ **Judge node** (`pipeline/judge.py`): multi-dimensional rubric — FAITHFULNESS, FORMATTING, COHESION, HALLUCINATION_RISK (each 1–5). Composite score = rounded mean. Legacy single-SCORE fallback preserved. Versioned `judge_version` (model + prompt hash).
-- ✅ **Refine node**: configurable max retries, triggers HITL when exhausted
+- ✅ **Refine node** (`pipeline/refine.py`): configurable max retries, triggers HITL when exhausted. Content-safety guardrails: tightened system prompt ("MUST NOT summarise, condense, or omit"), `min_preservation_ratio` (default 0.6) rejects outputs shorter than 60% of input. Versioned `refine_version` v2.
 - ✅ **Metadata node**: tiered (tier1 / tier2) with configurable per-doc tier2 cap
 - ✅ **Unified routing** (`pipeline/routing.py`): `decide_next_step()` pure function centralises all branching (fail-fast on composite ≤ `fail_fast_score`, per-dimension floor checks, cleanup-rejudge when formatting is bad but content is OK, standard refine/HITL paths, rule-tag-aware cleanup routing — `hard_failure`→FAILED, `suspicious_content`→HITL). `PipelineStateManager.get_next_node()` delegates here.
 - ✅ **Retry/backoff** (`retry.py`): `RetryConfig` + `async_retry()` / `sync_retry()` decorators. Applied to `openai_compat.py`, `qdrant_store.py`, `docling_adapter.py`. Config-driven per subsystem via `pipeline.yaml` `retry:` section.
 - ✅ **Chunk QA + fallback** (`rag/chunk_qa.py`): post-chunking validation + automatic fallback (semantic→paragraph, hierarchical→paragraph). Bounds configurable via `pipeline.yaml` `chunking.qa:` section.
 - ✅ **Docling health score** (`ingest/docling_health.py`): `compute_health()` evaluates extraction quality signals into a 1–5 composite score, stored on `PipelineContext`.
-- ✅ Pipeline runner is wired into `/rag/ingest/*` endpoints (text + file) and executes the full agentic loop with cleanup, chunk QA fallback, and health scoring
+- ✅ Pipeline runner is wired into `/rag/ingest/*` endpoints (text + file) and executes the full agentic loop with cleanup, chunk QA fallback, and health scoring. Runner consolidated into ~996 lines with 5 shared helpers.
 - ✅ No LangGraph dependency exists today
 
 Notes:
@@ -248,14 +248,15 @@ Rationale:
    - ✅ PDF-specific guardrails (size, page count, timeout, quality gates)
 
 2) **Agentic pipeline (automation loop)**
-   - ✅ Deterministic cleanup node (5 built-in transforms) between Ingest and Judge
-   - ✅ Config-driven cleanup rules engine (6 step handlers, first-match-wins, rule-tag routing)
+   - ✅ Deterministic cleanup node (5 built-in transforms + 5 configurable builtins) between Ingest and Judge
+   - ✅ Config-driven cleanup rules engine (7 step handlers, first-match-wins, rule-tag routing)
    - ✅ Multi-dimensional judge (4 dimensions: faithfulness, formatting, cohesion, hallucination_risk)
    - ✅ Unified routing with fail-fast, per-dimension floor checks, cleanup-rejudge, rule-tag-aware escalation
+   - ✅ Refine content-safety guardrails (min_preservation_ratio, tightened prompt, refine_version v2)
    - ✅ Refine with real provider calls + retry limits
    - ✅ Metadata tiering with enforced caps
    - ✅ Embeddings + chunking + commit integrated as first-class pipeline steps
-   - ✅ Markdown normalization (page-number / noise stripping) before chunking
+   - ✅ Markdown normalization (formatting-only: whitespace and line-break normalization) before chunking
    - ✅ Chunk QA with automatic fallback chain
    - ✅ Retry/backoff on all external calls (LLM, vectorstore, Docling)
    - ✅ Docling health scoring after every ingest
@@ -304,8 +305,8 @@ Rationale:
    - ✅ Durable feedback model (`cleanup_feedback` table) with tenant/project/corpus/doc/chunk scoping
    - ✅ CRUD API under `/admin/cleanup-feedback` for operators to report cleanup quality issues
    - ✅ Category-based aggregation for identifying systematic cleanup problems
-   - 🛠 LLM-assisted rule suggestion (on-demand endpoint to propose new cleanup rules from feedback patterns)
-   - 🛠 Admin UI "Cleanup & Tuning" tab in Streamlit
+   - ✅ LLM-assisted rule suggestion (on-demand endpoint to propose new cleanup rules from feedback patterns)
+   - ✅ Admin UI "Cleanup & Tuning" card in Streamlit
 9) **Operator UI**
    - ✅ Streamlit-based operator console (`ui/app.py`, containerized via `Dockerfile.ui`)
    - ✅ Covers: upload, corpus browsing, HITL review, export, admin controls, Looking Glass views
@@ -379,13 +380,22 @@ This is sequenced to maximize repeatability and minimize fantasy risk.
 
 ### Phase 7 — Config-driven cleanup rules & feedback (v0.5.0)
 
-- ✅ **Phase 7A — Cleanup rules engine**: declarative rule engine (`cleanup_rules.py`) with 6 step handlers, first-match-wins resolution, rule tags influencing routing. `CleanupResult` extended with `rules_applied`, `rules_failed`, `fix_counts`, `rule_tags`. CLEANUP→HITL transition added. 34 new tests.
+- ✅ **Phase 7A — Cleanup rules engine**: declarative rule engine (`cleanup_rules.py`) with 7 step handlers, first-match-wins resolution, rule tags influencing routing. `CleanupResult` extended with `rules_applied`, `rules_failed`, `fix_counts`, `rule_tags`. CLEANUP→HITL transition added. 34 new tests.
 - ✅ **Phase 7B — Feedback capture**: `CleanupFeedback` model + `feedback_ledger.py` CRUD + 5 admin endpoints. 7 new tests.
 - ✅ **Phase 7C — Metrics aggregation**: `GET /admin/looking-glass/metrics` with workflow/node/HITL/feedback aggregation, scoped by tenant/project/corpus. 3 new tests.
-- 🛠 **Phase 7D — LLM-assisted rule suggestion** (deferred): on-demand endpoint that accepts sample markdown + observed issues, calls LLM to suggest cleanup rule YAML.
-- 🛠 **Phase 7E — Admin UI "Cleanup & Tuning" tab** (deferred): Streamlit tab for viewing rules, submitting feedback, viewing metrics, and optionally invoking rule suggestions.
+- ✅ **Phase 7D — LLM-assisted rule suggestion**: on-demand endpoint (`POST /admin/cleanup-rules/suggest`) that accepts sample markdown + observed issues, calls LLM to suggest cleanup rule YAML. Heuristic fallback when LLM unavailable. Deterministic provider branch for CI. 13 new tests in `test_rule_suggestion.py`.
+- ✅ **Phase 7E — Admin UI "Cleanup & Tuning" card**: Streamlit Admin tab card for viewing active rules, submitting feedback, browsing categories, viewing pipeline metrics, and invoking AI-assisted rule suggestion with inline YAML preview.
 
-**Definition of done (7A-7C):** 252 tests passing. Rules engine deterministic and fully backwards compatible. Feedback + metrics endpoints exercised by tests.
+**Definition of done (7A-7E):** All items implemented and tested.
+
+### Phase 8 — Content-safety & codebase refactoring (v0.6.0)
+
+- ✅ **Phase 8A — Refine content-safety guardrails**: Tightened `REFINE_SYSTEM_PROMPT`, added `min_preservation_ratio` (default 0.6), post-refine length check rejects outputs < 60% of input. Bumped `refine_version` to v2. Fixed double system-prompt bug.
+- ✅ **Phase 8B — Normalize/cleanup boundary**: Normalize refactored to formatting-only (whitespace/line-break normalization). `strip_noise_markdown` removed. Page-number stripping and repetitive-line removal moved to cleanup builtins (`strip_page_numbers` ON by default, `strip_repetitive_lines` OFF by default).
+- ✅ **Phase 8C — Runner consolidation**: Five shared helpers extracted. Both ingest paths rewritten to use shared helpers. 37% line reduction (1572 → 996 lines). All silent `except: pass` replaced with `log.warning`. Hoisted inline imports to module top. Normalize tracked as a pipeline node run.
+- ✅ **Phase 8D — Polish**: `html_unescape` dedup (cleanup_rules delegates to cleanup builtin). 40 new tests in `test_phase_refactors.py`.
+
+**Definition of done (8A-8D):** 338 tests passing. Runner consolidated. Refine guardrails prevent content loss. Normalize is formatting-only.
 
 ### Phase 8 — Retrieval-time upgrades (optional / scoped)
 
