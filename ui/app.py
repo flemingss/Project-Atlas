@@ -201,12 +201,6 @@ def _diag_bundle(api_base: str) -> str:
     }
     return json.dumps(bundle, indent=2, ensure_ascii=False) + "\n"
 
-def _safe_text(text: str, *, max_len: int = 2000) -> str:
-    t = text or ""
-    if len(t) <= max_len:
-        return t
-    return t[:max_len] + "..."
-
 
 def _request_json_diag(
     *,
@@ -314,6 +308,7 @@ def main() -> None:
                 st.session_state["group_registry"] = _load_group_registry(api, admin_headers)
             reg = st.session_state.get("group_registry", {"tenants": [], "projects": [], "corpora": []})
 
+            # -- Workspace selector --
             tenant_options = [str(t.get("tenant_id") or "") for t in reg.get("tenants", []) if str(t.get("tenant_id") or "").strip()]
             if default_tenant not in tenant_options:
                 tenant_options = [default_tenant, *tenant_options] if default_tenant else tenant_options
@@ -321,10 +316,25 @@ def main() -> None:
                 tenant_options = [default_tenant]
             sel_tenant = st.selectbox(theme.LABEL_WORKSPACE, options=tenant_options, index=0, label_visibility="collapsed")
 
+            # -- Project selector (filtered by workspace) --
+            project_options = [
+                str(p.get("project_id") or "")
+                for p in reg.get("projects", [])
+                if str(p.get("tenant_id") or "") == sel_tenant
+                and str(p.get("project_id") or "").strip()
+            ]
+            if default_project not in project_options:
+                project_options = [default_project, *project_options] if default_project else project_options
+            if not project_options:
+                project_options = [default_project]
+            sel_project = st.selectbox(theme.LABEL_PROJECT, options=project_options, index=0)
+
+            # -- Collection selector (filtered by workspace + project) --
             corpus_options = [
                 str(c.get("corpus_id") or "")
                 for c in reg.get("corpora", [])
                 if str(c.get("tenant_id") or "") == sel_tenant
+                and str(c.get("project_id") or "") == sel_project
                 and str(c.get("corpus_id") or "").strip()
             ]
             if default_corpus not in corpus_options:
@@ -333,30 +343,34 @@ def main() -> None:
                 corpus_options = [default_corpus]
             sel_corpus = st.selectbox(theme.LABEL_COLLECTION, options=corpus_options, index=0)
 
-            sel_project = default_project
-            for c in reg.get("corpora", []):
-                if str(c.get("tenant_id") or "") == sel_tenant and str(c.get("corpus_id") or "") == sel_corpus:
-                    sel_project = str(c.get("project_id") or default_project)
-                    break
-
             st.session_state["scope_tenant_id"] = sel_tenant
             st.session_state["scope_project_id"] = sel_project
             st.session_state["scope_corpus_id"] = sel_corpus
 
             st.markdown(
                 f'<div class="atlas-workspace-banner">'
-                f'<strong>{sel_tenant}</strong> / <strong>{sel_corpus}</strong>'
+                f'<strong>{sel_tenant}</strong> / <strong>{sel_project}</strong> / <strong>{sel_corpus}</strong>'
                 f'</div>',
                 unsafe_allow_html=True,
             )
         else:
             st.session_state["scope_tenant_id"] = st.text_input(theme.LABEL_WORKSPACE, value=default_tenant)
-            st.session_state["scope_project_id"] = st.text_input("Project", value=default_project)
+            st.session_state["scope_project_id"] = st.text_input(theme.LABEL_PROJECT, value=default_project)
             st.session_state["scope_corpus_id"] = st.text_input(theme.LABEL_COLLECTION, value=default_corpus)
 
         tenant_id = str(st.session_state.get("scope_tenant_id", default_tenant))
         project_id = str(st.session_state.get("scope_project_id", default_project))
         corpus_id = str(st.session_state.get("scope_corpus_id", default_corpus))
+
+        # -- Scope-change cache invalidation ----------------------------------
+        # When the user switches workspace, project, or collection, any cached
+        # data from the previous scope (runs, HITL tasks, library docs) must be
+        # discarded so stale cross-scope results are never shown.
+        _current_scope = (tenant_id, project_id, corpus_id)
+        if st.session_state.get("_last_scope") != _current_scope:
+            for _stale_key in ("runs_cache", "hitl_tasks", "hitl_current", "lib_docs"):
+                st.session_state.pop(_stale_key, None)
+            st.session_state["_last_scope"] = _current_scope
 
         # -- Status -----------------------------------------------------------
         # Auto-connect on first load when env token is populated so the
@@ -443,7 +457,7 @@ def main() -> None:
                 st.caption("Tip: Set `ATLAS_ADMIN_TOKEN` as an environment variable and the console will auto-connect on load.")
 
             # Step 2 — Workspace (always done)
-            components.checklist_item(True, "2.", "Choose a workspace", "Pick where your documents will live.")
+            components.checklist_item(True, "2.", "Choose a workspace and project", "Select your scope in the sidebar to organise documents.")
 
             # Step 3 — Upload
             components.checklist_item(_has_docs, "3.", "Upload your first document", "Go to the Upload tab and add a file or paste text.")
@@ -524,6 +538,13 @@ def main() -> None:
                     key="upload_text_mime",
                 )
 
+                text_is_finalized = st.checkbox(
+                    theme.LABEL_MAKE_SEARCH,
+                    value=bool(st.session_state.get("last_is_finalized", True)),
+                    help="When enabled, this document will appear in search results once processing completes.",
+                    key="upload_text_is_finalized",
+                )
+
                 do_upload = False
                 can_upload_text = bool((text_doc_name or "").strip()) and bool((text or "").strip())
                 do_text = components.primary_button("Upload and index", key="upload_text_btn", disabled=not can_upload_text)
@@ -565,10 +586,17 @@ def main() -> None:
                 text_doc_id = _stable_doc_id_from_name(
                     f"{(corpus_id or '').strip()}:{((text_doc_name or '').strip() or 'Quick note')}"
                 )
-                text_doc_version = st.text_input(
+                adv_txt_col1, adv_txt_col2 = st.columns(theme.COL_HALF)
+                text_doc_version = adv_txt_col1.text_input(
                     "Version",
                     value=st.session_state.get("last_text_doc_version", "1"),
                     key="upload_text_doc_version",
+                )
+                text_is_sensitive = adv_txt_col2.checkbox(
+                    theme.LABEL_SENSITIVE,
+                    value=bool(st.session_state.get("last_is_sensitive", True)),
+                    help="If enabled, the pipeline may route content to human review.",
+                    key="upload_text_is_sensitive",
                 )
                 st.caption(f"Auto-generated ID: `{text_doc_id}`")
 
@@ -656,7 +684,7 @@ def main() -> None:
                             method="GET",
                             url=f"{api}/admin/runs",
                             headers=admin_headers,
-                            params={"limit": 50},
+                            params={"limit": 50, "tenant_id": tenant_id, "project_id": project_id},
                         )
                         if r_resp.status_code < 400 and isinstance(r_data, list):
                             for r in r_data:
@@ -679,8 +707,10 @@ def main() -> None:
                 components.detail_expander("Full response (JSON)", data=payload)
 
         if upload_mode == "Write or paste content" and do_text:
-            is_finalized = bool(st.session_state.get("last_is_finalized", True))
-            is_sensitive = bool(st.session_state.get("last_is_sensitive", True))
+            is_finalized = bool(text_is_finalized)
+            is_sensitive = bool(text_is_sensitive)
+            st.session_state["last_is_finalized"] = is_finalized
+            st.session_state["last_is_sensitive"] = is_sensitive
             st.session_state["last_text_doc_name"] = text_doc_name
             st.session_state["last_text_doc_version"] = text_doc_version
             st.session_state["last_doc_id"] = text_doc_id
@@ -743,7 +773,7 @@ def main() -> None:
                         method="GET",
                         url=f"{api}/admin/runs",
                         headers=admin_headers,
-                        params={"limit": int(limit)},
+                        params={"limit": int(limit), "tenant_id": tenant_id, "project_id": project_id},
                     )
                     st.session_state["runs_cache"] = (resp.status_code, data, resp.text)
 
@@ -939,7 +969,7 @@ def main() -> None:
                     method="GET",
                     url=f"{api}/admin/hitl/tasks",
                     headers=admin_headers,
-                    params={"limit": 200, "status": "pending"},
+                    params={"limit": 200, "status": "pending", "tenant_id": tenant_id, "project_id": project_id},
                 )
                 if _auto_resp.status_code < 400:
                     st.session_state["hitl_tasks"] = _auto_data or []
@@ -1013,6 +1043,34 @@ def main() -> None:
                             f'</div>',
                             unsafe_allow_html=True,
                         )
+
+                    # -- Rich judge/refine context (surfaced from task meta) --
+                    _task_meta = current.get("meta") or {}
+                    _sub_scores = _task_meta.get("judge_sub_scores", {})
+                    _judge_rationale = _task_meta.get("judge_rationale", "")
+                    _score_history = _task_meta.get("judge_score_history", [])
+                    _refine_retries = _task_meta.get("refine_retries", 0)
+                    _refine_total = _task_meta.get("refine_total_attempts", 0)
+                    _last_improvements = _task_meta.get("last_refine_improvements", [])
+
+                    if _sub_scores or _judge_rationale or _score_history:
+                        with st.expander("Judge & refine context", expanded=False):
+                            if _sub_scores:
+                                st.markdown("**Per-dimension scores:**")
+                                _score_parts = []
+                                for _dim, _s in _sub_scores.items():
+                                    _label = _dim.replace("_", " ").title()
+                                    _colour = theme.DANGER if _s <= 2 else ("#E6A817" if _s <= 3 else theme.SUCCESS)
+                                    _score_parts.append(f'<span style="color:{_colour};font-weight:600;">{_label}: {_s}/5</span>')
+                                st.markdown(" &nbsp;|&nbsp; ".join(_score_parts), unsafe_allow_html=True)
+                            if _judge_rationale:
+                                st.markdown(f"**Rationale:** {_judge_rationale}")
+                            if _score_history:
+                                st.markdown(f"**Score history:** {' → '.join(str(s) for s in _score_history)}")
+                            if _refine_retries or _refine_total:
+                                st.caption(f"Refine attempts: {_refine_retries} successful, {_refine_total} total")
+                            if _last_improvements:
+                                st.caption(f"Last improvements: {', '.join(_last_improvements)}")
 
                     # A5 — Render Before as rich markdown; keep After editable
                     left, right = st.columns(theme.COL_HALF)
@@ -1092,7 +1150,22 @@ def main() -> None:
                         except Exception:
                             pass  # Resume is best-effort; review is already saved
 
-                        st.success("Review saved and pipeline resumed! Loading next...")
+                        # Check resume outcome for user feedback
+                        _resume_ok = True
+                        try:
+                            if _resume_resp.status_code >= 400:
+                                _resume_ok = False
+                        except NameError:
+                            _resume_ok = False
+
+                        if _resume_ok:
+                            st.success("Review saved and pipeline resumed! Loading next...")
+                        else:
+                            st.warning(
+                                "Review saved, but the pipeline could not be resumed "
+                                "(it may have reached the maximum resume limit). "
+                                "An admin can inspect the run for details."
+                            )
                         st.session_state["hitl_last_action"] = "approved"
                         st.session_state.pop("hitl_current", None)
                         st.session_state.pop("hitl_tasks", None)
@@ -1150,7 +1223,7 @@ def main() -> None:
                 fq_limit = fq_col2.number_input("Max rows", min_value=1, max_value=500, value=100, key="hitl_limit")
 
                 if st.button("Refresh queue", use_container_width=True, key="hitl_refresh_queue"):
-                    params: dict[str, Any] = {"limit": int(fq_limit)}
+                    params: dict[str, Any] = {"limit": int(fq_limit), "tenant_id": tenant_id, "project_id": project_id}
                     if status:
                         params["status"] = status
                     with st.spinner("Loading..."):
@@ -2256,11 +2329,57 @@ def main() -> None:
 
                     st.divider()
                     components.card_section("Create new")
+                    st.caption(
+                        "Groups follow a hierarchy: **Workspace → Project → Collection**. "
+                        "Create them in that order — a Project requires an existing Workspace, "
+                        "and a Collection requires an existing Project."
+                    )
                     create_kind = st.selectbox("Type", options=["Workspace", "Project", "Collection"], key="adm_scope_create_kind")
+
+                    # Show parent-scope context so user knows what they're creating inside.
+                    _ck = (create_kind or "").strip().lower()
+                    _has_tenant = tenant_id in [str(t.get("tenant_id") or "") for t in reg.get("tenants", [])]
+                    _proj_list = [
+                        p for p in reg.get("projects", [])
+                        if str(p.get("tenant_id") or "") == tenant_id
+                    ]
+                    _has_project = project_id in [str(p.get("project_id") or "") for p in _proj_list]
+
+                    if _ck == "project":
+                        if _has_tenant:
+                            st.info(f"Will create inside workspace **{tenant_id}**  (selected in sidebar).")
+                        else:
+                            st.warning(
+                                f"Workspace **{tenant_id}** does not exist yet. "
+                                "Create the Workspace first, then create a Project inside it."
+                            )
+                    elif _ck == "collection":
+                        _problems: list[str] = []
+                        if not _has_tenant:
+                            _problems.append(f"Workspace **{tenant_id}** does not exist.")
+                        if not _has_project:
+                            _problems.append(f"Project **{project_id}** does not exist in workspace **{tenant_id}**.")
+                        if _problems:
+                            st.warning(
+                                " ".join(_problems) + " Create the missing parent(s) first."
+                            )
+                        else:
+                            st.info(
+                                f"Will create inside workspace **{tenant_id}** / project **{project_id}**  (selected in sidebar)."
+                            )
+
                     new_id = st.text_input("ID", value="", key="adm_scope_create_id")
                     new_name = st.text_input("Display name (optional)", value="", key="adm_scope_create_name")
-                    if components.secondary_button("Create", disabled=not bool((new_id or "").strip()), key="adm_scope_create_btn"):
-                        kind = (create_kind or "").strip().lower()
+
+                    # Block creation if required parent is missing.
+                    _create_blocked = not bool((new_id or "").strip())
+                    if _ck == "project" and not _has_tenant:
+                        _create_blocked = True
+                    if _ck == "collection" and (not _has_tenant or not _has_project):
+                        _create_blocked = True
+
+                    if components.secondary_button("Create", disabled=_create_blocked, key="adm_scope_create_btn"):
+                        kind = _ck
                         if kind == "workspace":
                             ok, msg = _create_scope_entry(
                                 api=api, admin_headers=admin_headers,

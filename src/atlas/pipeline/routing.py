@@ -31,10 +31,15 @@ class RoutingDecision:
         The target PipelineNode *value* (e.g. ``"judge"``, ``"failed"``).
     reason : str
         Short human-readable explanation of why this route was chosen.
+    rollback : bool
+        If ``True``, the caller should revert any state changes made by
+        the most recent processing node (e.g. revert markdown after a
+        score-regressing refine attempt).
     """
 
     target: str
     reason: str
+    rollback: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +111,7 @@ def decide_next_step(
         refine_retries = int(state_snapshot.get("refine_retries", 0))
         max_retries = int(state_snapshot.get("max_refine_retries", 2))
         needs_hitl = bool(state_snapshot.get("needs_hitl", False))
+        score_history: list[int] = list(state_snapshot.get("judge_score_history", []))
 
         # Fail-fast: if composite is at or below hard floor, skip refine
         if fail_fast_score and composite <= fail_fast_score:
@@ -126,13 +132,58 @@ def decide_next_step(
 
         # Cleanup-and-rejudge: formatting bad but content OK → route back through cleanup
         cleanup_rejudge_enabled = bool(thresholds.get("cleanup_rejudge", False))
-        if cleanup_rejudge_enabled and sub:
+        cleanup_rejudge_done = int(state_snapshot.get("cleanup_rejudge_count", 0))
+        if cleanup_rejudge_enabled and sub and cleanup_rejudge_done < 1:
             formatting_score = sub.get("formatting", composite)
-            content_ok = all(sub.get(d, composite) >= judge_cutoff for d in ("faithfulness", "cohesion"))
+            content_ok = all(
+                sub.get(d, composite) >= judge_cutoff
+                for d in ("faithfulness", "cohesion", "hallucination_risk")
+            )
             if formatting_score < judge_cutoff and content_ok and refine_retries < max_retries:
                 return RoutingDecision(
                     target="cleanup",
                     reason=f"Formatting sub-score {formatting_score} low but content OK — re-clean & re-judge",
+                )
+
+        # ----- M7: Score regression rollback -----
+        # If a refine attempt made things WORSE (score dropped), stop
+        # refining and proceed — the orchestrator will revert to the
+        # pre-refine markdown.
+        if len(score_history) >= 2 and refine_retries > 0:
+            prev_score = score_history[-2]
+            if composite < prev_score:
+                # If the pre-refine score was itself below cutoff, escalate
+                # to HITL rather than letting a bad document through.
+                if prev_score < judge_cutoff:
+                    return RoutingDecision(
+                        target="hitl",
+                        reason=(
+                            f"Score regressed after refine ({prev_score}→{composite}) "
+                            f"and pre-refine score still below cutoff; escalating"
+                        ),
+                        rollback=True,
+                    )
+                return RoutingDecision(
+                    target="metadata",
+                    reason=(
+                        f"Score regressed after refine ({prev_score}→{composite}); "
+                        f"reverting to pre-refine markdown and proceeding"
+                    ),
+                    rollback=True,
+                )
+
+        # ----- M6: Diminishing-returns detection -----
+        # If the last refine attempt did NOT improve the score, stop
+        # looping.  The LLM is unlikely to do better on a repeat.
+        if len(score_history) >= 2 and refine_retries > 0:
+            prev_score = score_history[-2]
+            if composite <= prev_score and composite < judge_cutoff:
+                return RoutingDecision(
+                    target="hitl",
+                    reason=(
+                        f"Diminishing returns: score unchanged after refine "
+                        f"({prev_score}→{composite}); escalating to HITL"
+                    ),
                 )
 
         # Standard refine path

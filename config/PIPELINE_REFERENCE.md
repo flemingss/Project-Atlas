@@ -109,7 +109,7 @@ Controls quality gating and routing decisions in the agentic loop.
 | `judge_cutoff_refine` | `int` | `4` | Composite judge score below which a document routes to the Refine node. Score ≥ cutoff passes to Metadata. |
 | `fail_fast_score` | `int` | `0` | Composite score at or below which the document is immediately **failed** (skipping refine entirely). `0` disables fail-fast. |
 | `judge_dim_floors` | `map[str, int]` | `{}` | Per-dimension minimum scores. If **any** dimension falls below its floor, the document routes to Refine regardless of composite score. Set a dimension to `0` to disable its floor. |
-| `cleanup_rejudge` | `bool` | `false` | When `true`, a document whose `formatting` sub-score is below cutoff but whose content dimensions (`faithfulness`, `cohesion`, `hallucination_risk`) are all acceptable is re-routed through **Cleanup** instead of Refine. |
+| `cleanup_rejudge` | `bool` | `true` | When `true`, a document whose `formatting` sub-score is below cutoff but whose content dimensions (`faithfulness`, `cohesion`, `hallucination_risk`) are all acceptable is re-routed through **Cleanup** instead of Refine. Cycle-guarded: at most one cleanup-rejudge per document. |
 | `judge_borderline_low` | `int` | `3` | Reserved for future borderline handling logic. Not consumed in current code. |
 | `judge_borderline_high` | `int` | `4` | Reserved for future borderline handling logic. Not consumed in current code. |
 | `refine_max_retries` | `int` | `2` | **Legacy location.** Prefer `limits.refine_max_retries`. Read as fallback. |
@@ -123,10 +123,10 @@ thresholds:
   fail_fast_score: 0
   judge_dim_floors:
     faithfulness: 3
-    formatting: 0      # disabled
-    cohesion: 0         # disabled
+    formatting: 2
+    cohesion: 2
     hallucination_risk: 3
-  cleanup_rejudge: false
+  cleanup_rejudge: true
 ```
 
 ---
@@ -137,13 +137,13 @@ Hard caps on pipeline behaviour.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `refine_max_retries` | `int` | `2` | Maximum Refine→Judge loop iterations before the document escalates to HITL review. |
+| `refine_max_retries` | `int` | `3` | Maximum Refine→Judge loop iterations before the document escalates to HITL review. Only successful refinements count; failed attempts are tracked separately with a 2× circuit-breaker hard cap. |
 | `tier2_chunk_cap_per_document` | `int` | `25` | Maximum chunks per document that receive Tier-2 (expensive model) metadata enrichment. Also read from legacy key `metadata_tier2_cap_per_doc`. |
 | `chunk_max_chars` | `int` | `1000` | Safety-valve maximum characters per chunk. Used primarily by the `paragraph` chunking strategy. |
 
 ```yaml
 limits:
-  refine_max_retries: 2
+  refine_max_retries: 3
   tier2_chunk_cap_per_document: 25
   chunk_max_chars: 1000
 ```
@@ -455,6 +455,36 @@ Convert setext-style headings to ATX-style. No parameters.
 - kind: normalize_headings
 ```
 
+#### `fix_numbered_headings`
+
+Correct ATX heading levels based on dot-delimited section numbers.  Counts the
+numeric segments in the identifier and sets the heading level accordingly.
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `max_level` | `int` | `6` | Maximum heading depth. Segments beyond this are clamped (e.g. 7 segments → H6). |
+
+| Before | After |
+|---|---|
+| `## 1 Title` | `# 1 Title` |
+| `## 1.11 Title` | `## 1.11 Title` |
+| `## 1.1.8 Title` | `### 1.1.8 Title` |
+| `## 1.2.3.4 Title` | `#### 1.2.3.4 Title` |
+
+```yaml
+- kind: fix_numbered_headings
+```
+
+Or with a custom max depth:
+
+```yaml
+- kind: fix_numbered_headings
+  max_level: 4
+```
+
+> **Tip:** Place this step *after* `normalize_headings` so that setext headings
+> are converted to ATX first, then their levels are corrected.
+
 #### `merge_hardwrapped_paragraphs`
 
 Join hard-wrapped lines (lines that don't end with a sentence terminator or
@@ -605,21 +635,37 @@ cleanup_rules:
 
 ```
 Ingest → Cleanup → Judge → Refine* → Metadata → Embeddings → Chunking → Commit
-                              ↑         |
-                              └─────────┘  (retry loop, max = limits.refine_max_retries)
+                     ↑        ↑         |
+                     │        └─────────┘  (retry loop, max = limits.refine_max_retries)
+                     └── cleanup-rejudge (max 1 cycle)
 ```
 
 - **Ingest** — Document conversion via Docling (PDF/DOCX/HTML → Markdown).
 - **Cleanup** — Built-in transforms + config-driven rule engine.
-- **Judge** — LLM grades quality on 4 dimensions (1–5 each).
-- **Refine** — LLM rewrites the document to improve quality (if score < cutoff).
+- **Judge** — LLM grades quality on 4 dimensions (1–5 each). Per-dimension rationale for scores below 4.
+- **Refine** — LLM rewrites the document to improve quality (if score < cutoff). Receives judge sub-scores, rationale, and iteration context.
 - **Metadata** — LLM generates tiered metadata tags.
 - **Embeddings** — Vector generation via embedding model.
 - **Chunking** — Split markdown into chunks (with QA checks + fallback).
 - **Commit** — Upsert chunks + vectors to Qdrant.
 
 **HITL** (Human-in-the-Loop) can be triggered at any decision point. The
-pipeline pauses and waits for human review before resuming.
+pipeline pauses and waits for human review before resuming. HITL tasks
+include rich context (judge sub-scores, rationale, score history, refine
+attempts). Resume is guarded by `MAX_HITL_RESUMES=2` to prevent infinite
+HITL→pipeline→HITL loops.
+
+**Routing intelligence (v0.7.0):**
+- **Score regression rollback** — if refine makes the score worse, the
+  markdown is rolled back to the pre-refine version. Routes to Metadata
+  if pre-refine score was acceptable, or to HITL otherwise.
+- **Diminishing returns** — if a refine attempt produces no score change,
+  the loop stops and escalates to HITL.
+- **Failed refines don't burn retries** — only successful refinements count
+  against `refine_max_retries`. A hard cap at 2× max retries prevents
+  infinite failure loops.
+- **Cleanup-rejudge cycle guard** — at most one cleanup→judge→cleanup
+  cycle per document.
 
 ---
 
@@ -634,7 +680,10 @@ pipeline pauses and waits for human review before resuming.
 | Cleanup | Default | Judge | — |
 | Judge | Composite score ≤ `fail_fast_score` | **Failed** | `thresholds.fail_fast_score` |
 | Judge | Any dimension < its floor | Refine | `thresholds.judge_dim_floors` |
-| Judge | Formatting low + content OK + `cleanup_rejudge` | Cleanup | `thresholds.cleanup_rejudge` |
+| Judge | Formatting low + content OK + `cleanup_rejudge` (max 1 cycle) | Cleanup | `thresholds.cleanup_rejudge` |
+| Judge | Score regressed after refine + pre-refine score ≥ cutoff | Metadata (with **rollback** to pre-refine markdown) | — |
+| Judge | Score regressed after refine + pre-refine score < cutoff | **HITL** (with **rollback** to pre-refine markdown) | — |
+| Judge | Score unchanged after refine (diminishing returns) | **HITL** | — |
 | Judge | Composite < cutoff + retries left | Refine | `thresholds.judge_cutoff_refine` |
 | Judge | Composite < cutoff + retries exhausted | **HITL** | `limits.refine_max_retries` |
 | Judge | Score acceptable | Metadata | — |

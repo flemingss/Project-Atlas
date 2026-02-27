@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-02-28
+
+### Added
+- **Rich judge feedback to refine** (`src/atlas/pipeline/refine.py`, `orchestrator.py`): Refine node now receives judge sub-scores, rationale, and iteration context ("Attempt X of Y — be thorough"). System prompt updated to reference per-dimension feedback. Orchestrator passes full judge result (sub_scores, confidence_rationale) to refine.
+- **Per-dimension judge rationale** (`src/atlas/pipeline/judge.py`): Judge prompt expanded — rationale now covers each dimension scoring below 4 with specific issues and improvement guidance, replacing the previous single-sentence format.
+- **Mixed-score few-shot example** (`src/atlas/pipeline/judge.py`): Added a fourth few-shot example with realistic mixed scores (faithfulness=5, formatting=2, cohesion=4, hallucination_risk=5) to teach the model that dimensions are independent.
+- **Diminishing-returns detection** (`src/atlas/pipeline/routing.py`): If a refine attempt produces no score improvement (score unchanged), routing stops the loop and escalates to HITL instead of wasting retries.
+- **Score regression rollback** (`src/atlas/pipeline/routing.py`, `state.py`): If a refine attempt makes the score worse, routing reverts the markdown to the pre-refine version. Routes to HITL if pre-refine score was also below cutoff; otherwise proceeds to metadata.
+- **`RoutingDecision.rollback` field** (`src/atlas/pipeline/routing.py`): New `rollback: bool` flag on the frozen dataclass — replaces fragile string-matching for rollback detection.
+- **Judge score history tracking** (`src/atlas/pipeline/state.py`): `PipelineContext.set_judge_result()` now maintains a `judge_score_history` list for routing decisions.
+- **Pre-refine markdown preservation** (`src/atlas/pipeline/state.py`): `set_refine_result()` saves `pre_refine_markdown` in results for regression rollback.
+- **Cleanup-rejudge cycle guard** (`src/atlas/pipeline/routing.py`, `state.py`): `cleanup_rejudge_count` tracked and capped at 1 to prevent infinite cleanup→judge→cleanup loops.
+- **Rich HITL task context** (`src/atlas/pipeline/runner.py`): HITL tasks now store `judge_sub_scores`, `judge_rationale`, `judge_score_history`, `refine_retries`, `refine_total_attempts`, `last_refine_improvements`, and `last_refine_success` in task meta.
+- **HITL resume loop guard** (`src/atlas/pipeline/runner.py`): `MAX_HITL_RESUMES=2` prevents infinite HITL→pipeline→HITL loops. Resume count tracked in `WorkflowRun.meta["hitl_resume_count"]`.
+- **HITL rich context display** (`ui/app.py`): Review tab now surfaces judge sub-scores (colour-coded), rationale, score history, and refine attempt stats in a collapsible "Judge & refine context" panel.
+- **Scope-change cache invalidation** (`ui/app.py`): Switching workspace, project, or collection now automatically clears stale cached data (runs, HITL tasks, library docs) to prevent cross-scope data leaks.
+- **HITL resume failure feedback** (`ui/app.py`): Resume response status is now checked — user sees a clear warning if pipeline cannot be resumed (e.g., max resumes reached) instead of a false success message.
+
+### Changed
+- **Judge error fallback**: Changed from `score=1` / `needs_refinement=True` to `score=3` / `needs_refinement=False` — transient LLM failures no longer burn refine retries.
+- **Failed refines don't burn retries** (`src/atlas/pipeline/state.py`): `set_refine_result()` only increments `refine_retries` on successful refinements. Hard cap circuit breaker at 2× `max_refine_retries` total attempts prevents infinite failure loops.
+- **`JUDGE→CLEANUP` transition added** (`src/atlas/pipeline/state.py`): `valid_transitions` now allows JUDGE→CLEANUP for the `cleanup_rejudge` path.
+- **`hallucination_risk` in cleanup-rejudge** (`src/atlas/pipeline/routing.py`): `content_ok` check for cleanup-rejudge now includes `hallucination_risk` alongside `faithfulness` and `cohesion`.
+- **`max_refine_retries` config source fixed** (`src/atlas/pipeline/runner.py`): Now reads from `limits.refine_max_retries` (correct section) with backwards-compat fallback to `thresholds`.
+- **Config defaults updated** (`config/pipeline.yaml`, `pipeline.yaml.example`): `cleanup_rejudge: true` (was `false`), `formatting` floor: `2` (was `0`), `cohesion` floor: `2` (was `0`), `refine_max_retries: 3` (example synced to match).
+- **UI: Project dropdown** in sidebar between Workspace and Collection with cascading filters.
+- **UI: Scope-filtered API calls** — `/admin/runs` and `/admin/hitl/tasks` now pass `tenant_id` and `project_id`.
+- **UI: Text-mode upload** — `is_finalized` and `is_sensitive` checkboxes added (previously file-mode only).
+- **UI: Groups create form** — hierarchy guidance and disabled Create button when parent entities missing.
+- Test count: **358 passed** (up from 348 in v0.6.0).
+
 ## [0.6.0] - 2026-03-01
 
 ### Added

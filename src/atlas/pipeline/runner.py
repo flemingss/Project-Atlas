@@ -355,6 +355,26 @@ def _handle_hitl_pause(
             session.commit()
 
         judge_score = float(ctx.state.mean_judge_score or 0.0)
+
+        # Build rich HITL context from pipeline results so human reviewers
+        # see exactly what the LLM judge found and what refine attempted.
+        judge_result = ctx.results.get("judge", {})
+        hitl_meta: dict[str, Any] = {
+            "source": "pipeline",
+            "config": source_info,
+            "corpus_id": corpus_id,
+            "judge_sub_scores": judge_result.get("sub_scores", {}),
+            "judge_rationale": judge_result.get("confidence_rationale", ""),
+            "judge_score_history": ctx.results.get("judge_score_history", []),
+            "refine_retries": ctx.state.refine_retries,
+            "refine_total_attempts": ctx.results.get("refine_total_attempts", 0),
+        }
+        # Include routing reason if available
+        refine_result = ctx.results.get("refine", {})
+        if refine_result:
+            hitl_meta["last_refine_improvements"] = refine_result.get("improvements_made", [])
+            hitl_meta["last_refine_success"] = refine_result.get("success", False)
+
         create_hitl_task(
             session,
             req=HitlTaskCreateRequest(
@@ -367,7 +387,7 @@ def _handle_hitl_pause(
                 is_sensitive=bool(is_sensitive),
                 judge_score=judge_score,
                 before_md=ctx.state.markdown_projection,
-                meta={"source": "pipeline", "config": source_info, "corpus_id": corpus_id},
+                meta=hitl_meta,
             ),
         )
 
@@ -686,7 +706,12 @@ async def ingest_text_via_pipeline(
         project_id=project_id,
         corpus_id=corpus_id,
         source_mime_type=source_mime_type,
-        max_refine_retries=int(pipeline_cfg.get("thresholds", {}).get("refine_max_retries", 2)),
+        max_refine_retries=int(
+            (pipeline_cfg.get("limits") or {}).get(
+                "refine_max_retries",
+                (pipeline_cfg.get("thresholds") or {}).get("refine_max_retries", 2),
+            )
+        ),
     )
     ctx.state.markdown_projection = ingest_res.markdown_projection
 
@@ -951,7 +976,12 @@ async def ingest_file_via_pipeline(
         project_id=project_id,
         corpus_id=corpus_id,
         source_mime_type=source_mime_type,
-        max_refine_retries=int(pipeline_cfg.get("thresholds", {}).get("refine_max_retries", 2)),
+        max_refine_retries=int(
+            (pipeline_cfg.get("limits") or {}).get(
+                "refine_max_retries",
+                (pipeline_cfg.get("thresholds") or {}).get("refine_max_retries", 2),
+            )
+        ),
     )
     ctx.state.markdown_projection = ingest_res.markdown_projection
 
@@ -1032,7 +1062,14 @@ async def resume_completed_hitl_task(
     session_factory: sessionmaker[Session],
     task_id: int,
 ) -> dict[str, Any]:
-    """Resume a pipeline run from a completed HITL task and commit finalized chunks."""
+    """Resume a pipeline run from a completed HITL task and commit finalized chunks.
+
+    Guards against infinite HITL loops by tracking a resume counter.  If the
+    same run has already been resumed ``MAX_HITL_RESUMES`` times, the resume
+    is rejected to prevent unbounded re-processing.
+    """
+    MAX_HITL_RESUMES = 2
+
     from atlas.hitl_ledger import get_hitl_task
 
     with session_factory() as session:
@@ -1051,6 +1088,17 @@ async def resume_completed_hitl_task(
         if run.status == "completed":
             raise ValueError("pipeline run already completed; cannot resume a completed run")
 
+        # Guard against infinite HITL loops: track how many times this run
+        # has been resumed.  If it exceeds the limit, refuse.
+        m = run.meta or {}
+        resume_count = int(m.get("hitl_resume_count", 0))
+        if resume_count >= MAX_HITL_RESUMES:
+            raise ValueError(
+                f"pipeline run has been resumed {resume_count} times "
+                f"(max {MAX_HITL_RESUMES}); refusing to resume again to "
+                f"prevent infinite HITL loops"
+            )
+
         settings = Settings()
         is_finalized = bool((run.meta or {}).get("is_finalized", True))
         source_mime_type = str((run.meta or {}).get("source_mime_type", "text/plain"))
@@ -1067,9 +1115,9 @@ async def resume_completed_hitl_task(
         run.status = "running"
         run.current_node = "ingest"
         # Record resume provenance in run metadata.
-        m = run.meta or {}
         m["hitl_task_id"] = int(task_id)
         m["resumed_at"] = resumed_at
+        m["hitl_resume_count"] = resume_count + 1
         run.meta = m
         # Record resume timestamp on the HITL task itself (best-effort).
         try:

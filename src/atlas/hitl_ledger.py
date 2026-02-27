@@ -113,10 +113,16 @@ def list_hitl_tasks(
     *,
     status: str | None = None,
     limit: int = 100,
+    tenant_id: str | None = None,
+    project_id: str | None = None,
 ) -> list[HitlTaskRow]:
     stmt = select(HitlTaskRow)
     if status:
         stmt = stmt.where(HitlTaskRow.status == status)
+    if tenant_id:
+        stmt = stmt.where(HitlTaskRow.tenant_id == tenant_id)
+    if project_id:
+        stmt = stmt.where(HitlTaskRow.project_id == project_id)
     stmt = stmt.order_by(HitlTaskRow.priority_score.desc(), HitlTaskRow.id.asc()).limit(int(limit))
     res = session.execute(stmt)
     return list(res.scalars().all())

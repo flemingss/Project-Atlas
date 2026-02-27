@@ -733,9 +733,13 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
         return {"ok": True, "tenant_id": t_id, "project_id": p_id, "corpus_id": c_id}
 
     @r.get("/runs", response_model=list[WorkflowRunResponse])
-    def runs(limit: int = Query(default=100, ge=1, le=500)) -> list[WorkflowRunResponse]:
+    def runs(
+        limit: int = Query(default=100, ge=1, le=500),
+        tenant_id: str | None = Query(default=None),
+        project_id: str | None = Query(default=None),
+    ) -> list[WorkflowRunResponse]:
         with session_factory() as session:
-            rows = list_workflow_runs(session, limit=int(limit))
+            rows = list_workflow_runs(session, limit=int(limit), tenant_id=tenant_id, project_id=project_id)
         return [to_run_response(r) for r in rows]
 
     @r.post("/runs", response_model=WorkflowRunResponse)
@@ -792,9 +796,11 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
     def hitl_tasks(
         status: str | None = Query(default=None),
         limit: int = Query(default=100, ge=1, le=500),
+        tenant_id: str | None = Query(default=None),
+        project_id: str | None = Query(default=None),
     ) -> list[HitlTaskResponse]:
         with session_factory() as session:
-            rows = list_hitl_tasks(session, status=status, limit=int(limit))
+            rows = list_hitl_tasks(session, status=status, limit=int(limit), tenant_id=tenant_id, project_id=project_id)
         return [to_hitl_response(t) for t in rows]
 
     @r.post("/hitl/tasks", response_model=HitlTaskResponse)

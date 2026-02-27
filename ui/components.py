@@ -131,13 +131,6 @@ def friendly_error(
                 st.code(raw_text[:2000])
 
 
-def ingest_result(title: str, detail: str = "") -> None:
-    """Renders a success state after an ingest operation."""
-    st.success(title)
-    if detail:
-        st.caption(detail)
-
-
 def ingest_result_card(
     *,
     doc_name: str,
@@ -249,12 +242,13 @@ def run_detail_card(run_data: dict, node_runs: list, artifacts: list) -> None:
 
 # -- Contextual helpers -------------------------------------------------------
 
-def scope_banner(workspace: str, collection: str, *, prefix: str = "") -> None:
-    """Renders a context line: 'Searching in: Workspace X / Collection Y'."""
-    label = (
-        f"{prefix}Workspace <strong>{workspace}</strong>"
-        f" &middot; Collection <strong>{collection}</strong>"
-    )
+def scope_banner(workspace: str, collection: str, *, project: str = "", prefix: str = "") -> None:
+    """Renders a context line: 'Searching in: Workspace X / Project Y / Collection Z'."""
+    parts = [f"Workspace <strong>{workspace}</strong>"]
+    if project:
+        parts.append(f"Project <strong>{project}</strong>")
+    parts.append(f"Collection <strong>{collection}</strong>")
+    label = f"{prefix}" + " &middot; ".join(parts)
     st.markdown(f'<div class="atlas-scope-banner">{label}</div>', unsafe_allow_html=True)
 
 

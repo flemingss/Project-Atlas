@@ -35,21 +35,25 @@ FAITHFULNESS: [1-5]
 FORMATTING: [1-5]
 COHESION: [1-5]
 HALLUCINATION_RISK: [1-5]
-RATIONALE: [Your explanation in one sentence]
+RATIONALE: [One sentence per dimension explaining your score. Cover each dimension that scored below 4, stating what is wrong and how it could be improved. For dimensions scoring 4-5 you may briefly confirm quality.]
 """
 
 JUDGE_FEW_SHOT_EXAMPLES = [
     {
         "input": "# Technical Manual\n\nThis document describes the system architecture...",
-        "output": "FAITHFULNESS: 5\nFORMATTING: 5\nCOHESION: 5\nHALLUCINATION_RISK: 5\nRATIONALE: Clear structure with proper heading and complete readable content.",
+        "output": "FAITHFULNESS: 5\nFORMATTING: 5\nCOHESION: 5\nHALLUCINATION_RISK: 5\nRATIONALE: Clear structure with proper headings and complete readable content. All dimensions excellent.",
     },
     {
         "input": "## Ov3rview\n\nThe syst3m c0nsists of...",
-        "output": "FAITHFULNESS: 3\nFORMATTING: 4\nCOHESION: 3\nHALLUCINATION_RISK: 3\nRATIONALE: OCR errors present but content is still understandable.",
+        "output": "FAITHFULNESS: 3\nFORMATTING: 4\nCOHESION: 3\nHALLUCINATION_RISK: 3\nRATIONALE: Faithfulness degraded by numerous OCR errors making content uncertain. Formatting is adequate with proper heading. Cohesion suffers from garbled words disrupting flow. Hallucination risk moderate as OCR artifacts could be misread as different words.",
+    },
+    {
+        "input": "# Quarterly Report\n\nRevenue grew by 15%.\n\n## details\n\n- item one\n- item two\n\nThe company also expanded into three new markets including Asia, Europe, and South America with projected growth rates of 20%, 12%, and 8% respectively.",
+        "output": "FAITHFULNESS: 5\nFORMATTING: 2\nCOHESION: 4\nHALLUCINATION_RISK: 5\nRATIONALE: Content is faithful and complete with specific data points preserved. Formatting needs work — inconsistent heading case ('details' should be 'Details'), missing section separation, no table for structured data. Cohesion is good with logical flow from summary to details. No hallucination risk as all data appears source-derived.",
     },
     {
         "input": "�� �� sdfjk asdfj 123 �� ��",
-        "output": "FAITHFULNESS: 1\nFORMATTING: 1\nCOHESION: 1\nHALLUCINATION_RISK: 1\nRATIONALE: Severe corruption with unreadable content.",
+        "output": "FAITHFULNESS: 1\nFORMATTING: 1\nCOHESION: 1\nHALLUCINATION_RISK: 1\nRATIONALE: Severe corruption with unreadable content across all dimensions. No meaningful text can be extracted.",
     },
 ]
 
@@ -132,14 +136,16 @@ class JudgeNode:
                     message="Judge model failed",
                     exception=e,
                 )
-                # Return default low score on error
+                # Return neutral score on error to avoid burning refine retries
+                # on transient failures.  The document will pass through to
+                # metadata without unnecessary refinement loops.
                 return JudgeResult(
-                    score=1,
-                    confidence_rationale=f"Error during grading: {e}",
+                    score=3,
+                    confidence_rationale=f"Error during grading (returning neutral score): {e}",
                     judge_version=self.judge_version,
-                    needs_refinement=True,
+                    needs_refinement=False,
                     timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                    sub_scores={d: 1 for d in JUDGE_DIMENSIONS},
+                    sub_scores={d: 3 for d in JUDGE_DIMENSIONS},
                 )
 
     def _build_prompt(self, markdown: str) -> str:

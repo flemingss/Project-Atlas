@@ -100,8 +100,9 @@ connection, scope selection, and status.
 │    Token                [password input]  │
 │                                           │
 │  Workspace      [selectbox OR text input] │
+│  Project        [selectbox OR text input] │
 │  Collection     [selectbox OR text input] │
-│    workspace-banner (bold ws / corpus)    │
+│    workspace-banner (bold ws / proj / col) │
 │                                           │
 │  [Test connection]        [button]        │
 │                                           │
@@ -111,6 +112,10 @@ connection, scope selection, and status.
 │  📖 Viewer mode notice (when no token)    │
 └──────────────────────────────────────────┘
 ```
+
+**Scope cascade:** Workspace → Project → Collection. Changing a parent
+scope resets child dropdowns and clears cached data (`runs_cache`,
+`hitl_tasks`, `hitl_current`, `lib_docs`) to prevent cross-scope data leaks.
 
 #### Auto-connect (A1)
 
@@ -128,6 +133,7 @@ This removes the need for the user to click "Test connection" on every reload.
 | `api_url` | str | Persisted Atlas URL |
 | `admin_token` | str | Persisted admin token |
 | `_auto_connected` | bool | Guard — auto-connect fires once |
+| `_prev_scope` | tuple | `(tenant_id, project_id, corpus_id)` — used to detect scope changes and invalidate cached data |
 
 ---
 
@@ -193,7 +199,8 @@ The label "Paste text" was renamed to "Write or paste content" for clarity.
 ### 6.3 Text upload mode
 
 Same card structure but with a text area (height `TEXT_AREA_LG`) instead of
-file uploader.
+file uploader. Includes the same **☐ Include in search results** and
+**☐ Sensitive** checkboxes as file upload mode.
 
 ### 6.4 Upload result card (A2)
 
@@ -388,6 +395,15 @@ pipeline. Requires admin token.
 │  (derived by _hitl_flag_reason() from judge_score, │
 │   is_sensitive, meta.source)                       │
 │                                                    │
+│  ▸ Judge & refine context (expander)              │
+│    Per-dimension scores (colour-coded):            │
+│      Faithfulness: 5 🟢  Formatting: 2 🔴         │
+│      Cohesion: 4 🟢  Hallucination Risk: 5 🟢     │
+│    Rationale: [full text]                          │
+│    Score history: [3, 2, 3]                        │
+│    Refine attempts: 2 (of 3 max)                  │
+│    Last improvements: [list]                       │
+│                                                    │
 │  ┌─ Before (rendered markdown) ─┬─ After (edit) ─┐│
 │  │  st.markdown(before_md)      │ st.text_area   ││
 │  │  (read-only, formatted)      │ (editable)     ││
@@ -402,13 +418,29 @@ pipeline. Requires admin token.
 └──────────────────────────────────────────────────┘
 ```
 
+#### Rich HITL context (v0.7.0)
+
+When the HITL task contains `meta.judge_sub_scores`, a collapsible panel
+shows:
+- **Per-dimension scores** with colour coding (🟢 ≥ 4, 🟡 = 3, 🔴 ≤ 2)
+- **Judge rationale** (full text from per-dimension feedback)
+- **Score history** (list of all judge scores across refine iterations)
+- **Refine attempt counts** (successful retries + total attempts out of max)
+- **Last improvements** made by the refine node
+
+This gives operators full context on *why* the document was escalated and
+*what the pipeline already tried*.
+
 #### Approve and continue (A4)
 
 A single primary button that:
 1. POSTs `complete` with `after_md` and reason
 2. Auto-resumes the pipeline (`POST .../resume`, best-effort)
-3. Claims the next task (`POST .../tasks/next`)
-4. Reruns the page
+3. **Resume status check** — if the resume returns a non-success status
+   (e.g., max resumes reached), a warning is shown instead of a false
+   success message
+4. Claims the next task (`POST .../tasks/next`)
+5. Reruns the page
 
 Replaces the old "Save review" + "Save and resume indexing" two-button pattern.
 
@@ -494,6 +526,10 @@ repeated inside each sub-tab.
 - "View all groups" expander with nested Workspaces/Projects/Collections tabs
 - "Create new" sub-section (`card_section`): Type selectbox, ID, Display name,
   Create button (`secondary_button`)
+- **Hierarchy guidance**: when creating a Project or Collection, if the
+  required parent entity (workspace for project, workspace+project for
+  collection) does not exist, an info message explains what to create first
+  and the Create button is disabled
 
 ### 10.4 Danger Zone (sub-tab 3)
 

@@ -19,6 +19,7 @@ Key deltas vs original intent:
 - Refine guardrails: v0.6.0 adds content-safety guardrails (min_preservation_ratio, tightened prompt, refine_version v2) to prevent LLM content loss.
 - Normalize boundary: v0.6.0 refactors normalize to formatting-only; page-number and noise stripping moved to cleanup builtins (`strip_page_numbers`, `strip_repetitive_lines`).
 - Runner consolidation: v0.6.0 consolidates the pipeline runner (5 shared helpers, 37% line reduction) with all silent exceptions replaced by logged warnings.
+- Pipeline quality (v0.7.0): Rich judge-to-refine context injection (sub-scores, rationale, iteration context), per-dimension judge rationale, score regression rollback with pre-refine markdown preservation, diminishing-returns detection, cleanup-rejudge cycle guard, failed refines don't burn retries (2× circuit breaker), judge error fallback changed to neutral (score=3), HITL tasks enriched with full judge/refine context, HITL resume loop guard (MAX_HITL_RESUMES=2), config defaults updated (cleanup_rejudge=true, formatting/cohesion floors=2, refine_max_retries=3).
 1. System Vision
 
 Project Atlas ingests heterogeneous domain documents and outputs a "Professional Grade" RAG package. The system is local-first (RTX 3090), idempotent, self-refining, and features Human-in-the-Loop (HITL) checkpoints.
@@ -49,7 +50,7 @@ Refine (Llama 3.2 Vision):
 
 Action: Triggered if Judge Score < 4.
 
-Constraint: Max 2 retries then move to HITL.
+Constraint: Max 3 retries (successful only; failed attempts tracked separately with 2× circuit breaker) then move to HITL.
 
 Safety: Tag problematic chunks with fidelity_flag (e.g., partial, low_confidence).
 

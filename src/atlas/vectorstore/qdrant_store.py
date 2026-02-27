@@ -125,8 +125,7 @@ class QdrantStore:
             self._client.set_payload(
                 collection_name=self._collection,
                 payload=payload,
-                points=None,
-                filter=qm.Filter(must=must),
+                points=qm.Filter(must=must),
                 wait=True,
             )
 

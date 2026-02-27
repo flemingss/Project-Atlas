@@ -21,12 +21,18 @@ Your ONLY permitted actions:
 2. Repair broken markdown formatting (headings, lists, tables)
 3. Preserve ALL original information — every section, heading, table,
    list item, and data point MUST appear in your output
+4. Address specific weaknesses identified by the quality judge (see
+   JUDGE FEEDBACK below)
 
 You MUST NOT:
 - Summarise, condense, or omit any content
 - Add new information or commentary
 - Restructure the document layout beyond fixing formatting errors
 - Remove sections even if they seem redundant
+
+Pay special attention to the per-dimension scores and rationale provided
+in the JUDGE FEEDBACK section.  Focus your improvements on dimensions
+scored below 4.
 
 Return ONLY the improved markdown. Do not add explanations."""
 
@@ -67,7 +73,14 @@ class RefineNode:
         self.refine_version = f"{model_name}:v2"
 
     async def refine_document(
-        self, *, markdown: str, judge_score: int, retry_count: int
+        self,
+        *,
+        markdown: str,
+        judge_score: int,
+        retry_count: int,
+        max_retries: int | None = None,
+        judge_sub_scores: dict[str, int] | None = None,
+        judge_rationale: str | None = None,
     ) -> RefineResult:
         """Refine a markdown document using vision model.
 
@@ -75,6 +88,9 @@ class RefineNode:
             markdown: The markdown content to refine
             judge_score: The score from the judge node
             retry_count: Current retry attempt (0-indexed)
+            max_retries: Maximum allowed retries (for iteration context)
+            judge_sub_scores: Per-dimension scores from the judge node
+            judge_rationale: Rationale text from the judge node
 
         Returns:
             RefineResult with refined markdown and metadata
@@ -101,7 +117,14 @@ class RefineNode:
 
             try:
                 # Build refinement prompt
-                prompt = self._build_prompt(markdown, judge_score)
+                prompt = self._build_prompt(
+                    markdown,
+                    judge_score,
+                    retry_count=retry_count,
+                    max_retries=max_retries or self.max_retries,
+                    judge_sub_scores=judge_sub_scores,
+                    judge_rationale=judge_rationale,
+                )
 
                 # Call refinement model
                 refined_markdown = await self._call_refine_model(prompt)
@@ -165,18 +188,53 @@ class RefineNode:
                     timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 )
 
-    def _build_prompt(self, markdown: str, judge_score: int) -> str:
-        """Build refinement prompt.
+    def _build_prompt(
+        self,
+        markdown: str,
+        judge_score: int,
+        *,
+        retry_count: int = 0,
+        max_retries: int = 2,
+        judge_sub_scores: dict[str, int] | None = None,
+        judge_rationale: str | None = None,
+    ) -> str:
+        """Build refinement prompt with rich judge feedback.
 
         Note: the system prompt is sent separately via the ``system`` role
         message in :meth:`_call_refine_model`; we do NOT embed it in the
         user text to avoid sending the instructions twice.
         """
-        return (
-            f"Judge Score: {judge_score}/5 (needs improvement)\n\n"
-            f"Original Document:\n{markdown}\n\n"
-            f"Improved Document:"
+        parts: list[str] = []
+
+        # --- Iteration context ---
+        parts.append(
+            f"Attempt {retry_count + 1} of {max_retries} "
+            f"({'final attempt — be thorough' if retry_count + 1 >= max_retries else 'earlier attempt — focus on biggest issues'})"
         )
+
+        # --- Judge feedback ---
+        parts.append(f"\nJUDGE FEEDBACK (composite {judge_score}/5):")
+        if judge_sub_scores:
+            weak_dims = []
+            for dim, score in judge_sub_scores.items():
+                label = dim.replace("_", " ").title()
+                marker = " ← focus here" if score < 4 else ""
+                parts.append(f"  {label}: {score}/5{marker}")
+                if score < 4:
+                    weak_dims.append(dim.replace("_", " ").title())
+            if weak_dims:
+                parts.append(f"Priority areas: {', '.join(weak_dims)}")
+        else:
+            parts.append(f"  Overall: {judge_score}/5")
+
+        if judge_rationale:
+            parts.append(f"Rationale: {judge_rationale}")
+
+        # --- Document ---
+        parts.append(f"\nDocument to improve:\n{markdown}")
+        parts.append("\nImproved Document:")
+
+        return "\n".join(parts)
 
     async def _call_refine_model(self, prompt: str) -> str:
         """Call the refine model to improve the document."""

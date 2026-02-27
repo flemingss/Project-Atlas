@@ -17,6 +17,7 @@ from atlas.pipeline.cleanup_rules import (
     _step_rewrite_pattern,
     _step_strip_headers_footers,
     _step_normalize_headings,
+    _step_fix_numbered_headings,
     _step_merge_hardwrapped,
     _step_fix_bullets,
     _step_html_unescape,
@@ -236,6 +237,78 @@ class TestSteps:
         result, count = _step_html_unescape(text, {})
         assert result == "word\xa0word"  # non-breaking space
         assert count == 1
+
+    # -- fix_numbered_headings -------------------------------------------------
+
+    def test_fix_numbered_headings_three_segments(self) -> None:
+        """## 1.1.8 Title → ### 1.1.8 Title (3 segments = H3)."""
+        text = "## 1.1.8 Initial Backups"
+        result, count = _step_fix_numbered_headings(text, {})
+        assert result == "### 1.1.8 Initial Backups"
+        assert count == 1
+
+    def test_fix_numbered_headings_two_segments(self) -> None:
+        """## 1.11 Title stays ## (2 segments = H2)."""
+        text = "## 1.11 Lorem Ipsum"
+        result, count = _step_fix_numbered_headings(text, {})
+        assert result == "## 1.11 Lorem Ipsum"
+        assert count == 0
+
+    def test_fix_numbered_headings_one_segment(self) -> None:
+        """## 1 Title → # 1 Title (1 segment = H1)."""
+        text = "## 1 Lorem Ipsum"
+        result, count = _step_fix_numbered_headings(text, {})
+        assert result == "# 1 Lorem Ipsum"
+        assert count == 1
+
+    def test_fix_numbered_headings_one_segment_double_digits(self) -> None:
+        """## 12 Title → # 12 Title (1 segment = H1)."""
+        text = "## 12 Lorem Ipsum"
+        result, count = _step_fix_numbered_headings(text, {})
+        assert result == "# 12 Lorem Ipsum"
+        assert count == 1
+
+    def test_fix_numbered_headings_four_segments(self) -> None:
+        """## 1.2.3.4 Title → #### 1.2.3.4 Title."""
+        text = "## 1.2.3.4 Deep Section"
+        result, count = _step_fix_numbered_headings(text, {})
+        assert result == "#### 1.2.3.4 Deep Section"
+        assert count == 1
+
+    def test_fix_numbered_headings_max_level_clamp(self) -> None:
+        """Segments beyond max_level are clamped to H6."""
+        text = "## 1.2.3.4.5.6.7 Very Deep"
+        result, count = _step_fix_numbered_headings(text, {})
+        assert result == "###### 1.2.3.4.5.6.7 Very Deep"
+        assert count == 1
+
+    def test_fix_numbered_headings_custom_max_level(self) -> None:
+        """max_level param limits heading depth."""
+        text = "## 1.2.3.4 Title"
+        result, count = _step_fix_numbered_headings(text, {"max_level": 3})
+        assert result == "### 1.2.3.4 Title"
+        assert count == 1
+
+    def test_fix_numbered_headings_no_number(self) -> None:
+        """Headings without numbered sections are left alone."""
+        text = "## Introduction"
+        result, count = _step_fix_numbered_headings(text, {})
+        assert result == "## Introduction"
+        assert count == 0
+
+    def test_fix_numbered_headings_multiline(self) -> None:
+        """Multiple headings corrected in a single pass."""
+        text = "## 1 Overview\n## 1.1 Details\n## 1.1.1 Sub\nBody text."
+        result, count = _step_fix_numbered_headings(text, {})
+        assert result == "# 1 Overview\n## 1.1 Details\n### 1.1.1 Sub\nBody text."
+        assert count == 2  # 1 and 1.1.1 changed; 1.1 was already correct
+
+    def test_fix_numbered_headings_already_correct(self) -> None:
+        """No changes when headings already match segment count."""
+        text = "# 1 Top\n## 1.1 Sub\n### 1.1.1 SubSub"
+        result, count = _step_fix_numbered_headings(text, {})
+        assert result == text
+        assert count == 0
 
 
 # ---------------------------------------------------------------------------

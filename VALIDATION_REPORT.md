@@ -1,8 +1,8 @@
 # Project Atlas - Comprehensive Validation Report
 
-**Date:** 2026-02-26  
+**Date:** 2026-02-28  
 **Review Type:** Top-Down Repository Review & E2E Testing Validation  
-**Status:** ✅ PASSED (v0.5.0)
+**Status:** ✅ PASSED (v0.7.0)
 
 ---
 
@@ -12,12 +12,13 @@ Project Atlas has undergone a comprehensive top-down review to ensure all featur
 
 ### Key Findings
 
-- ✅ **348 unit/E2E tests passing** (100% pass rate, 0 skipped)
+- ✅ **358 unit/E2E tests passing** (100% pass rate, 0 skipped)
 - ✅ **1 integration test passing** (with live Qdrant service)
 - ✅ **All linting checks passing** (ruff)
 - ✅ **Comprehensive E2E test suite** with 9 workflow tests
 - ✅ **Black-box scenario tests** with deterministic and local LLM modes
 - ✅ **Well-documented architecture** (README, E2E_TEST_GUIDE, TECHNICAL_DESIGN, HLD)
+- ✅ **v0.7.0 additions**: rich judge-to-refine context injection (sub-scores, rationale, iteration context), per-dimension judge rationale, score regression rollback, diminishing-returns detection, cleanup-rejudge cycle guard, failed-refines-don’t-burn-retries semantics (2× circuit breaker), judge error fallback changed to neutral (score=3), rich HITL task context (judge sub-scores/rationale/score history/refine stats displayed in UI), HITL resume loop guard (MAX_HITL_RESUMES=2), scope-change cache invalidation, HITL resume failure feedback, config defaults updated (cleanup_rejudge=true, formatting/cohesion floors=2, refine_max_retries=3), Project dropdown in sidebar, scope-filtered API calls, text-mode upload checkboxes, Groups hierarchy guidance
 - ✅ **v0.6.0 additions**: refine content-safety guardrails (min_preservation_ratio, tightened prompt, refine_version v2), two new cleanup builtins (strip_page_numbers, strip_repetitive_lines), normalize refactored to formatting-only, runner consolidation (5 shared helpers, 37% line reduction), html_unescape dedup
 - ✅ **v0.5.0 additions**: config-driven cleanup rules engine, cleanup feedback API, metrics aggregation endpoint, rule-tag-aware routing (CLEANUP→HITL), LLM-assisted rule suggestion endpoint, Cleanup & Tuning UI card
 - ✅ **v0.4.0 pipeline enhancements**: cleanup node, multi-dimensional judge, unified routing, retry/backoff, chunk QA + fallback, Docling health scoring, fidelity mode search filter
@@ -57,13 +58,13 @@ Project Atlas has undergone a comprehensive top-down review to ensure all featur
 - **Ingest Node**: PDF, DOCX, PPTX, Markdown, HTML, and plain text via Docling
 - **Cleanup Node**: Deterministic markdown cleanup (5 transforms) between Ingest and Judge
 - **Judge Node**: Multi-dimensional rubric (faithfulness, formatting, cohesion, hallucination_risk) with composite 1–5 score
-- **Refine Node**: Automatic document improvement with retry logic (max 2 retries)
+- **Refine Node**: Automatic document improvement with retry logic (max 3 retries, successful only) and rich judge context injection (sub-scores + rationale)
 - **Metadata Node**: Tiered metadata generation (tier 1: local, tier 2: frontier/70B models)
 - **Chunking**: Three strategies (semantic default, paragraph, hierarchical) with QA + fallback chain
 - **Embeddings**: Pluggable providers with traceability
 - **Commit**: Qdrant upsert with tenant/project/corpus isolation
 - **Cleanup Node**: Deterministic markdown cleanup (5 built-in transforms + 5 configurable builtins) between Ingest and Judge, plus config-driven rules engine (7 step types)
-- **Routing**: Unified `decide_next_step()` with fail-fast, floor checks, cleanup-rejudge, rule-tag-aware escalation (CLEANUP→HITL for `suspicious_content`, CLEANUP→FAILED for `hard_failure`)
+- **Routing**: Unified `decide_next_step()` with fail-fast, floor checks, cleanup-rejudge (cycle-guarded), rule-tag-aware escalation (CLEANUP→HITL for `suspicious_content`, CLEANUP→FAILED for `hard_failure`), score regression rollback, diminishing-returns detection
 - **Refine Guardrails**: Content-safety guardrails (min_preservation_ratio 0.6, tightened prompt, refine_version v2) prevent LLM content loss
 - **Retry/Backoff**: Config-driven exponential backoff on all external calls
 - **Docling Health**: Composite 1–5 health score computed after every ingest
@@ -103,7 +104,7 @@ Project Atlas has undergone a comprehensive top-down review to ensure all featur
 
 ## Test Coverage Analysis
 
-### Unit Tests (348 tests: 348 passing, 0 skipped)
+### Unit Tests (358 tests: 358 passing, 0 skipped)
 
 | Test Category | Tests | Status | Coverage |
 |--------------|-------|--------|----------|
@@ -278,10 +279,10 @@ All checks passed!
 
 - ✅ Solid core architecture (pipeline nodes, HITL, diagnostics, multi-tenancy)
 - ✅ Comprehensive API (40+ endpoints covering all operations)
-- ✅ Excellent test coverage (348 unit/E2E tests passing, 12 black-box scenarios)
+- ✅ Excellent test coverage (358 unit/E2E tests passing, 12 black-box scenarios)
 - ✅ Strong documentation (README, E2E guide, technical design)
 - ✅ Clean codebase (all linting checks passing)
-- ✅ No regressions (348 passing tests, 0 skipped)
+- ✅ No regressions (358 passing tests, 0 skipped)
 
 The repository demonstrates best practices in software engineering:
 - Testable architecture with dependency injection
@@ -299,7 +300,7 @@ The repository demonstrates best practices in software engineering:
 ```bash
 # Unit/E2E Tests
 $ pytest -q
-348 passed in 49.06s
+358 passed in 49.06s
 
 # Integration Tests
 $ pytest -m integration -v

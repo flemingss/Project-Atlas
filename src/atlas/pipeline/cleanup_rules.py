@@ -19,6 +19,8 @@ Step types
 - ``strip_headers_footers``: remove first/last *n* lines or lines matching
   a list of patterns (useful for recurring page headers/footers in PDFs).
 - ``normalize_headings``:    force ATX-style headings (``# H1`` not ``H1\\n===``).
+- ``fix_numbered_headings``: correct ATX heading level from dot-delimited
+  section numbers (``## 1.1.8 …`` → ``### 1.1.8 …``).
 - ``merge_hardwrapped_paragraphs``:  join lines not separated by a blank line
   into a single paragraph (common OCR artefact).
 - ``fix_bullets``:           normalise mixed bullet styles (``*``, ``-``, ``+``)
@@ -296,6 +298,44 @@ def _step_merge_hardwrapped(text: str, _params: dict[str, Any]) -> tuple[str, in
     return "\n".join(merged), count
 
 
+def _step_fix_numbered_headings(text: str, params: dict[str, Any]) -> tuple[str, int]:
+    """Correct ATX heading levels based on dot-delimited section numbers.
+
+    Lines matching ``^#{1,6}\\s+(\\d+(?:\\.\\d+)*)\\s+`` have their heading level
+    replaced by the number of numeric segments in the identifier:
+
+    - ``## 1.1.8 Title`` → ``### 1.1.8 Title``  (3 segments → H3)
+    - ``## 1.11 Title``   → ``## 1.11 Title``    (2 segments → H2, no change)
+    - ``## 1 Title``      → ``# 1 Title``        (1 segment  → H1)
+
+    ``params`` keys (all optional):
+    - ``max_level``: maximum heading depth (default ``6``).  Segments beyond
+      this are clamped — e.g. ``1.2.3.4.5.6.7`` ➜ ``######`` (H6).
+    """
+    max_level = int(params.get("max_level", 6))
+    _heading_re = re.compile(r"^(#{1,6})\s+(\d+(?:\.\d+)*)\s+(.*)$")
+    lines = text.split("\n")
+    result: list[str] = []
+    count = 0
+    for line in lines:
+        m = _heading_re.match(line)
+        if m:
+            current_hashes = m.group(1)
+            section_number = m.group(2)
+            title_text = m.group(3)
+            segments = len(section_number.split("."))
+            correct_level = min(segments, max_level)
+            correct_hashes = "#" * correct_level
+            if current_hashes != correct_hashes:
+                result.append(f"{correct_hashes} {section_number} {title_text}")
+                count += 1
+            else:
+                result.append(line)
+        else:
+            result.append(line)
+    return "\n".join(result), count
+
+
 def _step_fix_bullets(text: str, params: dict[str, Any]) -> tuple[str, int]:
     """Normalise mixed bullet markers to a canonical one (default ``-``)."""
     canonical = params.get("marker", "-")
@@ -346,6 +386,7 @@ _STEP_REGISTRY: dict[str, Any] = {
     "rewrite_pattern": _step_rewrite_pattern,
     "strip_headers_footers": _step_strip_headers_footers,
     "normalize_headings": _step_normalize_headings,
+    "fix_numbered_headings": _step_fix_numbered_headings,
     "merge_hardwrapped_paragraphs": _step_merge_hardwrapped,
     "fix_bullets": _step_fix_bullets,
     "html_unescape": _step_html_unescape,

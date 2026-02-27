@@ -168,11 +168,19 @@ class PipelineOrchestrator:
 
         judge_result = context.results.get("judge", {})
         judge_score = judge_result.get("score", 3)
+        judge_sub_scores = judge_result.get("sub_scores")
+        judge_rationale = judge_result.get("confidence_rationale")
+        max_retries = self.config.get("limits", {}).get(
+            "refine_max_retries", context.state.max_refine_retries
+        )
 
         result = await self.refine_node.refine_document(
             markdown=context.state.markdown_projection,
             judge_score=judge_score,
             retry_count=context.state.refine_retries,
+            max_retries=max_retries,
+            judge_sub_scores=judge_sub_scores,
+            judge_rationale=judge_rationale,
         )
 
         context.set_refine_result(result)

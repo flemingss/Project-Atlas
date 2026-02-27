@@ -130,20 +130,20 @@ Notes:
 - ✅ 11-node pipeline: INGEST → CLEANUP → JUDGE → REFINE → METADATA → EMBEDDINGS → CHUNKING → COMMIT (+ HITL, COMPLETED, FAILED)
 - ✅ **Cleanup node** (`pipeline/cleanup.py`): deterministic markdown cleanup between Ingest and Judge. Five built-in transforms (normalise whitespace, strip broken links, repair heading hierarchy, strip trailing whitespace, static checks) plus five configurable builtin extraction-artifact fixes (`html_unescape`, `fix_ligatures`, `strip_zero_width_chars` — ON by default; `strip_page_numbers` — ON by default; `strip_repetitive_lines` — OFF by default; via `builtin_cleanup:` config section). Produces `CleanupResult`. Accepts optional `doc_context` and `config` to apply config-driven cleanup rules after built-in transforms.
 - ✅ **Cleanup rules engine** (`pipeline/cleanup_rules.py`): declarative, first-match-wins rule engine for per-corpus / per-mime-type cleanup. Seven step handlers: `strip_lines_matching`, `rewrite_pattern`, `strip_headers_footers`, `normalize_headings`, `merge_hardwrapped_paragraphs`, `fix_bullets`, `html_unescape`. Rules configured in `pipeline.yaml` `cleanup_rules:` section. Rule tags (`hard_failure`, `suspicious_content`, `auto_fix_only`) influence routing decisions. `html_unescape` handler delegates to the shared builtin implementation.
-- ✅ **Judge node** (`pipeline/judge.py`): multi-dimensional rubric — FAITHFULNESS, FORMATTING, COHESION, HALLUCINATION_RISK (each 1–5). Composite score = rounded mean. Legacy single-SCORE fallback preserved. Versioned `judge_version` (model + prompt hash).
-- ✅ **Refine node** (`pipeline/refine.py`): configurable max retries, triggers HITL when exhausted. Content-safety guardrails: tightened system prompt ("MUST NOT summarise, condense, or omit"), `min_preservation_ratio` (default 0.6) rejects outputs shorter than 60% of input. Versioned `refine_version` v2.
+- ✅ **Judge node** (`pipeline/judge.py`): multi-dimensional rubric — FAITHFULNESS, FORMATTING, COHESION, HALLUCINATION_RISK (each 1–5). Composite score = rounded mean. Per-dimension rationale for scores below 4 with specific issues and improvement guidance. Four few-shot examples including a mixed-score example. Error fallback `score=3` / `needs_refinement=False` (neutral — transient failures don’t burn retries). Legacy single-SCORE fallback preserved. Versioned `judge_version` (model + prompt hash).
+- ✅ **Refine node** (`pipeline/refine.py`): configurable max retries, triggers HITL when exhausted. Receives rich judge context (sub-scores with focus markers, rationale, iteration context). Content-safety guardrails: tightened system prompt (“MUST NOT summarise, condense, or omit”), `min_preservation_ratio` (default 0.6) rejects outputs shorter than 60% of input. Only successful refinements count against retry limit; hard cap at 2× max retries for total attempts. Versioned `refine_version` v2.
 - ✅ **Metadata node**: tiered (tier1 / tier2) with configurable per-doc tier2 cap
-- ✅ **Unified routing** (`pipeline/routing.py`): `decide_next_step()` pure function centralises all branching (fail-fast on composite ≤ `fail_fast_score`, per-dimension floor checks, cleanup-rejudge when formatting is bad but content is OK, standard refine/HITL paths, rule-tag-aware cleanup routing — `hard_failure`→FAILED, `suspicious_content`→HITL). `PipelineStateManager.get_next_node()` delegates here.
+- ✅ **Unified routing** (`pipeline/routing.py`): `decide_next_step()` pure function centralises all branching (fail-fast on composite ≤ `fail_fast_score`, per-dimension floor checks, cleanup-rejudge with cycle guard (max 1), standard refine/HITL paths, rule-tag-aware cleanup routing — `hard_failure`→FAILED, `suspicious_content`→HITL). `RoutingDecision` includes `rollback: bool` field. Score regression rollback (refine made score worse → revert markdown, route appropriately). Diminishing-returns detection (score unchanged after refine → HITL). `content_ok` check includes `hallucination_risk`. `PipelineStateManager.get_next_node()` delegates here.
 - ✅ **Retry/backoff** (`retry.py`): `RetryConfig` + `async_retry()` / `sync_retry()` decorators. Applied to `openai_compat.py`, `qdrant_store.py`, `docling_adapter.py`. Config-driven per subsystem via `pipeline.yaml` `retry:` section.
 - ✅ **Chunk QA + fallback** (`rag/chunk_qa.py`): post-chunking validation + automatic fallback (semantic→paragraph, hierarchical→paragraph). Bounds configurable via `pipeline.yaml` `chunking.qa:` section.
 - ✅ **Docling health score** (`ingest/docling_health.py`): `compute_health()` evaluates extraction quality signals into a 1–5 composite score, stored on `PipelineContext`.
-- ✅ Pipeline runner is wired into `/rag/ingest/*` endpoints (text + file) and executes the full agentic loop with cleanup, chunk QA fallback, and health scoring. Runner consolidated into ~996 lines with 5 shared helpers.
+- ✅ Pipeline runner is wired into `/rag/ingest/*` endpoints (text + file) and executes the full agentic loop with cleanup, chunk QA fallback, and health scoring. Runner consolidated into ~996 lines with 5 shared helpers. HITL tasks include rich context (judge sub-scores, rationale, score history, refine attempts). HITL resume guarded by `MAX_HITL_RESUMES=2`. `max_refine_retries` read from `limits` section with backwards-compat fallback.
 - ✅ No LangGraph dependency exists today
 
 Notes:
 
 - Prompts/parsing are v1 and will evolve; the pipeline contract is stable.
-- Pipeline config (`pipeline.yaml`) includes `retry:`, `chunking.qa:`, `judge_dim_floors:`, `fail_fast_score`, `cleanup_rejudge`, and `cleanup_rules:` sections.
+- Pipeline config (`pipeline.yaml`) includes `retry:`, `chunking.qa:`, `judge_dim_floors:` (formatting/cohesion floors default to 2), `fail_fast_score`, `cleanup_rejudge` (default `true`), `limits.refine_max_retries` (default 3), and `cleanup_rules:` sections.
 
 ### 3.7 HITL
 
@@ -252,7 +252,8 @@ Rationale:
    - ✅ Deterministic cleanup node (5 built-in transforms + 5 configurable builtins) between Ingest and Judge
    - ✅ Config-driven cleanup rules engine (7 step handlers, first-match-wins, rule-tag routing)
    - ✅ Multi-dimensional judge (4 dimensions: faithfulness, formatting, cohesion, hallucination_risk)
-   - ✅ Unified routing with fail-fast, per-dimension floor checks, cleanup-rejudge, rule-tag-aware escalation
+   - ✅ Unified routing with fail-fast, per-dimension floor checks, cleanup-rejudge (cycle-guarded), rule-tag-aware escalation, score regression rollback, diminishing-returns detection
+   - ✅ `RoutingDecision` with `rollback: bool` field for structured rollback signalling
    - ✅ Refine content-safety guardrails (min_preservation_ratio, tightened prompt, refine_version v2)
    - ✅ Refine with real provider calls + retry limits
    - ✅ Metadata tiering with enforced caps
@@ -398,6 +399,22 @@ This is sequenced to maximize repeatability and minimize fantasy risk.
 - ✅ **Cleanup rules import/export**: `GET /admin/cleanup-rules/export` (YAML download) and `POST /admin/cleanup-rules/import` (replace/merge modes). UI export/import controls in operator console. 10 new tests in `test_cleanup_rules_import_export.py`.
 
 **Definition of done (8A-8D + import/export):** 348 tests passing. Runner consolidated. Refine guardrails prevent content loss. Normalize is formatting-only. Cleanup rules portable via YAML.
+
+### Phase 9 — Pipeline quality improvements (v0.7.0)
+
+- ✅ **Phase 9A — Rich judge-to-refine context**: Refine node receives judge sub-scores (with "← focus here" markers for low dimensions), rationale, and iteration context ("Attempt X of Y"). Orchestrator passes full judge result to refine.
+- ✅ **Phase 9B — Per-dimension judge rationale**: Judge prompt expanded—rationale covers each dimension scoring below 4 with specific issues and improvement guidance. Fourth few-shot example added (mixed scores).
+- ✅ **Phase 9C — Judge error fallback**: Changed from score=1/needs_refinement=True to score=3/needs_refinement=False—transient LLM failures no longer burn refine retries.
+- ✅ **Phase 9D — Score regression rollback**: `RoutingDecision` gains `rollback: bool` field. If refine makes the score worse, markdown is reverted to pre-refine version. Routes to metadata (if pre-refine was acceptable) or HITL.
+- ✅ **Phase 9E — Diminishing-returns detection**: If score is unchanged after refine, loop stops and escalates to HITL.
+- ✅ **Phase 9F — Cleanup-rejudge cycle guard**: `cleanup_rejudge_count` tracked and capped at 1 to prevent infinite cleanup→judge→cleanup loops.
+- ✅ **Phase 9G — Failed refines don't burn retries**: `set_refine_result()` only increments `refine_retries` on success; hard cap circuit breaker at 2× max retries for total attempts.
+- ✅ **Phase 9H — Rich HITL context**: HITL tasks store judge sub-scores, rationale, score history, refine attempts, last improvements. UI surfaces this in a collapsible "Judge & refine context" panel.
+- ✅ **Phase 9I — HITL resume loop guard**: `MAX_HITL_RESUMES=2` prevents infinite HITL→pipeline→HITL loops.
+- ✅ **Phase 9J — Config defaults**: `cleanup_rejudge: true`, `formatting` floor: 2, `cohesion` floor: 2, `refine_max_retries: 3`.
+- ✅ **Phase 9K — UI fixes**: Scope-change cache invalidation, HITL resume failure feedback, rich HITL context display, Project dropdown in sidebar, scope-filtered API calls, text-mode upload checkboxes, Groups hierarchy guidance.
+
+**Definition of done (9A-9K):** 358 tests passing. Pipeline routing significantly improved—fewer unnecessary HITL escalations. Rich context available to operators reviewing HITL tasks.
 
 ### Phase 8 — Retrieval-time upgrades (optional / scoped)
 

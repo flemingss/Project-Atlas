@@ -9,8 +9,8 @@ thresholds:
   # Set to 0 to disable per-dimension gating for a given dimension.
   judge_dim_floors:
     faithfulness: 3
-    formatting: 0
-    cohesion: 0
+    formatting: 2
+    cohesion: 2
     hallucination_risk: 3
   # Composite score at or below which the document is immediately FAILED
   # (skipping refine entirely).  Set to 0 to disable.
@@ -22,10 +22,10 @@ thresholds:
   # When true, a document whose formatting sub-score is below cutoff but
   # whose content dimensions are above cutoff is re-routed through CLEANUP
   # instead of REFINE.
-  cleanup_rejudge: false
+  cleanup_rejudge: true
 
 limits:
-  refine_max_retries: 2
+  refine_max_retries: 3
   tier2_chunk_cap_per_document: 25
   # Back-compat: older configs used chunk_max_chars. Kept as a safety valve.
   chunk_max_chars: 1000
@@ -94,8 +94,8 @@ builtin_cleanup:
 #
 # Supported step kinds:
 #   strip_lines_matching, rewrite_pattern, strip_headers_footers,
-#   normalize_headings, merge_hardwrapped_paragraphs, fix_bullets,
-#   html_unescape
+#   normalize_headings, fix_numbered_headings, merge_hardwrapped_paragraphs,
+#   fix_bullets, html_unescape
 #
 # cleanup_rules:
 #   - name: pdf_scanned_defaults

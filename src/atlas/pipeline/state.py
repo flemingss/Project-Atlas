@@ -39,25 +39,53 @@ class PipelineContext:
     results: dict[str, Any] = field(default_factory=dict)
 
     def set_judge_result(self, result: JudgeResult) -> None:
-        """Store judge result in context."""
+        """Store judge result in context and record score history."""
         self.results["judge"] = asdict(result)
         self.state.mean_judge_score = result.score
+        # Maintain judge score history for diminishing-returns / regression detection.
+        history: list[int] = self.results.setdefault("judge_score_history", [])
+        history.append(result.score)
 
     def set_cleanup_result(self, result: CleanupResult) -> None:
         """Store cleanup result and update markdown projection in state."""
         self.results["cleanup"] = asdict(result)
         self.state.markdown_projection = result.cleaned_markdown
+        # Track cleanup_rejudge cycles (judge→cleanup→judge).
+        # Incremented each time cleanup runs after the initial pass.
+        cleanup_count = self.results.get("cleanup_rejudge_count", 0)
+        if self.state.current_node == "cleanup" and cleanup_count >= 0:
+            # Only count re-cleanup cycles (not the initial cleanup).
+            judge_history = self.results.get("judge_score_history", [])
+            if judge_history:
+                # A judge has already run → this is a re-cleanup.
+                self.results["cleanup_rejudge_count"] = cleanup_count + 1
 
     def set_docling_health(self, health: dict[str, Any]) -> None:
         """Store Docling health assessment in context for downstream routing."""
         self.results["docling_health"] = health
 
     def set_refine_result(self, result: RefineResult) -> None:
-        """Store refine result in context."""
+        """Store refine result in context.
+
+        Only counts the attempt as a burned retry if the refinement
+        actually succeeded (produced new text).  Failed refinements
+        (model error, preservation guardrail) do NOT consume a retry
+        slot so the document gets another chance — but we track total
+        attempts to prevent infinite failure loops.
+        """
         self.results["refine"] = asdict(result)
-        self.state.refine_retries += 1
+        # Save pre-refine markdown for potential regression rollback.
+        self.results["pre_refine_markdown"] = self.state.markdown_projection
+        # Track total attempts (successes + failures) as a circuit-breaker.
+        total_attempts = self.results.get("refine_total_attempts", 0)
+        self.results["refine_total_attempts"] = total_attempts + 1
         if result.success:
+            self.state.refine_retries += 1
             self.state.markdown_projection = result.refined_markdown
+        elif total_attempts + 1 >= self.state.max_refine_retries * 2:
+            # Hard cap: if total attempts (including failures) reaches 2× max,
+            # count it to force exit from the refine loop.
+            self.state.refine_retries += 1
 
     def set_metadata_result(self, result: MetadataResult) -> None:
         """Store metadata result in context."""
@@ -90,6 +118,7 @@ class PipelineStateManager:
             PipelineNode.CLEANUP: [PipelineNode.JUDGE, PipelineNode.HITL, PipelineNode.FAILED],
             PipelineNode.JUDGE: [
                 PipelineNode.REFINE,
+                PipelineNode.CLEANUP,
                 PipelineNode.METADATA,
                 PipelineNode.HITL,
                 PipelineNode.FAILED,
@@ -131,6 +160,10 @@ class PipelineStateManager:
         Delegates to :func:`atlas.pipeline.routing.decide_next_step` for all
         routing logic; this method translates the result back into a
         ``PipelineNode``.
+
+        Side-effect: if routing detects a score regression after refine,
+        it routes to ``metadata`` and this method rolls back the markdown
+        to the pre-refine version.
         """
         decision = decide_next_step(
             current_node=context.state.current_node,
@@ -140,9 +173,19 @@ class PipelineStateManager:
                 "max_refine_retries": context.state.max_refine_retries,
                 "needs_hitl": context.state.needs_hitl,
                 "mean_judge_score": context.state.mean_judge_score,
+                "judge_score_history": context.results.get("judge_score_history", []),
+                "cleanup_rejudge_count": context.results.get("cleanup_rejudge_count", 0),
             },
             config=config,
         )
+
+        # M7: Regression rollback — revert markdown to pre-refine state
+        # when routing detects that the refine attempt made things worse.
+        if decision.rollback:
+            pre_refine_md = context.results.get("pre_refine_markdown")
+            if pre_refine_md:
+                context.state.markdown_projection = pre_refine_md
+
         try:
             return PipelineNode(decision.target)
         except ValueError:

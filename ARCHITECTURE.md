@@ -12,7 +12,7 @@ Source of truth: `TECHNICAL_DESIGN.md` (current reality, explicit scope decision
 
 Pipeline implementing the full agentic flow: **Ingest → Cleanup → Judge → Refine → Metadata → Embeddings → Chunking → Commit** (11 nodes including HITL, COMPLETED, FAILED).
 
-Status note (Feb 2026): `/rag/ingest/*` is pipeline-backed (text + file). All nodes are wired with real provider calls. v0.5.0 adds config-driven cleanup rules engine, cleanup feedback capture, metrics aggregation, LLM-assisted rule suggestion, and Cleanup & Tuning UI on top of v0.4.0's deterministic Cleanup node, multi-dimensional judge rubric, unified routing, retry/backoff, chunk QA with fallback, and Docling health scoring.
+Status note (Feb 2026): `/rag/ingest/*` is pipeline-backed (text + file). All nodes are wired with real provider calls. v0.7.0 adds rich judge-to-refine context injection (sub-scores, rationale, iteration context), per-dimension judge rationale, score regression rollback, diminishing-returns detection, cleanup-rejudge cycle guard, failed-refine-doesn’t-burn-retry semantics, judge error fallback → neutral (score=3), rich HITL task context, HITL resume loop guard (MAX_HITL_RESUMES=2), updated config defaults (cleanup_rejudge=true, formatting/cohesion floors=2, refine_max_retries=3), scope-change cache invalidation in UI, and HITL resume failure feedback. v0.6.0 adds refine content-safety guardrails and runner consolidation. v0.5.0 adds config-driven cleanup rules engine, cleanup feedback capture, metrics aggregation, LLM-assisted rule suggestion, and Cleanup & Tuning UI on top of v0.4.0’s deterministic Cleanup node, multi-dimensional judge rubric, unified routing, retry/backoff, chunk QA with fallback, and Docling health scoring.
 
 - **`ingest.py`** - Document ingestion node
   - Scaffold for ingest orchestration
@@ -33,20 +33,28 @@ Status note (Feb 2026): `/rag/ingest/*` is pipeline-backed (text + file). All no
 - **`judge.py`** - Multi-dimensional quality grading node
   - Four-dimension rubric: FAITHFULNESS, FORMATTING, COHESION, HALLUCINATION_RISK (each 1–5)
   - Composite score = rounded mean of sub-scores
+  - Per-dimension rationale for scores below 4 (specific issues + improvement guidance)
+  - Four few-shot examples including a mixed-score example (faithfulness=5, formatting=2)
+  - Error fallback: `score=3` / `needs_refinement=False` (neutral — transient LLM failures don’t burn refine retries)
   - Legacy single-SCORE fallback preserved for backward compatibility
   - Versioned `judge_version` (model + prompt hash)
 
 - **`refine.py`** - Document refinement node
-  - Content-safety guardrails: tightened system prompt ("MUST NOT summarise, condense, or omit"), `min_preservation_ratio` (default 0.6) rejects outputs shorter than 60% of input
+  - Receives rich judge context: per-dimension sub-scores (with “← focus here” markers for low dimensions), rationale, and iteration context (“Attempt X of Y”)
+  - Content-safety guardrails: tightened system prompt (“MUST NOT summarise, condense, or omit”), `min_preservation_ratio` (default 0.6) rejects outputs shorter than 60% of input
   - Versioned `refine_version` (v2) with prompt hash tracking
-  - Configurable max retries → HITL escalation when exhausted
+  - Configurable max retries → HITL escalation when exhausted; only successful refinements count against the retry limit
 
 - **`metadata.py`** - Tiered metadata generation
   - Scaffold for tiered metadata generation
 
 - **`routing.py`** - Unified routing logic
-  - `decide_next_step()` pure function returns a frozen `RoutingDecision`
-  - Supports fail-fast (composite ≤ `fail_fast_score`), cleanup-rejudge, per-dimension floor checks, standard refine/HITL paths
+  - `decide_next_step()` pure function returns a frozen `RoutingDecision` (includes `rollback: bool` field)
+  - Supports fail-fast (composite ≤ `fail_fast_score`), cleanup-rejudge (max 1 cycle), per-dimension floor checks, standard refine/HITL paths
+  - **Score regression rollback**: if refine makes the score worse, routes to metadata (rollback=True, pre-refine score ≥ cutoff) or HITL (rollback=True, pre-refine score < cutoff)
+  - **Diminishing-returns detection**: if score is unchanged after refine, escalates to HITL
+  - **Cleanup-rejudge cycle guard**: `cleanup_rejudge_count` capped at 1 to prevent infinite loops
+  - `content_ok` check includes `hallucination_risk` alongside `faithfulness` and `cohesion`
   - Rule-tag-aware cleanup routing: `hard_failure` → FAILED, `suspicious_content` → HITL, other tags → standard cleanup→judge
   - All branching logic centralised here; callers never inspect scores directly
 
@@ -58,8 +66,10 @@ Status note (Feb 2026): `/rag/ingest/*` is pipeline-backed (text + file). All no
 - **`state.py`** - State management
   - Defines 11 pipeline nodes (INGEST, CLEANUP, JUDGE, REFINE, METADATA, EMBEDDINGS, CHUNKING, COMMIT, HITL, COMPLETED, FAILED) and valid transitions
   - CLEANUP transitions: → JUDGE, → HITL (via `suspicious_content` rule tag), → FAILED (via `hard_failure` rule tag)
-  - Tracks document processing state including cleanup results and Docling health
-  - `get_next_node()` delegates to `routing.decide_next_step()`
+  - JUDGE transitions: → REFINE, → METADATA, → HITL, → FAILED, → CLEANUP (cleanup-rejudge)
+  - Tracks `judge_score_history` (list of all scores), `pre_refine_markdown` (for rollback), `cleanup_rejudge_count`
+  - `set_refine_result()`: only increments `refine_retries` on success; tracks `refine_total_attempts` with 2× circuit-breaker hard cap
+  - `get_next_node()` delegates to `routing.decide_next_step()` and performs markdown rollback when `decision.rollback` is True
 
 ### Data Models (`atlas.schemas`)
 
@@ -78,7 +88,7 @@ Comprehensive data structures with full traceability:
   - Docling JSON ground truth storage
 
 - **Pipeline Results** - Structured outputs
-  - `JudgeResult`: composite score, sub_scores (per-dimension dict), rationale, version, refinement decision
+  - `JudgeResult`: composite score, sub_scores (per-dimension dict), rationale (per-dimension for scores <4), version, refinement decision
   - `RefineResult`: refined markdown, improvements made, success flag
   - `MetadataResult`: tags, tier used, model info
   - `CleanupResult`: cleaned markdown, per-transform flags, changes_made boolean
@@ -217,8 +227,10 @@ Unified pipeline runner (~996 lines) with shared helpers:
 - **`_record_pipeline_node_runs()`** — writes node-run rows to the workflow ledger
 - **`_record_normalize_node_run()`** — records normalize as a tracked pipeline step
 - **`_persist_markdown_artifact()`** — writes markdown artifacts to the filesystem store
-- **`_handle_hitl_pause()`** — creates HITL tasks and pauses the pipeline
+- **`_handle_hitl_pause()`** — creates HITL tasks with rich context (judge sub-scores, rationale, score history, refine attempts, last improvements) and pauses the pipeline
 - **`_commit_chunks_to_qdrant()`** — chunks, embeds, and upserts to Qdrant
+- **HITL resume guard** — `MAX_HITL_RESUMES=2` prevents infinite HITL→pipeline→HITL loops; resume count tracked in `WorkflowRun.meta["hitl_resume_count"]`
+- **`max_refine_retries`** read from `limits` section (with backwards-compat fallback to `thresholds`)
 - All silent `except: pass` blocks replaced with `log.warning` for observability
 
 ### Enhanced Chunking (`atlas.rag.chunking`)
@@ -266,7 +278,7 @@ Three chunking strategies available (configurable via `pipeline.yaml`). Default 
 
 ## Testing
 
-Current automated coverage (**348 tests passing**, 0 failures):
+Current automated coverage (**358 tests passing**, 0 failures):
 - Schema creation and validation (incl. `CleanupResult`, `JudgeResult.sub_scores`)
 - Diagnostics and error handling
 - Pipeline state transitions (11 nodes)
@@ -288,7 +300,7 @@ Current automated coverage (**348 tests passing**, 0 failures):
 
 Run tests:
 ```bash
-pytest -q                    # All tests (348 passing)
+pytest -q                    # All tests (358 passing)
 pytest -m integration        # Integration tests only
 ```
 

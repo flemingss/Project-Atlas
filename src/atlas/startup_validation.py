@@ -153,6 +153,7 @@ _VALID_STEP_KINDS = frozenset({
     "rewrite_pattern",
     "strip_headers_footers",
     "normalize_headings",
+    "fix_numbered_headings",
     "merge_hardwrapped_paragraphs",
     "fix_bullets",
     "html_unescape",

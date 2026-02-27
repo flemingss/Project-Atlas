@@ -116,8 +116,20 @@ def get_workflow_run(session: Session, *, run_id: int) -> WorkflowRun | None:
     return res.scalars().first()
 
 
-def list_workflow_runs(session: Session, *, limit: int = 100) -> list[WorkflowRun]:
-    res = session.execute(select(WorkflowRun).order_by(WorkflowRun.id.desc()).limit(int(limit)))
+def list_workflow_runs(
+    session: Session,
+    *,
+    limit: int = 100,
+    tenant_id: str | None = None,
+    project_id: str | None = None,
+) -> list[WorkflowRun]:
+    stmt = select(WorkflowRun)
+    if tenant_id:
+        stmt = stmt.where(WorkflowRun.tenant_id == tenant_id)
+    if project_id:
+        stmt = stmt.where(WorkflowRun.project_id == project_id)
+    stmt = stmt.order_by(WorkflowRun.id.desc()).limit(int(limit))
+    res = session.execute(stmt)
     return list(res.scalars().all())
 
 
