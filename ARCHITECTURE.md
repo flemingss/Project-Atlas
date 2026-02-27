@@ -266,7 +266,7 @@ Three chunking strategies available (configurable via `pipeline.yaml`). Default 
 
 ## Testing
 
-Current automated coverage (**338 tests passing**, 0 failures):
+Current automated coverage (**348 tests passing**, 0 failures):
 - Schema creation and validation (incl. `CleanupResult`, `JudgeResult.sub_scores`)
 - Diagnostics and error handling
 - Pipeline state transitions (11 nodes)
@@ -284,10 +284,11 @@ Current automated coverage (**338 tests passing**, 0 failures):
 - **Metrics aggregation** (`test_metrics_aggregation.py` — 3 tests)
 - **Rule suggestion** (`test_rule_suggestion.py` — 13 tests)
 - **Phase refactors** (`test_phase_refactors.py` — 40 tests): refine guardrails, normalize boundary, runner consolidation, html_unescape dedup
+- **Cleanup rules import/export** (`test_cleanup_rules_import_export.py` — 10 tests): export YAML, import replace/merge, validation, round-trip
 
 Run tests:
 ```bash
-pytest -q                    # All tests (338 passing)
+pytest -q                    # All tests (348 passing)
 pytest -m integration        # Integration tests only
 ```
 

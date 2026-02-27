@@ -1886,6 +1886,85 @@ def main() -> None:
                     else:
                         st.caption("No cleanup rules configured. Use the suggestion card below to create one.")
 
+                    # -- Export / Import controls --------------------------
+                    st.divider()
+                    exp_imp_cols = st.columns([1, 1, 2])
+                    with exp_imp_cols[0]:
+                        _export_clicked = components.secondary_button(
+                            "Export rules", key="ct_export_rules",
+                        )
+                    with exp_imp_cols[1]:
+                        _show_import = components.secondary_button(
+                            "Import rules", key="ct_show_import",
+                        )
+
+                    if _export_clicked:
+                        with st.spinner("Downloading rules..."):
+                            try:
+                                import httpx as _httpx
+                                _exp_resp = _httpx.get(
+                                    f"{api}/admin/cleanup-rules/export",
+                                    headers=admin_headers,
+                                    timeout=15.0,
+                                )
+                                if _exp_resp.status_code < 400:
+                                    st.download_button(
+                                        label="Save cleanup_rules.yaml",
+                                        data=_exp_resp.content,
+                                        file_name="cleanup_rules.yaml",
+                                        mime="application/x-yaml",
+                                        key="ct_export_download",
+                                    )
+                                else:
+                                    st.error(f"Export failed ({_exp_resp.status_code})")
+                            except Exception as _ex:
+                                st.error(f"Export error: {_ex}")
+
+                    _import_open_key = "_ct_import_open"
+                    if _show_import:
+                        st.session_state[_import_open_key] = not st.session_state.get(_import_open_key, False)
+
+                    if st.session_state.get(_import_open_key):
+                        st.caption("Upload a YAML file containing cleanup rules to import.")
+                        uploaded = st.file_uploader(
+                            "Rules YAML file",
+                            type=["yaml", "yml"],
+                            key="ct_import_file",
+                        )
+                        _imp_mode = st.radio(
+                            "Import mode",
+                            options=["replace", "merge"],
+                            index=0,
+                            horizontal=True,
+                            key="ct_import_mode",
+                            help="**Replace**: overwrite all existing rules. **Merge**: add new rules, update existing by name.",
+                        )
+                        _imp_btn = components.primary_button("Import", key="ct_import_btn", disabled=uploaded is None)
+                        if _imp_btn and uploaded is not None:
+                            _yaml_content = uploaded.read().decode("utf-8")
+                            with st.spinner("Importing rules..."):
+                                resp_imp, imp_data = _request_json_diag(
+                                    label="import cleanup rules",
+                                    method="POST",
+                                    url=f"{api}/admin/cleanup-rules/import",
+                                    headers=admin_headers,
+                                    json_body={
+                                        "rules_yaml": _yaml_content,
+                                        "mode": _imp_mode,
+                                    },
+                                    timeout_s=30.0,
+                                )
+                            if int(resp_imp.status_code) < 400 and isinstance(imp_data, dict):
+                                st.success(
+                                    f"Imported {len(imp_data.get('imported', []))} rule(s) "
+                                    f"({_imp_mode} mode). {imp_data.get('rules_count', '?')} total rules active."
+                                )
+                                st.session_state.pop(_import_open_key, None)
+                                st.rerun()
+                            else:
+                                st.error(f"Import failed ({resp_imp.status_code})")
+                                components.detail_expander("Error details", data=imp_data)
+
                 # -- Card 2: Quality feedback ---------------------------------
                 with components.card():
                     components.card_header(

@@ -158,6 +158,7 @@ Notes:
 - ✅ **Metrics aggregation API** (`api_admin.py`): `GET /admin/looking-glass/metrics` with optional tenant/project/corpus scoping. Returns workflow status distribution, node failure rates by node name, HITL escalation rates, auto-accepted counts, and cleanup-feedback category counts.
 - ✅ **LLM-assisted rule suggestion** (`rule_suggester.py`): `suggest_cleanup_rule()` accepts sample markdown + issues, calls the LLM (via `ModelRegistry`), and returns `{rule_yaml, rationale}`. Heuristic fallback when LLM unavailable. Deterministic provider branch for CI.
 - ✅ **Rule suggestion endpoint** (`api_admin.py`): `POST /admin/cleanup-rules/suggest` — resolves `chat_model` or `refine_model`, invokes `suggest_cleanup_rule()`, returns JSON suggestion.
+- ✅ **Cleanup rules import/export** (`api_admin.py`): `GET /admin/cleanup-rules/export` downloads active rules as YAML. `POST /admin/cleanup-rules/import` accepts YAML with `replace` (overwrite all) or `merge` (add/update by name) modes. Both validate rules against the schema before applying.
 
 ### 3.9 E2E and repeatability
 
@@ -394,8 +395,9 @@ This is sequenced to maximize repeatability and minimize fantasy risk.
 - ✅ **Phase 8B — Normalize/cleanup boundary**: Normalize refactored to formatting-only (whitespace/line-break normalization). `strip_noise_markdown` removed. Page-number stripping and repetitive-line removal moved to cleanup builtins (`strip_page_numbers` ON by default, `strip_repetitive_lines` OFF by default).
 - ✅ **Phase 8C — Runner consolidation**: Five shared helpers extracted. Both ingest paths rewritten to use shared helpers. 37% line reduction (1572 → 996 lines). All silent `except: pass` replaced with `log.warning`. Hoisted inline imports to module top. Normalize tracked as a pipeline node run.
 - ✅ **Phase 8D — Polish**: `html_unescape` dedup (cleanup_rules delegates to cleanup builtin). 40 new tests in `test_phase_refactors.py`.
+- ✅ **Cleanup rules import/export**: `GET /admin/cleanup-rules/export` (YAML download) and `POST /admin/cleanup-rules/import` (replace/merge modes). UI export/import controls in operator console. 10 new tests in `test_cleanup_rules_import_export.py`.
 
-**Definition of done (8A-8D):** 338 tests passing. Runner consolidated. Refine guardrails prevent content loss. Normalize is formatting-only.
+**Definition of done (8A-8D + import/export):** 348 tests passing. Runner consolidated. Refine guardrails prevent content loss. Normalize is formatting-only. Cleanup rules portable via YAML.
 
 ### Phase 8 — Retrieval-time upgrades (optional / scoped)
 

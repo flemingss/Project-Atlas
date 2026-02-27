@@ -12,7 +12,7 @@ Project Atlas has undergone a comprehensive top-down review to ensure all featur
 
 ### Key Findings
 
-- ✅ **338 unit/E2E tests passing** (100% pass rate, 0 skipped)
+- ✅ **348 unit/E2E tests passing** (100% pass rate, 0 skipped)
 - ✅ **1 integration test passing** (with live Qdrant service)
 - ✅ **All linting checks passing** (ruff)
 - ✅ **Comprehensive E2E test suite** with 9 workflow tests
@@ -103,7 +103,7 @@ Project Atlas has undergone a comprehensive top-down review to ensure all featur
 
 ## Test Coverage Analysis
 
-### Unit Tests (338 tests: 338 passing, 0 skipped)
+### Unit Tests (348 tests: 348 passing, 0 skipped)
 
 | Test Category | Tests | Status | Coverage |
 |--------------|-------|--------|----------|
@@ -127,6 +127,7 @@ Project Atlas has undergone a comprehensive top-down review to ensure all featur
 | **Metrics Aggregation** | 3 | ✅ PASS | Unscoped, scoped, empty metrics |
 | **Rule Suggestion** | 13 | ✅ PASS | Deterministic provider, heuristic fallback (6), API endpoint |
 | **Phase Refactors** | 40 | ✅ PASS | Refine guardrails, normalize boundary, runner consolidation, html_unescape dedup |
+| **Cleanup Rules Import/Export** | 10 | ✅ PASS | Export YAML, import replace/merge, validation, round-trip |
 | **Other** | 29+ | ✅ PASS | Models, schemas, deep merge, etc. |
 
 ### E2E Workflow Tests (9 comprehensive tests)
@@ -277,10 +278,10 @@ All checks passed!
 
 - ✅ Solid core architecture (pipeline nodes, HITL, diagnostics, multi-tenancy)
 - ✅ Comprehensive API (40+ endpoints covering all operations)
-- ✅ Excellent test coverage (338 unit/E2E tests passing, 12 black-box scenarios)
+- ✅ Excellent test coverage (348 unit/E2E tests passing, 12 black-box scenarios)
 - ✅ Strong documentation (README, E2E guide, technical design)
 - ✅ Clean codebase (all linting checks passing)
-- ✅ No regressions (338 passing tests, 0 skipped)
+- ✅ No regressions (348 passing tests, 0 skipped)
 
 The repository demonstrates best practices in software engineering:
 - Testable architecture with dependency injection
@@ -298,7 +299,7 @@ The repository demonstrates best practices in software engineering:
 ```bash
 # Unit/E2E Tests
 $ pytest -q
-338 passed in 32.15s
+348 passed in 49.06s
 
 # Integration Tests
 $ pytest -m integration -v

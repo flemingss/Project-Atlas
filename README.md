@@ -93,6 +93,8 @@ Cleanup rule suggestion:
 Cleanup rule management:
 - `POST /admin/cleanup-rules/apply`
 - `DELETE /admin/cleanup-rules/{name}`
+- `GET /admin/cleanup-rules/export`
+- `POST /admin/cleanup-rules/import`
 
 Config validation & restore:
 - `POST /admin/config/validate-rules`

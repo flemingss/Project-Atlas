@@ -123,6 +123,14 @@ class ApplyCleanupRuleRequest(BaseModel):
     notes: str = "" # Config-version notes (optional)
 
 
+class ImportCleanupRulesRequest(BaseModel):
+    """Import cleanup rules from a YAML string."""
+    rules_yaml: str  # YAML string containing a list of rule entries
+    mode: str = "replace"  # 'replace' (overwrite all) or 'merge' (add/update by name)
+    name: str = ""  # Config-version name (optional)
+    notes: str = ""  # Config-version notes (optional)
+
+
 class CleanupDryRunRequest(BaseModel):
     """Test cleanup rules against a markdown sample without ingesting."""
     markdown_sample: str
@@ -1119,6 +1127,99 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
             "output_length": len(result.cleaned_markdown),
             "changed": req.markdown_sample != result.cleaned_markdown,
             "cleaned_markdown": result.cleaned_markdown,
+        }
+
+    @r.get("/cleanup-rules/export")
+    def export_cleanup_rules() -> StreamingResponse:
+        """Export the active cleanup rules as a downloadable YAML file."""
+        import yaml as _yaml
+
+        yaml_defaults = config_manager.get()
+        with session_factory() as session:
+            active = get_active_config_version(session)
+
+        if active is not None:
+            current_pipeline = active.payload.get("pipeline", {})
+        else:
+            current_pipeline = yaml_defaults.pipeline
+
+        rules: list[dict[str, Any]] = list(current_pipeline.get("cleanup_rules", []) or [])
+        yaml_str = _yaml.dump(rules, default_flow_style=False, sort_keys=False, allow_unicode=True)
+        buf = io.BytesIO(yaml_str.encode("utf-8"))
+        return StreamingResponse(
+            buf,
+            media_type="application/x-yaml",
+            headers={"Content-Disposition": "attachment; filename=cleanup_rules.yaml"},
+        )
+
+    @r.post("/cleanup-rules/import")
+    def import_cleanup_rules(req: ImportCleanupRulesRequest) -> dict[str, Any]:
+        """Import cleanup rules from YAML.
+
+        Modes:
+        - ``replace`` (default): overwrites the entire cleanup_rules list.
+        - ``merge``: adds new rules by name, replaces existing rules with the same name.
+        """
+        import yaml as _yaml
+        from fastapi import HTTPException
+        from atlas.startup_validation import validate_cleanup_rules
+
+        if req.mode not in ("replace", "merge"):
+            raise HTTPException(status_code=400, detail="mode must be 'replace' or 'merge'")
+
+        # 1. Parse
+        try:
+            parsed = _yaml.safe_load(req.rules_yaml)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid YAML: {exc}")
+
+        if isinstance(parsed, dict):
+            parsed = [parsed]
+        if not isinstance(parsed, list):
+            raise HTTPException(status_code=400, detail="Expected a YAML list of rule entries")
+
+        # 2. Validate
+        errors = validate_cleanup_rules(parsed)
+        if errors:
+            raise HTTPException(status_code=422, detail={"validation_errors": errors})
+
+        # 3. Build final rule list
+        yaml_defaults = config_manager.get()
+        with session_factory() as session:
+            active = get_active_config_version(session)
+
+        if req.mode == "merge":
+            if active is not None:
+                current_pipeline = active.payload.get("pipeline", {})
+            else:
+                current_pipeline = yaml_defaults.pipeline
+            existing: list[dict[str, Any]] = list(current_pipeline.get("cleanup_rules", []) or [])
+            new_names = {r["name"] for r in parsed if "name" in r}
+            merged = [r for r in existing if r.get("name") not in new_names]
+            merged.extend(parsed)
+            final_rules = merged
+        else:
+            final_rules = parsed
+
+        imported_names = [r.get("name", "unnamed") for r in parsed]
+
+        # 4. Create config version
+        cv_req = ConfigVersionCreateRequest(
+            name=req.name or f"import-rules-{req.mode}",
+            notes=req.notes or f"Imported {len(parsed)} rule(s) ({req.mode}): {', '.join(imported_names)}",
+            base="current",
+            patch={"pipeline": {"cleanup_rules": final_rules}},
+            activate=True,
+        )
+        row = create_config_version(session_factory(), req=cv_req, yaml_defaults=yaml_defaults)
+
+        return {
+            "ok": True,
+            "mode": req.mode,
+            "config_version_id": row.id,
+            "config_hash": row.config_hash,
+            "rules_count": len(final_rules),
+            "imported": imported_names,
         }
 
     @r.delete("/cleanup-rules/{rule_name}")

@@ -180,4 +180,4 @@ Base commit used for code permalinks: [`7bea9a6`](https://github.com/flemingss/P
 
 **All previously Partial items have been wired.** v0.6.0 adds: refine content-safety guardrails (min_preservation_ratio, tightened prompt, refine_version v2), two new cleanup builtins (strip_page_numbers, strip_repetitive_lines), normalize refactored to formatting-only, runner consolidation (5 shared helpers, 37% line reduction), html_unescape dedup. v0.5.0 adds: config-driven cleanup rules engine (7 step handlers, rule-tag routing), cleanup feedback API (5 endpoints), metrics aggregation endpoint, CLEANUP→HITL transition, LLM-assisted rule suggestion, Cleanup & Tuning UI card. On top of v0.4.0: cleanup node, multi-dimensional judge (4 dimensions), unified routing, retry/backoff, chunk QA + fallback, Docling health score, fidelity mode search filter, semantic chunking as default strategy.
 
-Test count: **338 passing** (up from 265 in v0.5.0, 252 after 7A-7C, 208 at v0.4.0, 77 at initial audit, 128 pre-CR baseline).
+Test count: **348 passing** (up from 265 in v0.5.0, 252 after 7A-7C, 208 at v0.4.0, 77 at initial audit, 128 pre-CR baseline).

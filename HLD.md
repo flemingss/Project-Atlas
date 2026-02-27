@@ -12,7 +12,8 @@ Key deltas vs original intent:
 - Cleanup rules: v0.5.0 adds a config-driven cleanup rules engine (7 step handlers, first-match-wins, rule-tag routing including CLEANUP→HITL escalation).
 - Cleanup feedback: operator feedback loop with CRUD API + metrics aggregation endpoint.
 - Rule suggestion: v0.5.0 adds LLM-assisted rule suggestion (`POST /admin/cleanup-rules/suggest`) with heuristic fallback and deterministic provider support for CI.
-- Cleanup & Tuning UI: Admin tab card for viewing rules, submitting feedback, browsing metrics, and invoking AI rule suggestion.
+- Cleanup rules import/export: `GET /admin/cleanup-rules/export` downloads active rules as YAML; `POST /admin/cleanup-rules/import` accepts YAML with replace/merge modes for portable rule management.
+- Cleanup & Tuning UI: Admin tab card for viewing rules, submitting feedback, browsing metrics, invoking AI rule suggestion, and exporting/importing cleanup rules.
 - Chunking: default strategy is semantic with automatic QA + fallback; chunk_with_fallback replaces direct calls.
 - Docling health score: computed after every ingest to surface extraction quality.
 - Refine guardrails: v0.6.0 adds content-safety guardrails (min_preservation_ratio, tightened prompt, refine_version v2) to prevent LLM content loss.

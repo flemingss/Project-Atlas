@@ -13,12 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Runner consolidation** (`src/atlas/pipeline/runner.py`): Five shared helpers extracted (`_record_pipeline_node_runs`, `_record_normalize_node_run`, `_persist_markdown_artifact`, `_handle_hitl_pause`, `_commit_chunks_to_qdrant`). Both ingest paths (text + file) rewritten to use shared helpers. 37% line reduction (1572 → 996 lines). All silent `except: pass` blocks replaced with `log.warning`. Hoisted all inline imports to module top.
 - **html_unescape deduplication**: `cleanup_rules._step_html_unescape` now delegates to `cleanup._builtin_html_unescape`, eliminating duplicate logic.
 - 40 new tests in `test_phase_refactors.py`: refine guardrails, normalize boundary, runner consolidation, html_unescape dedup.
+- **Cleanup rules import/export** (`src/atlas/api_admin.py`): `GET /admin/cleanup-rules/export` downloads active rules as a YAML file. `POST /admin/cleanup-rules/import` accepts YAML with `replace` (overwrite all) or `merge` (add/update by name) modes. Both endpoints validate rules against the schema before applying.
+- **Cleanup rules import/export UI** (`ui/app.py`): Export button downloads `cleanup_rules.yaml`; Import panel accepts a `.yaml` file upload with replace/merge mode selector.
+- 10 new tests in `test_cleanup_rules_import_export.py`: export empty/populated, import replace/merge/clear, validation errors, round-trip.
 
 ### Changed
 - **Normalize refactored to formatting-only** (`src/atlas/rag/normalize.py`): `strip_noise_markdown` removed entirely. Normalize now performs whitespace/line-break formatting only. Page-number stripping and repetitive-line removal moved to cleanup builtins where they belong.
 - **Normalize tracked as node run**: Normalize step now records a pipeline node run for auditability.
 - `startup_validation.py` updated to recognize new builtin keys (`strip_page_numbers`, `strip_repetitive_lines`).
-- Test count: **338 passed** (up from 265 in v0.5.0).
+- Test count: **348 passed** (up from 265 in v0.5.0).
 
 ## [0.5.0] - 2026-02-26
 
