@@ -14,6 +14,7 @@ from atlas.pipeline.judge import JudgeNode
 from atlas.pipeline.metadata import MetadataNode
 from atlas.pipeline.refine import RefineNode
 from atlas.pipeline.state import PipelineContext, PipelineNode, PipelineStateManager
+from atlas.pipeline.tokens import fits_in_context
 
 
 class PipelineOrchestrator:
@@ -163,7 +164,11 @@ class PipelineOrchestrator:
         context.set_judge_result(result)
 
     async def _process_refine(self, context: PipelineContext) -> None:
-        """Process refine node."""
+        """Process refine node.
+
+        Chooses between full-document and sectional refinement based on
+        whether the document fits in the refine model's context window.
+        """
         self.diagnostics.log_info(component="pipeline", message="Processing refine node")
 
         judge_result = context.results.get("judge", {})
@@ -174,14 +179,37 @@ class PipelineOrchestrator:
             "refine_max_retries", context.state.max_refine_retries
         )
 
-        result = await self.refine_node.refine_document(
-            markdown=context.state.markdown_projection,
-            judge_score=judge_score,
-            retry_count=context.state.refine_retries,
-            max_retries=max_retries,
-            judge_sub_scores=judge_sub_scores,
-            judge_rationale=judge_rationale,
-        )
+        markdown = context.state.markdown_projection
+        max_ctx = int(self.config.get("limits", {}).get("max_context_tokens", 16384))
+
+        if fits_in_context(markdown, max_ctx):
+            # Full-document refinement — document fits in context
+            result = await self.refine_node.refine_document(
+                markdown=markdown,
+                judge_score=judge_score,
+                retry_count=context.state.refine_retries,
+                max_retries=max_retries,
+                judge_sub_scores=judge_sub_scores,
+                judge_rationale=judge_rationale,
+            )
+        else:
+            # Sectional refinement — document too long for one pass
+            self.diagnostics.log_info(
+                component="pipeline",
+                message=(
+                    f"Document exceeds context budget for full refinement "
+                    f"(~{len(markdown)} chars, max_ctx={max_ctx}); "
+                    f"using sectional refinement"
+                ),
+            )
+            result = await self.refine_node.refine_document_sectional(
+                markdown=markdown,
+                judge_score=judge_score,
+                retry_count=context.state.refine_retries,
+                max_retries=max_retries,
+                judge_sub_scores=judge_sub_scores,
+                judge_rationale=judge_rationale,
+            )
 
         context.set_refine_result(result)
 

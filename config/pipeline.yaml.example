@@ -18,7 +18,11 @@ thresholds:
   # Minimum ratio of refined output length to input length.  If the LLM
   # refine step produces text shorter than input × this ratio, the
   # refinement is rejected and the original text is kept.
-  refine_min_preservation_ratio: 0.6
+  refine_min_preservation_ratio: 0.85
+  # Minimum ratio of markdown heading count in refine output vs input.
+  # If the refined text has fewer than this fraction of the original's
+  # headings, refinement is rejected as sections_dropped.
+  refine_min_section_ratio: 0.8
   # When true, a document whose formatting sub-score is below cutoff but
   # whose content dimensions are above cutoff is re-routed through CLEANUP
   # instead of REFINE.
@@ -29,6 +33,12 @@ limits:
   tier2_chunk_cap_per_document: 25
   # Back-compat: older configs used chunk_max_chars. Kept as a safety valve.
   chunk_max_chars: 1000
+  # Maximum context-window size (tokens) of the refine model.  Used by the
+  # pre-refine budget check and the sectional-refinement splitter.
+  max_context_tokens: 16384
+  # Maximum section size (tokens) for sectional refinement.  Sections
+  # larger than this are sent individually; smaller sections may be batched.
+  refine_max_section_tokens: 6000
 
 normalize:
   enabled: true

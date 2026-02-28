@@ -16,6 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from atlas.pipeline.tokens import estimate_tokens, fits_in_context
+
 
 # ---------------------------------------------------------------------------
 # Routing decision dataclass
@@ -188,6 +190,24 @@ def decide_next_step(
 
         # Standard refine path
         if composite < judge_cutoff and refine_retries < max_retries:
+            # ----- Context-budget guard -----
+            # If the document is too long for the refine model's context
+            # window, skip full-document refinement.  Sectional refinement
+            # (handled downstream in the orchestrator) may still proceed.
+            markdown_len: int = int(state_snapshot.get("markdown_len", 0))
+            max_ctx: int = int(config.get("limits", {}).get("max_context_tokens", 16384))
+            if markdown_len and not fits_in_context(
+                "x" * markdown_len, max_ctx
+            ):
+                return RoutingDecision(
+                    target="refine",
+                    reason=(
+                        f"Composite {composite} < cutoff {judge_cutoff}, "
+                        f"retries {refine_retries}/{max_retries} "
+                        f"(document ~{estimate_tokens('x' * markdown_len)} tokens — "
+                        f"sectional refinement required)"
+                    ),
+                )
             return RoutingDecision(
                 target="refine",
                 reason=f"Composite {composite} < cutoff {judge_cutoff}, retries {refine_retries}/{max_retries}",

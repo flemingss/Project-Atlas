@@ -19,13 +19,14 @@ providers:
 roles:
   judge_model:
     provider: lmstudio
-    model_name: "openai/gpt-oss-20b"
+    model_name: "qwen3-14b"
     params:
       temperature: 0.0
+      max_tokens: 500
 
   refine_model:
     provider: lmstudio
-    model_name: "openai/gpt-oss-20b"
+    model_name: "qwen3-8b"
     params:
       temperature: 0.2
 
@@ -36,15 +37,17 @@ roles:
 
   metadata_tier1_model:
     provider: lmstudio
-    model_name: "openai/gpt-oss-20b"
+    model_name: "qwen3-14b"
     params:
       temperature: 0.0
+      max_tokens: 1000
 
   metadata_tier2_model:
     provider: lmstudio
-    model_name: "openai/gpt-oss-20b"
+    model_name: "qwen3-14b"
     params:
       temperature: 0.0
+      max_tokens: 1000
 
   reranker_model:
     provider: lmstudio

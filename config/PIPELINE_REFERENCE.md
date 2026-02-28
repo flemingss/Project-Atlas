@@ -113,6 +113,8 @@ Controls quality gating and routing decisions in the agentic loop.
 | `judge_borderline_low` | `int` | `3` | Reserved for future borderline handling logic. Not consumed in current code. |
 | `judge_borderline_high` | `int` | `4` | Reserved for future borderline handling logic. Not consumed in current code. |
 | `refine_max_retries` | `int` | `2` | **Legacy location.** Prefer `limits.refine_max_retries`. Read as fallback. |
+| `refine_min_preservation_ratio` | `float` | `0.85` | Minimum ratio of output length to input length after a refine pass. Outputs shorter than this ratio are rejected and the original text is kept. Prevents summarisation. |
+| `refine_min_section_ratio` | `float` | `0.8` | Minimum ratio of output heading count to input heading count after a refine pass. Outputs with fewer than this fraction of headings are rejected (only triggers when input has ≥ 3 headings). Prevents section dropping. |
 
 **Judge dimensions** (scored 1–5 each by the Judge LLM):
 `faithfulness`, `formatting`, `cohesion`, `hallucination_risk`
@@ -140,12 +142,16 @@ Hard caps on pipeline behaviour.
 | `refine_max_retries` | `int` | `3` | Maximum Refine→Judge loop iterations before the document escalates to HITL review. Only successful refinements count; failed attempts are tracked separately with a 2× circuit-breaker hard cap. |
 | `tier2_chunk_cap_per_document` | `int` | `25` | Maximum chunks per document that receive Tier-2 (expensive model) metadata enrichment. Also read from legacy key `metadata_tier2_cap_per_doc`. |
 | `chunk_max_chars` | `int` | `1000` | Safety-valve maximum characters per chunk. Used primarily by the `paragraph` chunking strategy. |
+| `max_context_tokens` | `int` | `16384` | Maximum estimated input tokens for a single full-document refine call. Documents exceeding this budget are refined sectionally. Based on refine model context window minus prompt overhead and output space. |
+| `refine_max_section_tokens` | `int` | `6000` | Target maximum tokens per section when splitting a long document for sectional refinement. Sections are split on `##` headings, with secondary splits on `###` if a section still exceeds this limit. |
 
 ```yaml
 limits:
   refine_max_retries: 3
   tier2_chunk_cap_per_document: 25
   chunk_max_chars: 1000
+  max_context_tokens: 16384
+  refine_max_section_tokens: 6000
 ```
 
 ---
@@ -643,7 +649,7 @@ Ingest → Cleanup → Judge → Refine* → Metadata → Embeddings → Chunkin
 - **Ingest** — Document conversion via Docling (PDF/DOCX/HTML → Markdown).
 - **Cleanup** — Built-in transforms + config-driven rule engine.
 - **Judge** — LLM grades quality on 4 dimensions (1–5 each). Per-dimension rationale for scores below 4.
-- **Refine** — LLM rewrites the document to improve quality (if score < cutoff). Receives judge sub-scores, rationale, and iteration context.
+- **Refine** — LLM rewrites the document to improve quality (if score < cutoff). Receives judge sub-scores, rationale, and iteration context. For documents exceeding `limits.max_context_tokens`, sectional refinement splits the document on headings and refines each section independently.
 - **Metadata** — LLM generates tiered metadata tags.
 - **Embeddings** — Vector generation via embedding model.
 - **Chunking** — Split markdown into chunks (with QA checks + fallback).
@@ -666,6 +672,12 @@ HITL→pipeline→HITL loops.
   infinite failure loops.
 - **Cleanup-rejudge cycle guard** — at most one cleanup→judge→cleanup
   cycle per document.
+- **Context budget awareness (v0.7.1)** — before refine, the pipeline
+  estimates document token count. Documents exceeding
+  `limits.max_context_tokens` are refined sectionally (split on headings,
+  each section refined independently, then reassembled). Two post-refine
+  guards enforce quality: length preservation (≥85% of input) and
+  section-count preservation (≥80% of headings).
 
 ---
 
@@ -684,7 +696,8 @@ HITL→pipeline→HITL loops.
 | Judge | Score regressed after refine + pre-refine score ≥ cutoff | Metadata (with **rollback** to pre-refine markdown) | — |
 | Judge | Score regressed after refine + pre-refine score < cutoff | **HITL** (with **rollback** to pre-refine markdown) | — |
 | Judge | Score unchanged after refine (diminishing returns) | **HITL** | — |
-| Judge | Composite < cutoff + retries left | Refine | `thresholds.judge_cutoff_refine` |
+| Judge | Composite < cutoff + retries left + doc fits context budget | Refine (full) | `thresholds.judge_cutoff_refine` |
+| Judge | Composite < cutoff + retries left + doc exceeds context budget | Refine (sectional) | `limits.max_context_tokens` |
 | Judge | Composite < cutoff + retries exhausted | **HITL** | `limits.refine_max_retries` |
 | Judge | Score acceptable | Metadata | — |
 | Refine | Always | Judge | — |

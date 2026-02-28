@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-03-02
+
+### Added
+- **Token estimation utilities** (`src/atlas/pipeline/tokens.py`): New module with `estimate_tokens()` (chars/3.7 heuristic), `count_headings()` (ATX heading counter), `fits_in_context()` (pre-flight feasibility check), and `split_into_sections()` (heading-aware section splitter with secondary `###` split for oversized sections). Used by refine, routing, and orchestrator.
+- **Sectional refinement** (`src/atlas/pipeline/refine.py`): New `refine_document_sectional()` method for documents exceeding the refine model's context budget. Splits via `split_into_sections()`, refines each section independently, reassembles, and applies whole-document guardrails (length + heading preservation).
+- **Section-count preservation guard** (`src/atlas/pipeline/refine.py`): After the existing length guard, a new heading-count check rejects refine outputs that drop ≥20% of input headings (minimum 3 headings to trigger). Prevents the model from silently collapsing detailed sections into summaries.
+- **Dynamic `max_tokens`** (`src/atlas/pipeline/refine.py`): Refine calls now compute `max_tokens = max(512, int(input_est * 1.15))` per invocation, preventing the model from truncating long outputs. `_call_refine_model()` accepts an optional `max_tokens` override.
+- **Pre-refine context budget check** (`src/atlas/pipeline/routing.py`): Judge routing now annotates decisions with "sectional refinement required" when a document's estimated tokens exceed the context budget, enabling the orchestrator to dispatch sectional vs full refinement.
+- **`markdown_len` in state snapshot** (`src/atlas/pipeline/state.py`): `get_next_node()` now passes the current markdown length in the state snapshot to the routing function.
+- **Smart refine dispatch** (`src/atlas/pipeline/orchestrator.py`): `_process_refine()` now checks `fits_in_context()` before choosing between `refine_document()` (full) and `refine_document_sectional()` with diagnostic logging.
+
+### Changed
+- **Model swap: GPT-OSS 20B → Qwen3 split** (`config/models.yaml.example`): Judge/metadata models switched from `openai/gpt-oss-20b` (MoE, SWA=128) to `qwen3-14b` (dense, full attention). Refine model switched to `qwen3-8b` (dense, full attention). Eliminates sliding-window attention blindness and sparse-expert quality issues on long documents. Added `max_tokens` to judge (500) and metadata (1000) model configs.
+- **Tighter preservation ratio** (`config/pipeline.yaml.example`): `refine_min_preservation_ratio` raised from `0.6` to `0.85` — refine outputs shorter than 85% of input are rejected. Prevents the model from summarizing instead of fixing.
+- **New pipeline config keys** (`config/pipeline.yaml.example`): Added `refine_min_section_ratio: 0.8`, `limits.max_context_tokens: 16384`, `limits.refine_max_section_tokens: 6000`.
+- Test count: **358 passed** (unchanged from v0.7.0).
+
 ## [0.7.0] - 2026-02-28
 
 ### Added

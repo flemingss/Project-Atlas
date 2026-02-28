@@ -11,6 +11,7 @@ from typing import Any
 from atlas.diagnostics import ErrorCode, get_diagnostics
 from atlas.llm.provider import ILlmProvider
 from atlas.llm.provider import ChatMessage
+from atlas.pipeline.tokens import count_headings, estimate_tokens, split_into_sections
 from atlas.schemas import FidelityFlag, RefineResult
 
 
@@ -61,12 +62,18 @@ class RefineNode:
         model_params: dict[str, Any],
         max_retries: int = 2,
         min_preservation_ratio: float = _DEFAULT_MIN_PRESERVATION_RATIO,
+        min_section_ratio: float = 0.8,
+        max_context_tokens: int = 16384,
+        max_section_tokens: int = 6000,
     ):
         self.provider = provider
         self.model_name = model_name
         self.model_params = model_params
         self.max_retries = max_retries
         self.min_preservation_ratio = min_preservation_ratio
+        self.min_section_ratio = min_section_ratio
+        self.max_context_tokens = max_context_tokens
+        self.max_section_tokens = max_section_tokens
         self.diagnostics = get_diagnostics()
 
         # Create refine version identifier
@@ -126,8 +133,15 @@ class RefineNode:
                     judge_rationale=judge_rationale,
                 )
 
-                # Call refinement model
-                refined_markdown = await self._call_refine_model(prompt)
+                # Call refinement model with dynamic max_tokens based on
+                # input length — allow up to 1.15× input tokens for the
+                # output to avoid runaway generation while leaving room
+                # for minor expansion from formatting fixes.
+                input_est = estimate_tokens(markdown)
+                dynamic_max_tokens = max(512, int(input_est * 1.15))
+                refined_markdown = await self._call_refine_model(
+                    prompt, max_tokens=dynamic_max_tokens
+                )
 
                 # ----------------------------------------------------------
                 # Length-preservation guardrail: reject if the LLM
@@ -149,6 +163,34 @@ class RefineNode:
                     return RefineResult(
                         refined_markdown=markdown,
                         improvements_made=["refinement_rejected:output_too_short"],
+                        refine_version=self.refine_version,
+                        success=False,
+                        timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    )
+
+                # ----------------------------------------------------------
+                # Section-count preservation guardrail: reject if the LLM
+                # dropped entire sections (headings disappeared).
+                # ----------------------------------------------------------
+                input_headings = count_headings(markdown)
+                output_headings = count_headings(refined_markdown)
+                if (
+                    input_headings >= 3  # Only check if there are enough headings to matter
+                    and output_headings < input_headings * self.min_section_ratio
+                ):
+                    self.diagnostics.log_warning(
+                        component="refine",
+                        message=(
+                            f"Refinement rejected — sections dropped "
+                            f"({output_headings}/{input_headings} headings = "
+                            f"{output_headings / input_headings:.0%}, "
+                            f"threshold {self.min_section_ratio:.0%}). "
+                            f"Keeping original text."
+                        ),
+                    )
+                    return RefineResult(
+                        refined_markdown=markdown,
+                        improvements_made=["refinement_rejected:sections_dropped"],
                         refine_version=self.refine_version,
                         success=False,
                         timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -187,6 +229,125 @@ class RefineNode:
                     success=False,
                     timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 )
+
+    async def refine_document_sectional(
+        self,
+        *,
+        markdown: str,
+        judge_score: int,
+        retry_count: int,
+        max_retries: int | None = None,
+        judge_sub_scores: dict[str, int] | None = None,
+        judge_rationale: str | None = None,
+    ) -> RefineResult:
+        """Refine a long document by splitting it into sections.
+
+        Each section is refined independently with its own context
+        budget, then the results are reassembled.  This avoids the
+        context-window overflow that causes truncation/summarisation
+        on documents longer than ~45% of the model's context limit.
+
+        The method applies the same preservation guardrails as
+        :meth:`refine_document` to the reassembled result.
+        """
+        self.diagnostics.log_info(
+            component="refine",
+            message=(
+                f"Starting sectional refinement "
+                f"(~{estimate_tokens(markdown)} tokens, "
+                f"max_section={self.max_section_tokens})"
+            ),
+        )
+
+        sections = split_into_sections(markdown, self.max_section_tokens)
+        refined_sections: list[str] = []
+        any_success = False
+
+        for i, section in enumerate(sections):
+            section_result = await self.refine_document(
+                markdown=section,
+                judge_score=judge_score,
+                retry_count=retry_count,
+                max_retries=max_retries,
+                judge_sub_scores=judge_sub_scores,
+                judge_rationale=judge_rationale,
+            )
+            if section_result.success:
+                refined_sections.append(section_result.refined_markdown)
+                any_success = True
+            else:
+                # Keep original section if refine failed for this section
+                refined_sections.append(section)
+                self.diagnostics.log_warning(
+                    component="refine",
+                    message=(
+                        f"Sectional refine: section {i + 1}/{len(sections)} "
+                        f"failed ({section_result.improvements_made}), "
+                        f"keeping original"
+                    ),
+                )
+
+        reassembled = "\n\n".join(refined_sections)
+
+        # Apply whole-document guardrails to the reassembled result
+        input_len = len(markdown.strip())
+        output_len = len(reassembled.strip())
+        if input_len > 0 and output_len < input_len * self.min_preservation_ratio:
+            self.diagnostics.log_warning(
+                component="refine",
+                message=(
+                    f"Sectional refinement rejected — reassembled output too short "
+                    f"({output_len}/{input_len} = {output_len / input_len:.0%})"
+                ),
+            )
+            return RefineResult(
+                refined_markdown=markdown,
+                improvements_made=["refinement_rejected:sectional_output_too_short"],
+                refine_version=self.refine_version,
+                success=False,
+                timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            )
+
+        input_headings = count_headings(markdown)
+        output_headings = count_headings(reassembled)
+        if (
+            input_headings >= 3
+            and output_headings < input_headings * self.min_section_ratio
+        ):
+            self.diagnostics.log_warning(
+                component="refine",
+                message=(
+                    f"Sectional refinement rejected — sections dropped "
+                    f"({output_headings}/{input_headings} headings)"
+                ),
+            )
+            return RefineResult(
+                refined_markdown=markdown,
+                improvements_made=["refinement_rejected:sectional_sections_dropped"],
+                refine_version=self.refine_version,
+                success=False,
+                timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            )
+
+        improvements = self._analyze_improvements(markdown, reassembled)
+        improvements.insert(0, f"sectional_refine:{len(sections)}_sections")
+
+        self.diagnostics.log_info(
+            component="refine",
+            message=(
+                f"Sectional refinement complete: "
+                f"{len(sections)} sections, "
+                f"{'some' if any_success else 'no'} improvements"
+            ),
+        )
+
+        return RefineResult(
+            refined_markdown=reassembled,
+            improvements_made=improvements,
+            refine_version=self.refine_version,
+            success=any_success,
+            timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        )
 
     def _build_prompt(
         self,
@@ -236,13 +397,23 @@ class RefineNode:
 
         return "\n".join(parts)
 
-    async def _call_refine_model(self, prompt: str) -> str:
-        """Call the refine model to improve the document."""
+    async def _call_refine_model(self, prompt: str, *, max_tokens: int | None = None) -> str:
+        """Call the refine model to improve the document.
+
+        Parameters
+        ----------
+        max_tokens:
+            If provided, overrides any ``max_tokens`` already present in
+            ``self.model_params`` for this single call.
+        """
+        params = dict(self.model_params)
+        if max_tokens is not None:
+            params["max_tokens"] = max_tokens
         messages = [
             ChatMessage(role="system", content=REFINE_SYSTEM_PROMPT),
             ChatMessage(role="user", content=prompt),
         ]
-        return await self.provider.chat(model=self.model_name, messages=messages, params=self.model_params)
+        return await self.provider.chat(model=self.model_name, messages=messages, params=params)
 
     def _analyze_improvements(self, original: str, refined: str) -> list[str]:
         """Analyze what improvements were made."""
