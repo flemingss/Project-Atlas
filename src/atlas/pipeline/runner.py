@@ -1031,9 +1031,13 @@ async def ingest_file_via_pipeline(
     # Record pipeline node runs (cleanup/judge/refine/metadata).
     _record_pipeline_node_runs(session_factory=session_factory, run_id=run_id, ctx=ctx)
 
+    # Capture extraction metadata for the API response so the UI can show
+    # which backend was used and OCR confidence metrics.
+    _extraction_meta = ctx.results.get("extraction_meta") or {}
+
     # If HITL, create task and pause.
     if PipelineNode(ctx.state.current_node) == PipelineNode.HITL:
-        return _handle_hitl_pause(
+        _hitl_result = _handle_hitl_pause(
             session_factory=session_factory,
             run_id=run_id,
             ctx=ctx,
@@ -1045,9 +1049,12 @@ async def ingest_file_via_pipeline(
             source_info=source_info,
             corpus_id=corpus_id,
         )
+        if _extraction_meta:
+            _hitl_result["extraction_meta"] = _extraction_meta
+        return _hitl_result
 
     # Commit embeddings/chunks to Qdrant.
-    return await _commit_chunks_to_qdrant(
+    _commit_result = await _commit_chunks_to_qdrant(
         session_factory=session_factory,
         settings=settings,
         registry=registry,
@@ -1067,6 +1074,9 @@ async def ingest_file_via_pipeline(
         metadata=metadata,
         source_info=source_info,
     )
+    if _extraction_meta:
+        _commit_result["extraction_meta"] = _extraction_meta
+    return _commit_result
 
 
 async def resume_completed_hitl_task(

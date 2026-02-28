@@ -140,6 +140,7 @@ def ingest_result_card(
     paused_for_review: bool,
     run_id: int | None = None,
     error_message: str | None = None,
+    extraction_meta: dict[str, Any] | None = None,
 ) -> None:
     """Renders a structured post-upload result card with plain-language status.
 
@@ -174,6 +175,32 @@ def ingest_result_card(
         "warning": theme.DANGER,
     }.get(status_icon, theme.MUTED)
 
+    # Build extraction info rows if layout parser was used
+    _extraction_rows = ""
+    if extraction_meta:
+        backend = extraction_meta.get("extraction_backend", "")
+        if backend:
+            _label = "Layout (ONNX)" if backend == "layout" else backend.title()
+            _extraction_rows += (
+                f'<tr><td style="color:{theme.MUTED}; padding:2px 8px 2px 0;">Parser</td>'
+                f'<td>{_label}</td></tr>'
+            )
+        ocr_conf = extraction_meta.get("mean_ocr_confidence")
+        if ocr_conf is not None:
+            _pct = f"{float(ocr_conf) * 100:.0f}%"
+            _ocr_colour = theme.SUCCESS if float(ocr_conf) >= 0.7 else (
+                "#E6A817" if float(ocr_conf) >= 0.4 else theme.DANGER
+            )
+            _extraction_rows += (
+                f'<tr><td style="color:{theme.MUTED}; padding:2px 8px 2px 0;">OCR confidence</td>'
+                f'<td style="color:{_ocr_colour}; font-weight:600;">{_pct}</td></tr>'
+            )
+        if extraction_meta.get("estimated_is_scanned"):
+            _extraction_rows += (
+                f'<tr><td style="color:{theme.MUTED}; padding:2px 8px 2px 0;">Scanned</td>'
+                f'<td>Yes (image-based PDF)</td></tr>'
+            )
+
     st.markdown(
         f'<div class="atlas-ingest-result" style="border-left: 4px solid {_colour}; padding: 0.75rem 1rem; '
         f'background: {theme.BG_SURFACE}; border-radius: 4px; margin: 0.5rem 0 1rem 0;">'
@@ -185,7 +212,8 @@ def ingest_result_card(
         f'<td><strong>{chunks}</strong></td></tr>'
         f'<tr><td style="color:{theme.MUTED}; padding:2px 8px 2px 0;">Searchable</td>'
         f'<td>{"Yes" if searchable else "No"}</td></tr>'
-        f'<tr><td style="color:{theme.MUTED}; padding:2px 8px 2px 0;">Status</td>'
+        + _extraction_rows
+        + f'<tr><td style="color:{theme.MUTED}; padding:2px 8px 2px 0;">Status</td>'
         f'<td style="color:{_colour}; font-weight:600;">{status_text}</td></tr>'
         + (
             f'<tr><td style="color:{theme.MUTED}; padding:2px 8px 2px 0;">Run</td>'

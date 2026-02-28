@@ -17,7 +17,7 @@ Status note (Feb 2026): `/rag/ingest/*` is pipeline-backed (text + file). All no
 - **`ingest.py`** - Document ingestion node
   - Scaffold for ingest orchestration
   - Docling-based parsing is supported as an optional dependency (best-effort; see `TECHNICAL_DESIGN.md` Phase 4)
-  - **Layout PDF parser** (v0.6.2): ONNX-based layout-aware PDF pipeline derived from RAGFlow deepdoc (Apache 2.0). Selected via `atlas_pdf_parser_backend` setting (`auto`/`layout`/`docling`). Default `auto` tries layout parser first, falls back to Docling on failure or low OCR confidence.
+  - **Layout PDF parser** (v0.7.2): ONNX-based layout-aware PDF pipeline derived from RAGFlow deepdoc (Apache 2.0). Selected via `atlas_pdf_parser_backend` setting (`auto`/`layout`/`docling`). Default `auto` tries layout parser first, falls back to Docling on failure or low OCR confidence.
 
 ### Ingest Subsystem (`atlas.ingest`)
 

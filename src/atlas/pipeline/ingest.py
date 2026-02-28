@@ -134,7 +134,7 @@ class IngestNode:
         try:
             from atlas.ingest.model_manager import ModelManager
             mgr = ModelManager.get_instance(models_dir=self.settings.atlas_models_dir)
-            if not mgr.models_available():
+            if not all(mgr.models_available().values()):
                 _logger.info("ONNX models not yet downloaded — downloading now …")
                 mgr.ensure_models()
 

@@ -83,5 +83,6 @@ def test_fidelity_flags():
 def test_parse_profile_values():
     """Test parse profile enum values."""
     assert ParseProfile.PDF_TEXT == "pdf_text"
+    assert ParseProfile.PDF_LAYOUT == "pdf_layout"
     assert ParseProfile.MARKDOWN == "markdown"
     assert ParseProfile.TEXT == "text"

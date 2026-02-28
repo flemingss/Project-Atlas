@@ -21,6 +21,7 @@
   - [`retry`](#retry)
   - [`builtin_cleanup`](#builtin_cleanup)
   - [`cleanup_rules`](#cleanup_rules)
+  - [`pdf_parser`](#pdf_parser)
 - [Cleanup Rules — Full Reference](#cleanup-rules--full-reference)
   - [Rule Structure](#rule-structure)
   - [Match Block](#match-block)
@@ -347,6 +348,36 @@ See the full reference below.
 
 ---
 
+### `pdf_parser`
+
+Controls how PDF files are parsed during the Ingest node. The layout parser
+uses ONNX models (auto-downloaded from HuggingFace `InfiniFlow/deepdoc`) for
+page-layout detection, OCR, and table structure recognition. When backend is
+`auto` (the default), the layout parser is tried first and Docling is used as
+a fallback if the layout parser fails or produces low confidence output.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `backend` | `str` | `"auto"` | Parser selection: `auto` (try layout → Docling), `layout` (layout only, error on failure), `docling` (Docling only, skip layout). |
+| `zoom` | `float` | `3.0` | Page rendering zoom factor — higher produces better OCR at the cost of speed and RAM. |
+| `ocr_confidence_min` | `float` | `0.5` | Minimum mean OCR confidence (0.0–1.0) to accept layout parser output. Below this threshold, the result is rejected (and Docling used if `auto`). |
+| `table_extraction` | `bool` | `true` | Enable table structure recognition. When disabled, tables are treated as regular text regions. |
+
+```yaml
+pdf_parser:
+  backend: auto
+  zoom: 3.0
+  ocr_confidence_min: 0.5
+  table_extraction: true
+```
+
+When the layout parser is used, the API response includes an `extraction_meta`
+field with backend, OCR confidence, layout confidence, OCR coverage, and
+scanned-document detection. The UI displays these metrics in the ingest result
+card.
+
+---
+
 ## Cleanup Rules — Full Reference
 
 ### Rule Structure
@@ -646,7 +677,7 @@ Ingest → Cleanup → Judge → Refine* → Metadata → Embeddings → Chunkin
                      └── cleanup-rejudge (max 1 cycle)
 ```
 
-- **Ingest** — Document conversion via Docling (PDF/DOCX/HTML → Markdown).
+- **Ingest** — Document conversion via layout parser (ONNX) or Docling (PDF/DOCX/HTML → Markdown). Backend selected by `pdf_parser.backend` (`auto`/`layout`/`docling`; default `auto` tries layout first, falls back to Docling).
 - **Cleanup** — Built-in transforms + config-driven rule engine.
 - **Judge** — LLM grades quality on 4 dimensions (1–5 each). Per-dimension rationale for scores below 4.
 - **Refine** — LLM rewrites the document to improve quality (if score < cutoff). Receives judge sub-scores, rationale, and iteration context. For documents exceeding `limits.max_context_tokens`, sectional refinement splits the document on headings and refines each section independently.
@@ -685,6 +716,7 @@ HITL→pipeline→HITL loops.
 
 | Current Node | Condition | Next Node | Config Key |
 |---|---|---|---|
+| Ingest | Layout OCR confidence < 0.3 + `fail_fast_score` enabled | **Failed** | `thresholds.fail_fast_score` |
 | Ingest | Docling health ≤ `fail_fast_score` | **Failed** | `thresholds.fail_fast_score` |
 | Ingest | Default | Cleanup | — |
 | Cleanup | `hard_failure` tag on matched rule | **Failed** | `cleanup_rules[].tags` |

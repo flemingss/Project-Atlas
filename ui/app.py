@@ -703,6 +703,7 @@ def main() -> None:
                     paused_for_review=bool(_p.get("paused_for_hitl")),
                     run_id=_run_id_val,
                     error_message=_p.get("error_message") if _p.get("error_code") else None,
+                    extraction_meta=_p.get("extraction_meta") if isinstance(_p.get("extraction_meta"), dict) else None,
                 )
                 components.detail_expander("Full response (JSON)", data=payload)
 
@@ -753,6 +754,7 @@ def main() -> None:
                 searchable=bool(is_finalized),
                 paused_for_review=bool(_tp.get("paused_for_hitl")),
                 error_message=_tp.get("error_message") if _tp.get("error_code") else None,
+                extraction_meta=_tp.get("extraction_meta") if isinstance(_tp.get("extraction_meta"), dict) else None,
             )
             components.detail_expander("Full response (JSON)", data=data)
 

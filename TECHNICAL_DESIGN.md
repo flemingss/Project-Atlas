@@ -98,9 +98,11 @@ Notes:
 
 - ✅ `POST /rag/ingest/file`
   - stores the original file as an artifact
-  - uses Docling for PDF/Office parsing with guardrails (max bytes, max pages, timeout, quality gates)
+  - uses layout-aware ONNX parser (default `auto`) or Docling for PDF/Office parsing with guardrails (max bytes, max pages, timeout, quality gates)
+  - `auto` backend tries layout parser first, falls back to Docling on failure or low OCR confidence
   - persists Docling JSON ground truth + markdown projection as artifacts
-  - falls back to text extraction when Docling is unavailable
+  - surfaces `extraction_meta` (backend, OCR confidence, layout confidence, scanned flag) in the response
+  - falls back to text extraction when both parsers are unavailable
 
 - ✅ `POST /rag/search`
   - embed query via same embed provider

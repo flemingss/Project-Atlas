@@ -137,3 +137,21 @@ builtin_cleanup:
 #       - kind: normalize_headings
 #       - kind: fix_bullets
 cleanup_rules: []
+
+# ---------------------------------------------------------------------------
+# Layout PDF parser configuration
+# ---------------------------------------------------------------------------
+# Controls how PDFs are parsed during ingest.  The layout parser uses ONNX
+# models (auto-downloaded from HuggingFace) for page-layout detection, OCR,
+# and table structure recognition.
+#
+# pdf_parser:
+#   # Backend selection: auto | layout | docling
+#   # auto (default): try layout parser first, fall back to Docling on failure.
+#   backend: auto
+#   # Zoom factor for page rendering (higher = better OCR at cost of speed/RAM).
+#   zoom: 3.0
+#   # Minimum mean OCR confidence to accept layout parser output (0.0 - 1.0).
+#   ocr_confidence_min: 0.5
+#   # Enable table structure recognition.
+#   table_extraction: true
