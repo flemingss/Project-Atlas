@@ -27,4 +27,5 @@ config/models.yaml
 .env
 artifacts/
 volumes/
+models/
 *.egg-info/

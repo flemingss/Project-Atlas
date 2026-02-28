@@ -80,6 +80,16 @@ def decide_next_step(
         # Check docling health for early fail-fast
         dh = results.get("docling_health", {})
         health_score = dh.get("health_score", 5)
+
+        # Layout parser may supply extraction confidence directly
+        extraction_meta = results.get("extraction_meta", {})
+        ocr_conf = extraction_meta.get("mean_ocr_confidence")
+        if ocr_conf is not None and ocr_conf < 0.3 and fail_fast_score:
+            return RoutingDecision(
+                target="failed",
+                reason=f"Layout OCR confidence {ocr_conf:.2f} critically low",
+            )
+
         if fail_fast_score and health_score <= fail_fast_score:
             return RoutingDecision(
                 target="failed",

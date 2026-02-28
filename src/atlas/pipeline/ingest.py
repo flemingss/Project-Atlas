@@ -18,6 +18,10 @@ from atlas.ingest.docling_adapter import DoclingIngestError, parse_document_path
 from atlas.schemas import ParseProfile
 from atlas.settings import Settings
 
+import logging as _logging
+
+_logger = _logging.getLogger(__name__)
+
 
 @dataclass
 class IngestResult:
@@ -80,10 +84,119 @@ class IngestNode:
         source_mime_type: str,
         filename: str | None = None,
     ) -> IngestResult:
-        """Process document bytes via Docling (PDF/Office).
+        """Process document bytes via layout parser or Docling (PDF/Office).
 
-        Stores full Docling JSON as ground truth (returned in result; caller may persist to artifact store).
+        For PDFs, the backend is selected by ``atlas_pdf_parser_backend``:
+        - ``auto`` (default): try layout parser first, fall back to Docling.
+        - ``layout``: layout parser only.
+        - ``docling``: Docling only (legacy behaviour).
         """
+        backend = self.settings.atlas_pdf_parser_backend.lower()
+        is_pdf = source_mime_type == "application/pdf"
+
+        # ------ Layout parser path (PDFs only) --------------------------------
+        if is_pdf and backend in ("auto", "layout"):
+            result = self._try_layout_parser(doc_bytes, filename)
+            if result is not None:
+                # Run quality gates on the layout result
+                return self._apply_pdf_quality_gates(result, source_mime_type, filename)
+
+            if backend == "layout":
+                # Layout was forced but failed — don't fall through
+                return IngestResult(
+                    success=False,
+                    markdown_projection="",
+                    docling_json={},
+                    parse_profile=ParseProfile.PDF_LAYOUT,
+                    docling_schema_version="unknown",
+                    error_code=ErrorCode.DOC_PARSE_FAILED,
+                    error_message="Layout parser failed and backend=layout (no fallback).",
+                )
+            _logger.info("Layout parser unavailable/failed for %s — falling back to Docling", filename or "unnamed")
+
+        # ------ Docling path (all doc types) ----------------------------------
+        return await self._docling_parse(doc_bytes, source_mime_type, filename)
+
+    # ------------------------------------------------------------------
+    # Layout parser helper
+    # ------------------------------------------------------------------
+
+    def _try_layout_parser(
+        self, doc_bytes: bytes, filename: str | None,
+    ) -> IngestResult | None:
+        """Attempt layout-aware PDF parsing. Returns *None* on failure."""
+        try:
+            from atlas.ingest.pdf_parser import LayoutPdfParser  # lazy import
+        except Exception:
+            _logger.debug("Layout parser import failed", exc_info=True)
+            return None
+
+        try:
+            from atlas.ingest.model_manager import ModelManager
+            mgr = ModelManager.get_instance(models_dir=self.settings.atlas_models_dir)
+            if not mgr.models_available():
+                _logger.info("ONNX models not yet downloaded — downloading now …")
+                mgr.ensure_models()
+
+            zoom = self.settings.atlas_layout_pdf_zoom
+            parser = LayoutPdfParser(models_dir=self.settings.atlas_models_dir)
+            result = parser(doc_bytes, zoom=zoom)
+
+            # Confidence gate
+            min_conf = self.settings.atlas_layout_ocr_confidence_min
+            if result.mean_ocr_confidence < min_conf:
+                self.diagnostics.log_warning(
+                    component="ingest",
+                    message=f"Layout parser OCR confidence {result.mean_ocr_confidence:.2f} < {min_conf}",
+                    context={"filename": filename or ""},
+                )
+                return None  # falls back to Docling if backend=auto
+
+            markdown = result.markdown
+            meta: dict[str, Any] = {
+                "extraction_backend": "layout",
+                "mean_ocr_confidence": result.mean_ocr_confidence,
+                "layout_confidence": result.layout_confidence,
+                "ocr_coverage": result.ocr_coverage,
+                "estimated_is_scanned": result.estimated_is_scanned,
+                "page_count": result.page_count,
+            }
+            docling_json = {
+                "content": markdown,
+                "mime_type": "application/pdf",
+                "parsed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "parser": "layout",
+                "metadata": result.metadata,
+            }
+
+            return IngestResult(
+                success=True,
+                markdown_projection=markdown,
+                docling_json=docling_json,
+                parse_profile=ParseProfile.PDF_LAYOUT,
+                docling_schema_version="1.0",
+                meta=meta,
+            )
+        except Exception as exc:
+            self.diagnostics.log_warning(
+                component="ingest",
+                message=f"Layout parser failed: {exc}",
+                context={"filename": filename or ""},
+            )
+            _logger.debug("Layout parser traceback", exc_info=True)
+            return None
+
+    # ------------------------------------------------------------------
+    # Docling path (original logic)
+    # ------------------------------------------------------------------
+
+    async def _docling_parse(
+        self,
+        doc_bytes: bytes,
+        source_mime_type: str,
+        filename: str | None,
+    ) -> IngestResult:
+        """Parse via Docling (PDF/Office) — original ingest path."""
         try:
             suffix = ".pdf"
             if filename and "." in filename:
@@ -155,53 +268,65 @@ class IngestNode:
             )
 
         # Quality gates for PDF outputs to avoid indexing junk.
-        if source_mime_type == "application/pdf":
-            qm = _pdf_quality_metrics(text=parsed.markdown_projection)
-            enforce_len = bool(qm.get("chars", 0) >= 100)
-
-            min_chars = int(self.settings.atlas_pdf_quality_min_chars)
-            min_words = int(self.settings.atlas_pdf_quality_min_words)
-            alpha_min = float(self.settings.atlas_pdf_quality_alpha_ratio_min)
-            garbled_max = float(self.settings.atlas_pdf_quality_garbled_ratio_max)
-
-            too_garbled = bool(float(qm.get("garbled_ratio") or 0.0) > garbled_max)
-            mostly_symbols = bool(float(qm.get("alpha_ratio") or 0.0) < alpha_min and enforce_len)
-            too_short = bool(int(qm.get("chars") or 0) < min_chars or int(qm.get("words") or 0) < min_words)
-
-            if too_garbled or mostly_symbols or too_short:
-                self.diagnostics.log_warning(
-                    component="ingest",
-                    message="PDF extraction failed quality gates",
-                    context={
-                        "quality": qm,
-                        "min_chars": min_chars,
-                        "min_words": min_words,
-                        "alpha_min": alpha_min,
-                        "garbled_max": garbled_max,
-                        "enforce_len": enforce_len,
-                    },
-                )
-                return IngestResult(
-                    success=False,
-                    markdown_projection="",
-                    docling_json=parsed.docling_json,
-                    parse_profile=parsed.parse_profile,
-                    docling_schema_version=parsed.docling_schema_version,
-                    error_code=ErrorCode.DOC_EXTRACT_LOW_QUALITY,
-                    error_message=f"PDF extraction produced low-quality text (quality={qm})",
-                    meta={**(parsed.meta or {}), "quality": qm},
-                )
-
-        return IngestResult(
+        result = IngestResult(
             success=True,
             markdown_projection=parsed.markdown_projection,
             docling_json=parsed.docling_json,
             parse_profile=parsed.parse_profile,
             docling_schema_version=parsed.docling_schema_version,
-            meta={**(parsed.meta or {}), "quality": _pdf_quality_metrics(text=parsed.markdown_projection)}
-            if source_mime_type == "application/pdf"
-            else (parsed.meta or {}),
+            meta={**(parsed.meta or {}), "extraction_backend": "docling"},
         )
+        if source_mime_type == "application/pdf":
+            return self._apply_pdf_quality_gates(result, source_mime_type, filename)
+        return result
+
+    # ------------------------------------------------------------------
+    # Shared quality gates
+    # ------------------------------------------------------------------
+
+    def _apply_pdf_quality_gates(
+        self, result: IngestResult, source_mime_type: str, filename: str | None,
+    ) -> IngestResult:
+        """Apply PDF quality gates to an IngestResult. Returns original or failure."""
+        qm = _pdf_quality_metrics(text=result.markdown_projection)
+        enforce_len = bool(qm.get("chars", 0) >= 100)
+
+        min_chars = int(self.settings.atlas_pdf_quality_min_chars)
+        min_words = int(self.settings.atlas_pdf_quality_min_words)
+        alpha_min = float(self.settings.atlas_pdf_quality_alpha_ratio_min)
+        garbled_max = float(self.settings.atlas_pdf_quality_garbled_ratio_max)
+
+        too_garbled = bool(float(qm.get("garbled_ratio") or 0.0) > garbled_max)
+        mostly_symbols = bool(float(qm.get("alpha_ratio") or 0.0) < alpha_min and enforce_len)
+        too_short = bool(int(qm.get("chars") or 0) < min_chars or int(qm.get("words") or 0) < min_words)
+
+        if too_garbled or mostly_symbols or too_short:
+            self.diagnostics.log_warning(
+                component="ingest",
+                message="PDF extraction failed quality gates",
+                context={
+                    "quality": qm,
+                    "min_chars": min_chars,
+                    "min_words": min_words,
+                    "alpha_min": alpha_min,
+                    "garbled_max": garbled_max,
+                    "enforce_len": enforce_len,
+                },
+            )
+            return IngestResult(
+                success=False,
+                markdown_projection="",
+                docling_json=result.docling_json,
+                parse_profile=result.parse_profile,
+                docling_schema_version=result.docling_schema_version,
+                error_code=ErrorCode.DOC_EXTRACT_LOW_QUALITY,
+                error_message=f"PDF extraction produced low-quality text (quality={qm})",
+                meta={**(result.meta or {}), "quality": qm},
+            )
+
+        # Attach quality metrics to meta
+        result.meta = {**(result.meta or {}), "quality": qm}
+        return result
 
     async def process_document(self, *, content: str | bytes, mime_type: str) -> IngestResult:
         """Process a document based on its MIME type.

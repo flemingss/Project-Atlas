@@ -25,6 +25,7 @@ class ParseProfile(str, Enum):
 
     PDF_SCANNED = "pdf_scanned"
     PDF_TEXT = "pdf_text"
+    PDF_LAYOUT = "pdf_layout"  # Layout-aware PDF parser (deepdoc-derived)
     PPTX = "pptx"
     DOCX = "docx"
     MARKDOWN = "markdown"

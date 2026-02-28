@@ -43,3 +43,17 @@ class Settings(BaseSettings):
     atlas_pdf_quality_min_words: int = 0
     atlas_pdf_quality_alpha_ratio_min: float = 0.20
     atlas_pdf_quality_garbled_ratio_max: float = 0.02
+
+    # -------------------- Layout PDF parser --------------------
+    # Backend selection: "auto" tries layout parser first, falls back to Docling.
+    # "layout" forces layout parser only. "docling" forces Docling only.
+    atlas_pdf_parser_backend: str = "auto"
+    # Directory for ONNX models (layout, OCR, table structure).
+    # Defaults to ./models/deepdoc; set ATLAS_MODELS_DIR to override.
+    atlas_models_dir: str = "./models/deepdoc"
+    # Minimum mean OCR confidence (0-1) to accept layout parser output.
+    atlas_layout_ocr_confidence_min: float = 0.5
+    # Enable table structure recognition in layout parser.
+    atlas_layout_table_extraction: bool = True
+    # PDF zoom factor for page rendering (higher = better OCR, slower).
+    atlas_layout_pdf_zoom: float = 3.0

@@ -17,6 +17,20 @@ Status note (Feb 2026): `/rag/ingest/*` is pipeline-backed (text + file). All no
 - **`ingest.py`** - Document ingestion node
   - Scaffold for ingest orchestration
   - Docling-based parsing is supported as an optional dependency (best-effort; see `TECHNICAL_DESIGN.md` Phase 4)
+  - **Layout PDF parser** (v0.6.2): ONNX-based layout-aware PDF pipeline derived from RAGFlow deepdoc (Apache 2.0). Selected via `atlas_pdf_parser_backend` setting (`auto`/`layout`/`docling`). Default `auto` tries layout parser first, falls back to Docling on failure or low OCR confidence.
+
+### Ingest Subsystem (`atlas.ingest`)
+
+Layout-aware PDF parsing pipeline ported from RAGFlow's deepdoc engine:
+
+- **`types.py`** — Shared type definitions: `LayoutType` enum (10 types), `LayoutBox`, `OCRBox`, `ParsedRegion`, `TableResult`, `PDFParseResult` dataclasses, `GARBAGE_LAYOUT_TYPES` frozenset
+- **`model_manager.py`** — Thread-safe singleton for ONNX model download/caching from HuggingFace `InfiniFlow/deepdoc`. 5 required models: `layout.onnx`, `det.onnx`, `rec.onnx`, `ocr.res`, `tsr.onnx`
+- **`layout_recognizer.py`** — Page layout recognition via ONNX inference. Auto-detects PaddleDetection vs YOLOv10 model format. Includes NMS, OCR-box tagging, noise filtering, and geometry helpers
+- **`postprocess.py`** — OCR post-processing: `DBPostProcess` (Differentiable Binarization text detection), `CTCLabelDecode` (CTC text recognition decoding)
+- **`ocr.py`** — ONNX-based OCR: `TextDetector` (DBNet, 960px max), `TextRecognizer` (CRNN batch=16), `OCR` facade combining detection + recognition with rotation-aware cropping
+- **`table_recognizer.py`** — Table structure recognition from `tsr.onnx`. HTML construction, row/column alignment, caption detection, colspan/rowspan support
+- **`text_extractor.py`** — Hybrid text extraction merging pdfplumber programmatic chars with OCR. Multi-column detection via KMeans clustering
+- **`pdf_parser.py`** — Main `LayoutPdfParser` entry point: 7-step pipeline (page render → hybrid OCR → layout → table → text merge → reading order → markdown). Produces `PDFParseResult` with confidence metrics
 
 - **`cleanup.py`** - Deterministic markdown cleanup node
   - Five built-in transforms plus five configurable builtin extraction-artifact fixes (`html_unescape`, `fix_ligatures`, `strip_zero_width_chars`, `strip_page_numbers`, `strip_repetitive_lines` — first three ON by default, last two OFF by default)

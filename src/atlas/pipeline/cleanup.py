@@ -295,10 +295,20 @@ class CleanupNode:
 
         # 6. Builtin extraction-artifact fixes (configurable toggles)
         builtin_cfg = (config or {}).get("builtin_cleanup", {})
+
+        # Determine parse profile — layout parser already handles some artifacts
+        parse_profile = (doc_context or {}).get("parse_profile", "")
+        is_layout = parse_profile == "pdf_layout"
+
         for toggle_key, handler in _BUILTIN_CLEANUP_REGISTRY:
             # Default to True (ON) when the key is absent — EXCEPT
             # strip_repetitive_lines which defaults to OFF for safety.
             default_on = toggle_key != "strip_repetitive_lines"
+
+            # Layout parser already strips page numbers and handles ligatures
+            if is_layout and toggle_key in ("strip_page_numbers",):
+                continue
+
             if builtin_cfg.get(toggle_key, default_on):
                 before = cleaned
                 # strip_repetitive_lines accepts optional threshold/max_chars

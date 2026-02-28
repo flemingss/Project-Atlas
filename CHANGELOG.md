@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.2] - 2026-03-03
+
+### Added
+- **Layout-aware PDF parser** (`src/atlas/ingest/`): Complete ONNX-based PDF parsing pipeline derived from RAGFlow's deepdoc engine (Apache 2.0). Eight new modules:
+  - `types.py` — `LayoutType` enum (10 types), `PDFParseResult`, `ParsedRegion`, `TableResult` dataclasses
+  - `model_manager.py` — Thread-safe singleton for ONNX model download/caching from HuggingFace `InfiniFlow/deepdoc`
+  - `layout_recognizer.py` — Page layout detection (auto-detects PaddleDetection/YOLOv10), NMS, noise filtering
+  - `postprocess.py` — DBPostProcess (text detection) + CTCLabelDecode (text recognition)
+  - `ocr.py` — TextDetector (DBNet) + TextRecognizer (CRNN batch=16) + OCR facade
+  - `table_recognizer.py` — Table structure recognition, HTML output, caption detection
+  - `text_extractor.py` — Hybrid pdfplumber+OCR text extraction with multi-column detection
+  - `pdf_parser.py` — `LayoutPdfParser` 7-step pipeline producing structured markdown with confidence metrics
+- **`ParseProfile.PDF_LAYOUT`** (`src/atlas/schemas.py`): New parse profile for layout-aware PDF parsing
+- **Three new `ErrorCode` values** (`src/atlas/diagnostics.py`): `DOC_LAYOUT_MODEL_UNAVAILABLE`, `DOC_TABLE_EXTRACTION_FAILED`, `DOC_OCR_CONFIDENCE_LOW`
+- **Layout parser settings** (`src/atlas/settings.py`): `atlas_pdf_parser_backend` (auto/layout/docling), `atlas_models_dir`, `atlas_layout_ocr_confidence_min`, `atlas_layout_table_extraction`, `atlas_layout_pdf_zoom`
+- **PDF parser pipeline config** (`config/pipeline.yaml`): New `pdf_parser:` section with backend, zoom, ocr_confidence_min, table_extraction settings
+- **Extraction metadata in routing** (`src/atlas/pipeline/routing.py`): Routes can now consider `extraction_meta.mean_ocr_confidence` for layout-parser-aware fail-fast decisions
+- **79 new tests** across 6 test files: `test_layout_types.py`, `test_model_manager.py`, `test_postprocess.py`, `test_layout_ingest_wiring.py`, `test_routing_layout.py`, `test_cleanup_layout.py`
+
+### Changed
+- **Ingest backend selection** (`src/atlas/pipeline/ingest.py`): `process_doc_bytes()` now selects between layout parser and Docling based on `atlas_pdf_parser_backend` setting. Default `auto` tries layout parser first, falls back to Docling on failure or low OCR confidence. Extracted quality gates into shared `_apply_pdf_quality_gates()` method.
+- **Cleanup node** (`src/atlas/pipeline/cleanup.py`): Skips `strip_page_numbers` for `PDF_LAYOUT` parse profile (layout parser already handles page noise filtering)
+- **Orchestrator** (`src/atlas/pipeline/orchestrator.py`): Passes `parse_profile` in doc_context to cleanup for profile-aware transform selection
+- **Runner** (`src/atlas/pipeline/runner.py`): Sets `ctx.state.parse_profile` from ingest result; surfaces extraction metadata into `ctx.results["extraction_meta"]` for routing
+- **Dependencies** (`pyproject.toml`): Added `pdfplumber>=0.10`, `pyclipper>=1.3`, `shapely>=2.0`, `scikit-learn>=1.4`, `opencv-python-headless>=4.9`, `huggingface-hub>=0.20`
+- Test count: **445 passed** (was 358 → +87 from 79 new + 8 regression-caught in existing suite).
+
 ## [0.7.1] - 2026-03-02
 
 ### Added

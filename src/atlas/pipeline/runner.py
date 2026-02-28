@@ -714,6 +714,7 @@ async def ingest_text_via_pipeline(
         ),
     )
     ctx.state.markdown_projection = ingest_res.markdown_projection
+    ctx.state.parse_profile = ingest_res.parse_profile
 
     # Compute Docling health score for downstream routing/diagnostics.
     _health = _compute_health(
@@ -984,6 +985,7 @@ async def ingest_file_via_pipeline(
         ),
     )
     ctx.state.markdown_projection = ingest_res.markdown_projection
+    ctx.state.parse_profile = ingest_res.parse_profile
 
     # Compute Docling health score for downstream routing/diagnostics.
     _health = _compute_health(
@@ -992,6 +994,17 @@ async def ingest_file_via_pipeline(
         parse_profile=str(ingest_res.parse_profile),
     )
     ctx.set_docling_health(_health.to_dict())
+
+    # Surface extraction metadata (layout parser confidence, backend) into
+    # routing context so the router can make backend-aware decisions.
+    if ingest_res.meta:
+        ctx.results["extraction_meta"] = {
+            k: v for k, v in ingest_res.meta.items()
+            if k in (
+                "extraction_backend", "mean_ocr_confidence",
+                "layout_confidence", "ocr_coverage", "estimated_is_scanned",
+            )
+        }
 
     ctx = await orch.process_document(ctx)
 

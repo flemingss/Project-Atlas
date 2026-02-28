@@ -142,6 +142,7 @@ class PipelineOrchestrator:
             "corpus_id": getattr(context.state, "corpus_id", ""),
             "mime_type": context.state.source_mime_type,
             "filename": getattr(context.state, "source_uri", "") or "",
+            "parse_profile": str(context.state.parse_profile or ""),
         }
 
         result = await self.cleanup_node.clean(

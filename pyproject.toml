@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "project-atlas"
-version = "0.6.1"
+version = "0.7.2"
 description = "Adaptive Agentic Knowledge Runtime (Project Atlas)"
 requires-python = ">=3.11"
 authors = [{ name = "Project Atlas" }]
@@ -25,6 +25,12 @@ dependencies = [
   "docling",
   "onnxruntime>=1.17",
   "PyMuPDF>=1.24.0",
+  "pdfplumber>=0.10",
+  "pyclipper>=1.3",
+  "shapely>=2.0",
+  "scikit-learn>=1.4",
+  "opencv-python-headless>=4.9",
+  "huggingface-hub>=0.20",
 ]
 
 [project.optional-dependencies]
