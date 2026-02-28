@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from atlas.diagnostics import ErrorCode, get_diagnostics
+from atlas.llm.openai_compat import strip_reasoning_tags
 from atlas.llm.provider import ILlmProvider
 from atlas.llm.provider import ChatMessage
 from atlas.schemas import JudgeResult
@@ -181,6 +182,9 @@ Your response:"""
         """
         sub_scores: dict[str, int] = {}
         rationale = "Unable to parse response"
+
+        # Safety net: strip <think> reasoning blocks before parsing scores.
+        response = strip_reasoning_tags(response)
 
         # Normalised dimension keys (upper-case) → canonical key
         dim_map = {d.upper(): d for d in JUDGE_DIMENSIONS}

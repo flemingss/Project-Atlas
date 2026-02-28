@@ -125,6 +125,22 @@ def test_judge_parse_clamped_on_out_of_range() -> None:
     assert sub_scores["hallucination_risk"] == 1  # clamped
 
 
+def test_judge_parse_strips_think_tags_before_scoring() -> None:
+    """<think> reasoning blocks must be stripped before parsing scores."""
+    node = _judge_node()
+    resp = (
+        "<think>\nLet me evaluate this document carefully.\n"
+        "FAITHFULNESS looks good, maybe 4.\n"
+        "</think>\n"
+        "FAITHFULNESS: 5\nFORMATTING: 4\nCOHESION: 4\n"
+        "HALLUCINATION_RISK: 5\nRATIONALE: Good quality document."
+    )
+    sub_scores, rationale = node._parse_response(resp)
+    assert sub_scores["faithfulness"] == 5  # from real output, not think block
+    assert sub_scores["formatting"] == 4
+    assert "Good quality" in rationale
+
+
 # ---------------------------------------------------------------------------
 # Refine node tests
 # ---------------------------------------------------------------------------

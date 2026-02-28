@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import os
@@ -22,6 +23,26 @@ def _is_retryable_http(exc: BaseException) -> bool:
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code == 429 or exc.response.status_code >= 500
     return isinstance(exc, httpx.RequestError)
+
+
+# Pattern to match <think>...</think> blocks emitted by reasoning models
+# (Qwen3, DeepSeek-R1, etc.).  Uses DOTALL so '.' matches newlines.
+_THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def strip_reasoning_tags(text: str) -> str:
+    """Remove ``<think>…</think>`` reasoning blocks from model output.
+
+    Reasoning models (Qwen3, DeepSeek-R1, QwQ) emit chain-of-thought
+    inside ``<think>`` tags by default.  These blocks consume the
+    ``max_tokens`` budget and corrupt downstream consumers that expect
+    clean markdown or structured output.
+
+    Returns the text with all ``<think>`` blocks removed and leading
+    whitespace stripped.
+    """
+    cleaned = _THINK_TAG_RE.sub("", text)
+    return cleaned.strip()
 
 
 class _LlmRetryableError(Exception):
@@ -62,9 +83,20 @@ class OpenAICompatibleProvider(ILlmProvider):
             ) from e
 
         try:
-            return data["choices"][0]["message"]["content"]
+            raw_content = data["choices"][0]["message"]["content"]
         except Exception as e:  # noqa: BLE001
             raise ValueError(f"Unexpected chat response shape: {data}") from e
+
+        # Strip <think> reasoning blocks from models like Qwen3 / DeepSeek-R1
+        cleaned = strip_reasoning_tags(raw_content)
+        if len(cleaned) != len(raw_content):
+            stripped_chars = len(raw_content) - len(cleaned)
+            log.info(
+                "Stripped %d chars of <think> reasoning from %s response",
+                stripped_chars,
+                payload.get("model", "unknown"),
+            )
+        return cleaned
 
     async def _do_embed(self, *, model: str, payload: dict[str, Any]) -> list[list[float]]:
         try:

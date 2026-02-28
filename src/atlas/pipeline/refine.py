@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from atlas.diagnostics import ErrorCode, get_diagnostics
+from atlas.llm.openai_compat import strip_reasoning_tags
 from atlas.llm.provider import ILlmProvider
 from atlas.llm.provider import ChatMessage
 from atlas.pipeline.tokens import count_headings, estimate_tokens, split_into_sections
@@ -413,7 +414,10 @@ class RefineNode:
             ChatMessage(role="system", content=REFINE_SYSTEM_PROMPT),
             ChatMessage(role="user", content=prompt),
         ]
-        return await self.provider.chat(model=self.model_name, messages=messages, params=params)
+        result = await self.provider.chat(model=self.model_name, messages=messages, params=params)
+        # Safety net: strip any <think> tags that survived the provider layer
+        # (e.g. when using a non-OpenAICompatible provider in tests).
+        return strip_reasoning_tags(result)
 
     def _analyze_improvements(self, original: str, refined: str) -> list[str]:
         """Analyze what improvements were made."""
