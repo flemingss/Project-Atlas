@@ -1,0 +1,1212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Atlas Document Editor</title>
+
+  <!-- PDF.js (loaded in module below) -->
+  <link rel="modulepreload" href="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.9.155/pdf.min.mjs">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.9.155/pdf_viewer.min.css">
+
+  <!-- Split.js (3KB) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/split.js/1.6.5/split.min.js"></script>
+
+  <!-- CodeMirror 6 via ESM bundle -->
+  <style>
+    /* ── Reset & Layout ── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg-primary: #1a1a2e;
+      --bg-secondary: #16213e;
+      --bg-surface: #0f3460;
+      --bg-card: #1a1a2e;
+      --text-primary: #e2e8f0;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --accent: #53c0f0;
+      --accent-hover: #38bdf8;
+      --border: #334155;
+      --success: #4ade80;
+      --warning: #fbbf24;
+      --error: #f87171;
+      --gutter: 6px;
+    }
+
+    html, body {
+      height: 100%;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      overflow: hidden;
+    }
+
+    /* ── Top Bar ── */
+    #top-bar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 16px;
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border);
+      height: 48px;
+      flex-shrink: 0;
+    }
+
+    #top-bar .logo {
+      font-weight: 700;
+      font-size: 14px;
+      color: var(--accent);
+      letter-spacing: 0.5px;
+    }
+
+    #top-bar .separator {
+      color: var(--text-muted);
+    }
+
+    #top-bar .doc-title {
+      font-size: 13px;
+      color: var(--text-secondary);
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #top-bar input[type="number"],
+    #top-bar input[type="text"] {
+      width: 70px;
+      padding: 4px 8px;
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text-primary);
+      font-size: 12px;
+    }
+
+    #top-bar input[type="text"] {
+      width: auto;
+      min-width: 180px;
+    }
+
+    #top-bar label {
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    /* ── Buttons ── */
+    .btn {
+      padding: 6px 12px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--bg-surface);
+      color: var(--text-primary);
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.15s;
+      white-space: nowrap;
+    }
+    .btn:hover { background: var(--accent); color: #000; border-color: var(--accent); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn.btn-accent { background: var(--accent); color: #000; border-color: var(--accent); }
+    .btn.btn-accent:hover { background: var(--accent-hover); }
+    .btn.btn-small { padding: 3px 8px; font-size: 11px; }
+
+    /* ── Main Split Layout ── */
+    #main-container {
+      display: flex;
+      height: calc(100vh - 48px);
+    }
+
+    .split { overflow: hidden; }
+
+    .gutter {
+      background: var(--bg-secondary);
+      cursor: col-resize;
+      position: relative;
+    }
+    .gutter::after {
+      content: '⋮';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: var(--text-muted);
+      font-size: 14px;
+    }
+
+    /* ── Left Panel: PDF Viewer ── */
+    #pdf-panel {
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-card);
+    }
+
+    #pdf-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    #pdf-toolbar .page-nav {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 12px;
+    }
+
+    #pdf-toolbar .page-nav input {
+      width: 40px;
+      text-align: center;
+      padding: 2px 4px;
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      color: var(--text-primary);
+      font-size: 12px;
+    }
+
+    #pdf-viewport {
+      flex: 1;
+      overflow: auto;
+      display: flex;
+      justify-content: center;
+      padding: 12px;
+      background: #2a2a3e;
+    }
+
+    #pdf-viewport canvas {
+      max-width: 100%;
+      height: auto;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+    }
+
+    /* ── Right Panel: Editor ── */
+    #editor-panel {
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-card);
+    }
+
+    #editor-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+
+    #editor-toolbar .tool-group {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+    }
+
+    #editor-toolbar .tool-group::after {
+      content: '';
+      width: 1px;
+      height: 20px;
+      background: var(--border);
+      margin: 0 4px;
+    }
+    #editor-toolbar .tool-group:last-child::after { display: none; }
+
+    #codemirror-host {
+      flex: 1;
+      overflow: hidden;
+    }
+
+    #codemirror-host .cm-editor {
+      height: 100%;
+      font-size: 13px;
+    }
+
+    #codemirror-host .cm-scroller {
+      font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    }
+
+    /* ── Status Bar ── */
+    #status-bar {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 4px 12px;
+      background: var(--bg-secondary);
+      border-top: 1px solid var(--border);
+      font-size: 11px;
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+
+    #status-bar .status-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    #status-bar .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--success);
+    }
+    #status-bar .status-dot.busy { background: var(--warning); animation: pulse 1s infinite; }
+    #status-bar .status-dot.error { background: var(--error); }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    /* ── Loading overlay ── */
+    .loading-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      font-size: 14px;
+      color: var(--text-secondary);
+    }
+    .loading-overlay.hidden { display: none; }
+
+    /* ── Toast notifications ── */
+    #toast-container {
+      position: fixed;
+      bottom: 40px;
+      right: 16px;
+      z-index: 1000;
+      display: flex;
+      flex-direction: column-reverse;
+      gap: 8px;
+    }
+
+    .toast {
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 12px;
+      animation: slideIn 0.3s ease;
+      max-width: 360px;
+    }
+    .toast.info { background: var(--bg-surface); border: 1px solid var(--accent); }
+    .toast.success { background: #064e3b; border: 1px solid var(--success); }
+    .toast.error { background: #7f1d1d; border: 1px solid var(--error); }
+    .toast.warning { background: #78350f; border: 1px solid var(--warning); }
+
+    @keyframes slideIn {
+      from { transform: translateX(100%); opacity: 0; }
+      to { transform: translateX(0); opacity: 1; }
+    }
+
+    /* ── Empty state ── */
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: var(--text-muted);
+      gap: 12px;
+      padding: 24px;
+      text-align: center;
+    }
+    .empty-state .icon { font-size: 48px; opacity: 0.4; }
+    .empty-state p { font-size: 13px; max-width: 300px; }
+  </style>
+</head>
+<body>
+
+  <!-- ── Top Bar ── -->
+  <div id="top-bar">
+    <span class="logo">ATLAS</span>
+    <span class="separator">›</span>
+    <span class="doc-title" id="doc-title">Document Editor</span>
+    <label>Document ID:</label>
+    <input type="text" id="doc-id-input" placeholder="e.g. my-file.pdf">
+    <button class="btn btn-accent" id="load-btn">Load</button>
+  </div>
+
+  <!-- ── Main Split ── -->
+  <div id="main-container">
+
+    <!-- Left: PDF Viewer -->
+    <div id="pdf-panel" class="split">
+      <div id="pdf-toolbar">
+        <div class="page-nav">
+          <button class="btn btn-small" id="prev-page" disabled>◀</button>
+          <input type="number" id="page-input" min="1" value="1">
+          <span id="page-count">/ 0</span>
+          <button class="btn btn-small" id="next-page" disabled>▶</button>
+        </div>
+        <div style="flex:1"></div>
+        <button class="btn btn-small" id="zoom-out-btn">−</button>
+        <span id="zoom-level" style="font-size:11px; min-width:36px; text-align:center">100%</span>
+        <button class="btn btn-small" id="zoom-in-btn">+</button>
+      </div>
+      <div id="pdf-viewport">
+        <div class="empty-state" id="pdf-empty">
+          <div class="icon">📄</div>
+          <p>Enter a Document ID and click Load to view the source PDF</p>
+        </div>
+        <div id="pdf-canvas-wrapper" style="position:relative; display:inline-block">
+          <canvas id="pdf-canvas" style="display:none"></canvas>
+          <canvas id="crop-overlay" style="position:absolute; top:0; left:0; pointer-events:none; display:none"></canvas>
+        </div>
+      </div>
+      <div class="loading-overlay hidden" id="pdf-loading">Rendering page…</div>
+    </div>
+
+    <!-- Right: Markdown Editor -->
+    <div id="editor-panel" class="split">
+      <div id="editor-toolbar">
+        <div class="tool-group">
+          <button class="btn btn-small btn-accent" id="vlm-fix-btn" disabled
+                  title="Send current page + markdown to VLM for correction">🔮 VLM Fix</button>
+          <button class="btn btn-small" id="vlm-settings-btn" disabled
+                  title="VLM render settings (DPI, crop)">⚙️</button>
+          <button class="btn btn-small" id="llm-refine-btn" disabled
+                  title="Send markdown to refine model">✨ LLM Refine</button>
+        </div>
+        <div class="tool-group">
+          <button class="btn btn-small" id="strip-btn" disabled
+                  title="Remove common LLM artifacts">🧹 Strip</button>
+          <button class="btn btn-small" id="rejudge-btn" disabled
+                  title="Re-run quality judge on current markdown">⚖️ Re-Judge</button>
+        </div>
+        <div class="tool-group">
+          <button class="btn btn-small" id="save-btn" disabled
+                  title="Save markdown back to artifacts">💾 Save</button>
+          <button class="btn btn-small" id="undo-btn" disabled
+                  title="Undo last change">↶ Undo</button>
+        </div>
+      </div>
+      <div id="codemirror-host">
+        <div class="empty-state" id="editor-empty">
+          <div class="icon">✏️</div>
+          <p>Load a run to edit its markdown</p>
+        </div>
+      </div>
+      <div class="loading-overlay hidden" id="editor-loading">Processing…</div>
+      <!-- VLM Settings Popover -->
+      <div id="vlm-settings-panel" style="display:none; position:absolute; top:42px; left:8px;
+           background:var(--bg-surface); border:1px solid var(--border); border-radius:6px;
+           padding:12px 16px; z-index:50; min-width:220px; box-shadow:0 4px 16px rgba(0,0,0,0.4);">
+        <div style="font-size:12px; font-weight:600; color:var(--text-primary); margin-bottom:8px;">VLM Render Settings</div>
+        <label style="font-size:11px; color:var(--text-muted); display:block; margin-bottom:2px;">DPI (render resolution)</label>
+        <input type="range" id="vlm-dpi" min="72" max="400" value="200" step="1"
+               style="width:100%">
+        <div style="font-size:11px; color:var(--text-secondary); text-align:right;" id="vlm-dpi-label">200 DPI</div>
+
+        <label style="font-size:11px; color:var(--text-muted); display:block; margin-top:6px; margin-bottom:2px;">Crop Top (%)</label>
+        <input type="range" id="vlm-crop-top" min="0" max="0.2" value="0.04" step="0.01"
+               style="width:100%">
+        <div style="font-size:11px; color:var(--text-secondary); text-align:right;" id="vlm-crop-top-label">4%</div>
+
+        <label style="font-size:11px; color:var(--text-muted); display:block; margin-top:6px; margin-bottom:2px;">Crop Bottom (%)</label>
+        <input type="range" id="vlm-crop-bottom" min="0" max="0.2" value="0.04" step="0.01"
+               style="width:100%">
+        <div style="font-size:11px; color:var(--text-secondary); text-align:right;" id="vlm-crop-bottom-label">4%</div>
+
+        <div style="margin-top:10px; border-top:1px solid var(--border); padding-top:8px;">
+          <label style="font-size:11px; color:var(--text-muted); cursor:pointer; display:flex; align-items:center; gap:6px;">
+            <input type="checkbox" id="vlm-show-crop" checked
+                   style="accent-color:var(--accent); width:14px; height:14px; cursor:pointer;">
+            Show crop overlay on PDF
+          </label>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Status Bar ── -->
+  <div id="status-bar">
+    <div class="status-item">
+      <div class="status-dot" id="status-dot"></div>
+      <span id="status-text">Ready</span>
+    </div>
+    <span id="status-lines">Lines: 0</span>
+    <span id="status-chars">Chars: 0</span>
+    <span id="status-model" style="margin-left:auto"></span>
+  </div>
+
+  <!-- ── Toast container ── -->
+  <div id="toast-container"></div>
+
+  <!-- ── Scripts ── -->
+  <!-- Fallback: catch module load errors and show them visibly -->
+  <script>
+    window.addEventListener('error', function(e) {
+      var st = document.getElementById('status-text');
+      if (st) st.textContent = 'JS Error: ' + (e.message || e);
+      var dot = document.getElementById('status-dot');
+      if (dot) { dot.className = 'status-dot error'; }
+      console.error('Editor error:', e);
+    });
+    window.addEventListener('unhandledrejection', function(e) {
+      var st = document.getElementById('status-text');
+      if (st) st.textContent = 'Load error: ' + (e.reason || e);
+      var dot = document.getElementById('status-dot');
+      if (dot) { dot.className = 'status-dot error'; }
+      console.error('Editor unhandled rejection:', e.reason);
+    });
+  </script>
+  <script type="module">
+    // ================================================================
+    // APPLICATION STATE & HELPERS  (zero CDN dependency)
+    // ================================================================
+    let state = {
+      runId: null,
+      docId: null,
+      pdfDoc: null,
+      currentPage: 0,
+      totalPages: 0,
+      zoomScale: 1.0,
+      editor: null,        // CodeMirror EditorView or fallback textarea
+      editorMode: null,     // 'codemirror' | 'textarea'
+      adminToken: null,
+      filename: '',
+      vlmDpi: 200,
+      vlmCropTop: 0.04,
+      vlmCropBottom: 0.04,
+    };
+
+    // CDN module references — populated asynchronously after listeners
+    let pdfjsLib = null;
+    let cm = null;  // { EditorView, EditorState, keymap, ... }
+
+    const API_BASE = window.location.origin;
+
+    function apiHeaders() {
+      const h = { 'Content-Type': 'application/json' };
+      if (state.adminToken) h['X-Atlas-Admin-Token'] = state.adminToken;
+      return h;
+    }
+
+    async function apiFetch(path, opts = {}) {
+      const url = `${API_BASE}${path}`;
+      const resp = await fetch(url, { headers: apiHeaders(), ...opts });
+      if (!resp.ok) {
+        const detail = await resp.text();
+        throw new Error(`API ${resp.status}: ${detail}`);
+      }
+      return resp;
+    }
+
+    async function apiJson(path, opts = {}) {
+      return (await apiFetch(path, opts)).json();
+    }
+
+    // ================================================================
+    // TOAST & STATUS  (zero CDN dependency)
+    // ================================================================
+    function toast(msg, level = 'info', duration = 4000) {
+      const container = document.getElementById('toast-container');
+      const el = document.createElement('div');
+      el.className = `toast ${level}`;
+      el.textContent = msg;
+      container.appendChild(el);
+      setTimeout(() => el.remove(), duration);
+    }
+
+    function setStatus(text, level = 'ok') {
+      document.getElementById('status-text').textContent = text;
+      const dot = document.getElementById('status-dot');
+      dot.className = 'status-dot';
+      if (level === 'busy') dot.classList.add('busy');
+      else if (level === 'error') dot.classList.add('error');
+    }
+
+    function updateEditorStats() {
+      let lines = 0, chars = 0;
+      if (state.editorMode === 'codemirror' && state.editor) {
+        const doc = state.editor.state.doc;
+        lines = doc.lines; chars = doc.length;
+      } else if (state.editorMode === 'textarea' && state.editor) {
+        const val = state.editor.value;
+        lines = val.split('\n').length; chars = val.length;
+      }
+      document.getElementById('status-lines').textContent = `Lines: ${lines}`;
+      document.getElementById('status-chars').textContent = `Chars: ${chars}`;
+    }
+
+    // ================================================================
+    // EDITOR — CodeMirror with textarea fallback
+    // ================================================================
+    function initEditor(content = '') {
+      const host = document.getElementById('codemirror-host');
+      const empty = document.getElementById('editor-empty');
+      if (empty) empty.remove();
+
+      // Destroy previous
+      if (state.editorMode === 'codemirror' && state.editor) state.editor.destroy();
+      if (state.editorMode === 'textarea' && state.editor) state.editor.remove();
+
+      if (cm) {
+        // === CodeMirror available ===
+        state.editorMode = 'codemirror';
+        state.editor = new cm.EditorView({
+          parent: host,
+          state: cm.EditorState.create({
+            doc: content,
+            extensions: [
+              cm.lineNumbers(),
+              cm.highlightActiveLineGutter(),
+              cm.highlightActiveLine(),
+              cm.highlightSpecialChars(),
+              cm.drawSelection(),
+              cm.rectangularSelection(),
+              cm.crosshairCursor(),
+              cm.foldGutter(),
+              cm.history(),
+              cm.search(),
+              cm.markdown(),
+              cm.syntaxHighlighting(cm.defaultHighlightStyle),
+              cm.oneDark,
+              cm.keymap.of([...cm.defaultKeymap, ...cm.historyKeymap, ...cm.searchKeymap]),
+              cm.EditorView.updateListener.of(v => { if (v.docChanged) updateEditorStats(); }),
+              cm.EditorView.lineWrapping,
+            ],
+          }),
+        });
+      } else {
+        // === Fallback: styled textarea ===
+        state.editorMode = 'textarea';
+        const ta = document.createElement('textarea');
+        ta.id = 'fallback-editor';
+        ta.value = content;
+        ta.spellcheck = false;
+        Object.assign(ta.style, {
+          width: '100%', height: '100%', resize: 'none',
+          background: '#282c34', color: '#abb2bf',
+          border: 'none', padding: '12px 16px',
+          fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
+          fontSize: '13px', lineHeight: '1.6', outline: 'none',
+          whiteSpace: 'pre-wrap', overflowY: 'auto',
+        });
+        ta.addEventListener('input', () => updateEditorStats());
+        host.appendChild(ta);
+        state.editor = ta;
+      }
+
+      updateEditorStats();
+      enableEditorButtons(true);
+    }
+
+    function getEditorContent() {
+      if (state.editorMode === 'codemirror' && state.editor)
+        return state.editor.state.doc.toString();
+      if (state.editorMode === 'textarea' && state.editor)
+        return state.editor.value;
+      return '';
+    }
+
+    function setEditorContent(text) {
+      if (state.editorMode === 'codemirror' && state.editor) {
+        state.editor.dispatch({
+          changes: { from: 0, to: state.editor.state.doc.length, insert: text },
+        });
+      } else if (state.editorMode === 'textarea' && state.editor) {
+        state.editor.value = text;
+      }
+    }
+
+    function editorUndo() {
+      if (state.editorMode === 'codemirror' && cm && state.editor) {
+        cm.undo(state.editor);
+      } else {
+        document.execCommand('undo');
+      }
+    }
+
+    // ================================================================
+    // PDF RENDERING  (requires pdfjsLib — guarded)
+    // ================================================================
+    async function renderCurrentPage() {
+      if (!state.pdfDoc) return;
+      const loading = document.getElementById('pdf-loading');
+      loading.classList.remove('hidden');
+
+      try {
+        const page = await state.pdfDoc.getPage(state.currentPage + 1);
+        const viewport = page.getViewport({ scale: state.zoomScale * 1.5 });
+        const canvas = document.getElementById('pdf-canvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        canvas.style.display = 'block';
+
+        await page.render({ canvasContext: ctx, viewport }).promise;
+
+        document.getElementById('page-input').value = state.currentPage + 1;
+        document.getElementById('prev-page').disabled = state.currentPage === 0;
+        document.getElementById('next-page').disabled = state.currentPage >= state.totalPages - 1;
+
+        updateCropOverlay();
+      } catch (err) {
+        toast(`Failed to render page: ${err.message}`, 'error');
+      } finally {
+        loading.classList.add('hidden');
+      }
+    }
+
+    function updateCropOverlay() {
+      const pdfCanvas = document.getElementById('pdf-canvas');
+      const overlay = document.getElementById('crop-overlay');
+      const showCrop = document.getElementById('vlm-show-crop');
+
+      if (!pdfCanvas || pdfCanvas.style.display === 'none' || !showCrop || !showCrop.checked) {
+        if (overlay) overlay.style.display = 'none';
+        return;
+      }
+
+      const w = pdfCanvas.width;
+      const h = pdfCanvas.height;
+      overlay.width = w;
+      overlay.height = h;
+      overlay.style.display = 'block';
+
+      const ctx = overlay.getContext('2d');
+      ctx.clearRect(0, 0, w, h);
+
+      const cropTopPx = Math.round(h * state.vlmCropTop);
+      const cropBottomPx = Math.round(h * state.vlmCropBottom);
+
+      // Semi-transparent red bars
+      ctx.fillStyle = 'rgba(248, 113, 113, 0.35)';
+
+      // Top crop region
+      if (cropTopPx > 0) {
+        ctx.fillRect(0, 0, w, cropTopPx);
+      }
+
+      // Bottom crop region
+      if (cropBottomPx > 0) {
+        ctx.fillRect(0, h - cropBottomPx, w, cropBottomPx);
+      }
+
+      // Dashed border lines at crop boundaries
+      ctx.strokeStyle = 'rgba(248, 113, 113, 0.8)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 4]);
+
+      if (cropTopPx > 0) {
+        ctx.beginPath();
+        ctx.moveTo(0, cropTopPx);
+        ctx.lineTo(w, cropTopPx);
+        ctx.stroke();
+      }
+
+      if (cropBottomPx > 0) {
+        ctx.beginPath();
+        ctx.moveTo(0, h - cropBottomPx);
+        ctx.lineTo(w, h - cropBottomPx);
+        ctx.stroke();
+      }
+
+      // Labels
+      ctx.setLineDash([]);
+      ctx.font = '11px Inter, sans-serif';
+      ctx.textAlign = 'center';
+
+      if (cropTopPx > 14) {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+        ctx.fillText(`Crop top ${Math.round(state.vlmCropTop * 100)}%`, w / 2, cropTopPx / 2 + 4);
+      }
+
+      if (cropBottomPx > 14) {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+        ctx.fillText(`Crop bottom ${Math.round(state.vlmCropBottom * 100)}%`, w / 2, h - cropBottomPx / 2 + 4);
+      }
+    }
+
+    // ================================================================
+    // CORE FUNCTIONS  (use pdfjsLib late-bound)
+    // ================================================================
+    async function loadDoc() {
+      const input = document.getElementById('doc-id-input');
+      const docId = input.value.trim();
+      if (!docId) { toast('Enter a Document ID', 'warning'); return; }
+      if (!pdfjsLib) { toast('PDF.js still loading — please wait', 'warning'); return; }
+
+      const params = new URLSearchParams(window.location.search);
+      state.adminToken = params.get('token') || localStorage.getItem('atlas_admin_token') || null;
+      state.docId = docId;
+      setStatus(`Resolving document '${docId}'…`, 'busy');
+
+      try {
+        const resolved = await apiJson(`/api/editor/resolve-doc/${encodeURIComponent(docId)}`);
+        const runId = resolved.run_id;
+        state.runId = runId;
+
+        setStatus(`Loading run ${runId} (v${resolved.doc_version})…`, 'busy');
+
+        const info = await apiJson(`/api/editor/page-info/${runId}`);
+        state.totalPages = info.page_count;
+        state.filename = info.source_filename;
+        document.getElementById('doc-title').textContent =
+          `${info.source_filename || docId} — ${info.page_count} pages (run #${runId}, v${resolved.doc_version})`;
+        document.getElementById('page-count').textContent = `/ ${info.page_count}`;
+
+        const pdfUrl = `${API_BASE}/api/editor/source-pdf/${runId}`;
+        const loadingTask = pdfjsLib.getDocument({
+          url: pdfUrl,
+          httpHeaders: state.adminToken ? { 'X-Atlas-Admin-Token': state.adminToken } : {},
+        });
+        state.pdfDoc = await loadingTask.promise;
+        state.currentPage = 0;
+
+        const pdfEmpty = document.getElementById('pdf-empty');
+        if (pdfEmpty) pdfEmpty.style.display = 'none';
+        await renderCurrentPage();
+
+        const mdResp = await apiJson(`/api/editor/markdown/${runId}`);
+        initEditor(mdResp.markdown);
+
+        setStatus(`Loaded '${docId}' — run #${runId}`, 'ok');
+        toast(`Loaded: ${info.source_filename} (${info.page_count} pages, run #${runId})`, 'success');
+
+        const newUrl = new URL(window.location);
+        newUrl.searchParams.set('doc_id', docId);
+        newUrl.searchParams.delete('run_id');
+        window.history.replaceState({}, '', newUrl);
+      } catch (err) {
+        setStatus(`Failed to load '${docId}'`, 'error');
+        toast(err.message, 'error');
+      }
+    }
+
+    async function loadByRunId(runId) {
+      if (!pdfjsLib) { toast('PDF.js still loading — please wait', 'warning'); return; }
+      const params = new URLSearchParams(window.location.search);
+      state.adminToken = params.get('token') || localStorage.getItem('atlas_admin_token') || null;
+      state.runId = runId;
+      setStatus(`Loading run ${runId}…`, 'busy');
+      try {
+        const info = await apiJson(`/api/editor/page-info/${runId}`);
+        state.totalPages = info.page_count;
+        state.filename = info.source_filename;
+        document.getElementById('doc-title').textContent =
+          `${info.source_filename || `Run #${runId}`} — ${info.page_count} pages (run #${runId})`;
+        document.getElementById('page-count').textContent = `/ ${info.page_count}`;
+        const pdfUrl = `${API_BASE}/api/editor/source-pdf/${runId}`;
+        state.pdfDoc = await pdfjsLib.getDocument({
+          url: pdfUrl,
+          httpHeaders: state.adminToken ? { 'X-Atlas-Admin-Token': state.adminToken } : {},
+        }).promise;
+        state.currentPage = 0;
+        const pdfEmpty = document.getElementById('pdf-empty');
+        if (pdfEmpty) pdfEmpty.style.display = 'none';
+        await renderCurrentPage();
+        const mdResp = await apiJson(`/api/editor/markdown/${runId}`);
+        initEditor(mdResp.markdown);
+        setStatus(`Loaded run ${runId}`, 'ok');
+        toast(`Loaded: ${info.source_filename} (${info.page_count} pages)`, 'success');
+      } catch (err) {
+        setStatus(`Failed to load run ${runId}`, 'error');
+        toast(err.message, 'error');
+      }
+    }
+
+    function changePage(delta) {
+      const newPage = state.currentPage + delta;
+      if (newPage < 0 || newPage >= state.totalPages) return;
+      state.currentPage = newPage;
+      renderCurrentPage();
+    }
+
+    function goToPage(val) {
+      const p = parseInt(val, 10) - 1;
+      if (p < 0 || p >= state.totalPages) return;
+      state.currentPage = p;
+      renderCurrentPage();
+    }
+
+    function zoomPdf(delta) {
+      state.zoomScale = Math.max(0.25, Math.min(4, state.zoomScale + delta));
+      document.getElementById('zoom-level').textContent =
+        `${Math.round(state.zoomScale * 100)}%`;
+      renderCurrentPage();
+    }
+
+    async function vlmFix() {
+      if (!state.runId) return;
+      const loading = document.getElementById('editor-loading');
+      loading.classList.remove('hidden');
+      setStatus('VLM vision-refine…', 'busy');
+
+      try {
+        // 1. Determine what markdown to send to the VLM
+        let sendMarkdown = null;
+        let hasSelection = false;
+        let selFrom = 0, selTo = 0;
+
+        // Check for editor selection first
+        if (state.editorMode === 'codemirror' && state.editor) {
+          const sel = state.editor.state.selection.main;
+          if (sel.from !== sel.to) {
+            sendMarkdown = state.editor.state.sliceDoc(sel.from, sel.to);
+            hasSelection = true;
+            selFrom = sel.from;
+            selTo = sel.to;
+          }
+        } else if (state.editorMode === 'textarea' && state.editor) {
+          const ta = state.editor;
+          if (ta.selectionStart !== ta.selectionEnd) {
+            sendMarkdown = ta.value.substring(ta.selectionStart, ta.selectionEnd);
+            hasSelection = true;
+            selFrom = ta.selectionStart;
+            selTo = ta.selectionEnd;
+          }
+        }
+
+        // If no selection, try per-page markdown from Docling
+        if (!sendMarkdown) {
+          try {
+            const pageMdResp = await apiJson(
+              `/api/editor/page-markdown/${state.runId}/${state.currentPage}`
+            );
+            sendMarkdown = pageMdResp.markdown;
+          } catch (e) {
+            // Per-page unavailable — fall back to full content
+            sendMarkdown = getEditorContent();
+            toast(
+              'No selection and no page-level data — sending full document. ' +
+              'Tip: select the text for this page before clicking VLM Fix.',
+              'warning'
+            );
+          }
+        }
+
+        // 2. Call VLM with scoped markdown
+        const result = await apiJson('/api/editor/vision-refine', {
+          method: 'POST',
+          body: JSON.stringify({
+            run_id: state.runId,
+            page_num: state.currentPage,
+            current_markdown: sendMarkdown,
+            dpi: state.vlmDpi,
+            crop_top: state.vlmCropTop,
+            crop_bottom: state.vlmCropBottom,
+          }),
+        });
+
+        // 3. Apply the correction
+        if (hasSelection) {
+          // Replace only the selected region
+          if (state.editorMode === 'codemirror' && state.editor) {
+            state.editor.dispatch({
+              changes: { from: selFrom, to: selTo, insert: result.corrected_markdown },
+            });
+          } else if (state.editorMode === 'textarea' && state.editor) {
+            const ta = state.editor;
+            const before = ta.value.substring(0, selFrom);
+            const after = ta.value.substring(selTo);
+            ta.value = before + result.corrected_markdown + after;
+          }
+          toast(`VLM corrected selection (page ${state.currentPage + 1}) via ${result.model}`, 'success');
+        } else {
+          // No selection — replace entire editor content
+          setEditorContent(result.corrected_markdown);
+          toast(`VLM corrected page ${state.currentPage + 1} (full replace) via ${result.model}`, 'success');
+        }
+
+        document.getElementById('status-model').textContent = `Model: ${result.model}`;
+        setStatus('VLM fix applied', 'ok');
+      } catch (err) {
+        setStatus('VLM fix failed', 'error');
+        toast(err.message, 'error');
+      } finally {
+        loading.classList.add('hidden');
+      }
+    }
+
+    // ================================================================
+    // SAVE MARKDOWN
+    // ================================================================
+    async function saveMarkdown() {
+      if (!state.runId) { toast('No document loaded', 'error'); return; }
+      const md = getEditorContent();
+      if (!md.trim()) { toast('Editor is empty — nothing to save', 'warning'); return; }
+
+      const overlay = document.getElementById('editor-loading');
+      overlay.textContent = 'Saving…';
+      overlay.classList.remove('hidden');
+
+      try {
+        const data = await apiJson('/api/editor/save-markdown', {
+          method: 'POST',
+          body: JSON.stringify({ run_id: state.runId, markdown: md }),
+        });
+        toast(`Saved ${data.chars.toLocaleString()} chars → ${data.path}`, 'success');
+      } catch (err) {
+        toast(`Save failed: ${err.message}`, 'error');
+      } finally {
+        overlay.classList.add('hidden');
+      }
+    }
+
+    // ================================================================
+    // LLM REFINE
+    // ================================================================
+    async function llmRefine() {
+      if (!state.runId) { toast('No document loaded', 'error'); return; }
+      const md = getEditorContent();
+      if (!md.trim()) { toast('Editor is empty — nothing to refine', 'warning'); return; }
+
+      const overlay = document.getElementById('editor-loading');
+      overlay.textContent = 'LLM Refine in progress… (this may take a minute)';
+      overlay.classList.remove('hidden');
+      setStatus('LLM Refine running…', 'busy');
+
+      try {
+        const data = await apiJson('/api/editor/llm-refine', {
+          method: 'POST',
+          body: JSON.stringify({ run_id: state.runId, markdown: md }),
+        });
+
+        if (data.success) {
+          setEditorContent(data.refined_markdown);
+          const impList = data.improvements.length
+            ? `: ${data.improvements.join(', ')}`
+            : '';
+          toast(`Refined by ${data.model}${impList}`, 'success', 6000);
+        } else {
+          toast(`Refine returned unchanged (${data.improvements.join(', ') || 'guardrail triggered'})`, 'warning');
+        }
+        setStatus('Ready', 'ok');
+      } catch (err) {
+        toast(`LLM Refine failed: ${err.message}`, 'error');
+        setStatus('Refine error', 'error');
+      } finally {
+        overlay.classList.add('hidden');
+      }
+    }
+
+    // ================================================================
+    // RE-JUDGE
+    // ================================================================
+    async function reJudge() {
+      if (!state.runId) { toast('No document loaded', 'error'); return; }
+      const md = getEditorContent();
+      if (!md.trim()) { toast('Editor is empty — nothing to judge', 'warning'); return; }
+
+      const overlay = document.getElementById('editor-loading');
+      overlay.textContent = 'Re-judging quality…';
+      overlay.classList.remove('hidden');
+      setStatus('Re-Judge running…', 'busy');
+
+      try {
+        const data = await apiJson('/api/editor/re-judge', {
+          method: 'POST',
+          body: JSON.stringify({ run_id: state.runId, markdown: md }),
+        });
+
+        // Build sub-score display
+        const subLines = Object.entries(data.sub_scores || {})
+          .map(([dim, s]) => `  ${dim}: ${s}/5`)
+          .join('\n');
+
+        const verdict = data.needs_refinement ? '⚠️ Needs refinement' : '✅ Passes quality gate';
+        const msg = `Quality Score: ${data.score}/5  ${verdict}\n\n` +
+          `Sub-scores:\n${subLines}\n\nRationale:\n${data.rationale}\n\nModel: ${data.model}`;
+
+        // Show in a modal-style alert (toast is too small for this)
+        alert(msg);
+
+        // Also show a brief toast
+        toast(`Judge score: ${data.score}/5 — ${data.needs_refinement ? 'needs refinement' : 'passes'}`, 
+              data.needs_refinement ? 'warning' : 'success', 5000);
+        setStatus('Ready', 'ok');
+      } catch (err) {
+        toast(`Re-Judge failed: ${err.message}`, 'error');
+        setStatus('Judge error', 'error');
+      } finally {
+        overlay.classList.add('hidden');
+      }
+    }
+
+    function stripArtifacts() {
+      let md = getEditorContent();
+      const origLen = md.length;
+      md = md.replace(/^```(?:markdown)?\s*\n/i, '');
+      md = md.replace(/\n```\s*$/i, '');
+      md = md.replace(/^(?:Here is|Below is|Sure,?|I've (?:made|cleaned|updated|improved)).*?\n+/i, '');
+      md = md.replace(/\n+(?:Let me know|I hope|Feel free|Is there anything).*?$/i, '');
+      md = md.replace(/\n+## (?:Summary of Changes|Improvements Made|Changes Made)[\s\S]*?(?=\n## |\n*$)/gi, '');
+      md = md.replace(/<think>[\s\S]*?<\/think>/g, '');
+      md = md.replace(/<think>[\s\S]*$/g, '');
+      md = md.trim();
+      if (md.length < origLen) {
+        setEditorContent(md);
+        toast(`Stripped ${origLen - md.length} chars of artifacts`, 'success');
+      } else {
+        toast('No artifacts found to strip', 'info');
+      }
+    }
+
+    function toggleVlmSettings() {
+      const panel = document.getElementById('vlm-settings-panel');
+      panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+    }
+
+    function enableEditorButtons(enabled) {
+      for (const id of ['vlm-fix-btn', 'vlm-settings-btn', 'llm-refine-btn', 'strip-btn', 'rejudge-btn', 'save-btn', 'undo-btn']) {
+        document.getElementById(id).disabled = !enabled;
+      }
+      if (!enabled) {
+        document.getElementById('vlm-settings-panel').style.display = 'none';
+      }
+    }
+
+    // ================================================================
+    // EVENT LISTENERS — registered BEFORE any CDN loads
+    // ================================================================
+    document.getElementById('load-btn').addEventListener('click', loadDoc);
+    document.getElementById('doc-id-input').addEventListener('keydown', e => {
+      if (e.key === 'Enter') loadDoc();
+    });
+    document.getElementById('prev-page').addEventListener('click', () => changePage(-1));
+    document.getElementById('next-page').addEventListener('click', () => changePage(1));
+    document.getElementById('page-input').addEventListener('change', e => goToPage(e.target.value));
+    document.getElementById('zoom-out-btn').addEventListener('click', () => zoomPdf(-0.25));
+    document.getElementById('zoom-in-btn').addEventListener('click', () => zoomPdf(0.25));
+    document.getElementById('vlm-fix-btn').addEventListener('click', vlmFix);
+    document.getElementById('vlm-settings-btn').addEventListener('click', toggleVlmSettings);
+    document.getElementById('llm-refine-btn').addEventListener('click', llmRefine);
+    document.getElementById('strip-btn').addEventListener('click', stripArtifacts);
+    document.getElementById('rejudge-btn').addEventListener('click', reJudge);
+    document.getElementById('save-btn').addEventListener('click', saveMarkdown);
+    document.getElementById('undo-btn').addEventListener('click', () => editorUndo());
+
+    // VLM settings sliders
+    document.getElementById('vlm-dpi').addEventListener('input', e => {
+      state.vlmDpi = parseInt(e.target.value, 10);
+      document.getElementById('vlm-dpi-label').textContent = `${e.target.value} DPI`;
+    });
+    document.getElementById('vlm-crop-top').addEventListener('input', e => {
+      state.vlmCropTop = parseFloat(e.target.value);
+      document.getElementById('vlm-crop-top-label').textContent = `${Math.round(e.target.value * 100)}%`;
+      updateCropOverlay();
+    });
+    document.getElementById('vlm-crop-bottom').addEventListener('input', e => {
+      state.vlmCropBottom = parseFloat(e.target.value);
+      document.getElementById('vlm-crop-bottom-label').textContent = `${Math.round(e.target.value * 100)}%`;
+      updateCropOverlay();
+    });
+    document.getElementById('vlm-show-crop').addEventListener('change', () => updateCropOverlay());
+
+    // Initialize Split.js (loaded via regular <script> tag — always available)
+    Split(['#pdf-panel', '#editor-panel'], {
+      sizes: [40, 60],
+      minSize: [300, 400],
+      gutterSize: 6,
+      cursor: 'col-resize',
+    });
+
+    // Store admin token if provided in URL
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlToken = urlParams.get('token');
+    if (urlToken) localStorage.setItem('atlas_admin_token', urlToken);
+
+    console.log('[Atlas Editor] Event listeners registered. Loading CDN modules…');
+    setStatus('Loading libraries…', 'busy');
+
+    // ================================================================
+    // CDN LOADING — async with try/catch, after listeners
+    // ================================================================
+
+    // --- PDF.js (required) ---
+    try {
+      pdfjsLib = await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.9.155/pdf.min.mjs');
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.9.155/pdf.worker.min.mjs';
+      console.log('[Atlas Editor] PDF.js loaded');
+    } catch (err) {
+      console.error('[Atlas Editor] PDF.js failed:', err);
+      setStatus('PDF.js failed to load — PDF viewing unavailable', 'error');
+      toast('PDF.js CDN failed. Check network/firewall.', 'error');
+    }
+
+    // --- CodeMirror 6 (optional — falls back to textarea) ---
+    try {
+      // Try jsdelivr first (more reliable), fall back to esm.sh
+      const CDN_BASES = [
+        'https://esm.sh',
+        'https://cdn.jsdelivr.net/npm',
+      ];
+      let loaded = false;
+      for (const base of CDN_BASES) {
+        try {
+          const suffix = base.includes('jsdelivr') ? '/+esm' : '';
+          const [viewMod, stateMod, mdMod, cmdMod, themeMod, langMod, searchMod] = await Promise.all([
+            import(`${base}/@codemirror/view@6.36.5${suffix}`),
+            import(`${base}/@codemirror/state@6.5.2${suffix}`),
+            import(`${base}/@codemirror/lang-markdown@6.3.2${suffix}`),
+            import(`${base}/@codemirror/commands@6.7.2${suffix}`),
+            import(`${base}/@codemirror/theme-one-dark@6.1.2${suffix}`),
+            import(`${base}/@codemirror/language@6.10.8${suffix}`),
+            import(`${base}/@codemirror/search@6.5.10${suffix}`),
+          ]);
+          cm = {
+            EditorView: viewMod.EditorView, keymap: viewMod.keymap,
+            lineNumbers: viewMod.lineNumbers, highlightActiveLineGutter: viewMod.highlightActiveLineGutter,
+            highlightActiveLine: viewMod.highlightActiveLine, drawSelection: viewMod.drawSelection,
+            rectangularSelection: viewMod.rectangularSelection, crosshairCursor: viewMod.crosshairCursor,
+            highlightSpecialChars: viewMod.highlightSpecialChars,
+            EditorState: stateMod.EditorState,
+            markdown: mdMod.markdown,
+            defaultKeymap: cmdMod.defaultKeymap, history: cmdMod.history,
+            historyKeymap: cmdMod.historyKeymap, undo: cmdMod.undo,
+            oneDark: themeMod.oneDark,
+            syntaxHighlighting: langMod.syntaxHighlighting,
+            defaultHighlightStyle: langMod.defaultHighlightStyle,
+            foldGutter: langMod.foldGutter,
+            search: searchMod.search, searchKeymap: searchMod.searchKeymap,
+          };
+          console.log(`[Atlas Editor] CodeMirror loaded from ${base}`);
+          loaded = true;
+          break;
+        } catch (cdnErr) {
+          console.warn(`[Atlas Editor] CodeMirror from ${base} failed:`, cdnErr);
+        }
+      }
+      if (!loaded) throw new Error('All CDN sources failed');
+    } catch (err) {
+      console.warn('[Atlas Editor] CodeMirror unavailable, using textarea fallback:', err);
+      toast('CodeMirror unavailable — using plain text editor', 'warning');
+      cm = null;
+    }
+
+    // --- Ready ---
+    setStatus(pdfjsLib ? 'Ready' : 'Ready (PDF viewer unavailable)', pdfjsLib ? 'ok' : 'error');
+    console.log('[Atlas Editor] Initialization complete.',
+      pdfjsLib ? 'PDF.js: OK.' : 'PDF.js: FAILED.',
+      cm ? 'CodeMirror: OK.' : 'CodeMirror: textarea fallback.');
+
+    // ================================================================
+    // AUTO-LOAD from URL params (after CDN modules are ready)
+    // ================================================================
+    const urlDocId = urlParams.get('doc_id');
+    const urlRunId = urlParams.get('run_id');
+    if (urlDocId) {
+      document.getElementById('doc-id-input').value = urlDocId;
+      loadDoc();
+    } else if (urlRunId) {
+      document.getElementById('doc-id-input').value = `run:${urlRunId}`;
+      const runId = parseInt(urlRunId, 10);
+      if (runId) loadByRunId(runId);
+    }
+  </script>
+
+</body>
+</html>

@@ -237,3 +237,34 @@ def test_routing_decision_is_frozen():
         assert False, "Should be frozen"
     except AttributeError:
         pass
+
+
+# ---------------------------------------------------------------------------
+# HITL-resume routing override
+# ---------------------------------------------------------------------------
+
+def test_hitl_resume_skips_refine_and_goes_to_metadata():
+    """After HITL approval, judge should route to metadata regardless of score."""
+    judge_results = {"judge": {"score": 2, "sub_scores": {"faithfulness": 2, "formatting": 1, "cohesion": 2, "hallucination_risk": 2}}}
+    state = _state(is_hitl_resume=True)
+    d = decide_next_step(current_node="judge", results=judge_results, state_snapshot=state, config=_cfg())
+    assert d.target == "metadata"
+    assert "HITL-approved" in d.reason
+
+
+def test_hitl_resume_skips_cleanup_rejudge():
+    """Cleanup-rejudge should NOT fire on HITL-resumed documents."""
+    judge_results = {"judge": {"score": 4, "sub_scores": {"faithfulness": 5, "formatting": 3, "cohesion": 4, "hallucination_risk": 5}}}
+    state = _state(is_hitl_resume=True)
+    cfg = _cfg(cleanup_rejudge=True)
+    d = decide_next_step(current_node="judge", results=judge_results, state_snapshot=state, config=cfg)
+    assert d.target == "metadata"
+    assert "HITL-approved" in d.reason
+
+
+def test_hitl_resume_not_set_routes_normally():
+    """Without is_hitl_resume, low score should still route to refine."""
+    judge_results = {"judge": {"score": 2, "sub_scores": {}}}
+    state = _state(is_hitl_resume=False)
+    d = decide_next_step(current_node="judge", results=judge_results, state_snapshot=state, config=_cfg())
+    assert d.target == "refine"

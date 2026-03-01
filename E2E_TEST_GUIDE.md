@@ -18,13 +18,51 @@ Located in: `tests/test_*.py`
 
 | Test File | Coverage | Mode |
 |-----------|----------|------|
-| `test_e2e_workflows.py` | **NEW** Complete workflow validation | Deterministic |
+| `test_e2e_workflows.py` | Complete workflow validation | Deterministic |
 | `test_rag_endpoints.py` | RAG ingest & search endpoints | Mock Qdrant |
-| `test_pipeline_hitl_resume.py` | HITL workflow | Mock Qdrant |
+| `test_pipeline_hitl_resume.py` | HITL workflow + resume loop guard | Mock Qdrant |
 | `test_pipeline_state.py` | Pipeline state transitions | Deterministic |
+| `test_pipeline_nodes.py` | Individual pipeline node logic | Deterministic |
 | `test_chunking.py` | Chunking logic | Pure unit |
+| `test_chunk_qa.py` | Chunk QA validation | Pure unit |
 | `test_hitl.py` | HITL task management | DB-backed |
+| `test_hitl_endpoints.py` | HITL API endpoints | Mock |
 | `test_config_manager.py` | Config versioning | YAML/DB |
+| `test_routing.py` | Pipeline routing decisions | Deterministic |
+| `test_routing_layout.py` | Layout-aware routing | Deterministic |
+| `test_cleanup.py` | Cleanup rule engine | Pure unit |
+| `test_cleanup_rules.py` | Cleanup rule matching | Pure unit |
+| `test_cleanup_layout.py` | Layout-specific cleanup | Pure unit |
+| `test_cleanup_feedback.py` | Cleanup feedback API | DB-backed |
+| `test_cleanup_rules_import_export.py` | Cleanup rules YAML import/export | DB-backed |
+| `test_phase_refactors.py` | Phase 8 refactoring (normalize/runner) | Deterministic |
+| `test_schemas.py` | Pydantic schema validation | Pure unit |
+| `test_admin_endpoints.py` | Admin API endpoints | Mock |
+| `test_admin_auth.py` | Admin token auth | Mock |
+| `test_admin_db_reset.py` | DB reset endpoint | DB-backed |
+| `test_doc_versions_admin.py` | Doc versioning + export | DB-backed |
+| `test_corpus_bulk_export_import.py` | Corpus bulk export/import | DB-backed |
+| `test_diagnostics.py` | Diagnostics endpoints | Mock |
+| `test_model_manager.py` | Model manager lifecycle | Deterministic |
+| `test_model_registry.py` | Model registry lookups | Pure unit |
+| `test_metrics_aggregation.py` | Metrics aggregation | Pure unit |
+| `test_looking_glass_ledger.py` | Looking Glass + run ledger | DB-backed |
+| `test_workflow_ledger.py` | Workflow ledger persistence | DB-backed |
+| `test_startup_validation.py` | Startup config validation | Pure unit |
+| `test_deep_merge.py` | Deep merge utility | Pure unit |
+| `test_retry.py` | Retry/backoff logic | Pure unit |
+| `test_concurrency.py` | Concurrent ingest safety | Mock |
+| `test_docling_ingest.py` | Docling PDF ingest | Mock Docling |
+| `test_docling_health.py` | Docling health scoring | Deterministic |
+| `test_llm_artifact_stripping.py` | LLM artifact stripping (`<think>`, fences) | Pure unit |
+| `test_layout_types.py` | Layout type classification | Pure unit |
+| `test_layout_ingest_wiring.py` | Layout parser → IngestNode wiring | Mock |
+| `test_postprocess.py` | Post-processing steps | Pure unit |
+| `test_rule_suggestion.py` | LLM-assisted rule suggestion | Mock LLM |
+| `test_retrieval_eval.py` | Retrieval eval harness | Pure unit |
+| `test_page_renderer.py` | PDF→PNG rendering, crop margins, VLM messages | Pure unit |
+| `test_vision_plumbing.py` | Multimodal ChatMessage, `<think>` tag stripping | Pure unit |
+| `test_integration_qdrant_live.py` | Live Qdrant CRUD | Integration |
 
 **Run unit tests:**
 ```bash

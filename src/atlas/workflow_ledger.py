@@ -116,6 +116,21 @@ def get_workflow_run(session: Session, *, run_id: int) -> WorkflowRun | None:
     return res.scalars().first()
 
 
+def get_latest_run_by_doc_id(session: Session, *, doc_id: str) -> WorkflowRun | None:
+    """Return the most recent WorkflowRun for a given *doc_id*.
+
+    Orders by ``id DESC`` so the latest ingest run is returned first.
+    Returns ``None`` when no runs exist for the document.
+    """
+    res = session.execute(
+        select(WorkflowRun)
+        .where(WorkflowRun.doc_id == doc_id)
+        .order_by(WorkflowRun.id.desc())
+        .limit(1)
+    )
+    return res.scalars().first()
+
+
 def list_workflow_runs(
     session: Session,
     *,

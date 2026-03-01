@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.3-dev] - unreleased
+
+### Added
+- **Swappable PDF parser backends** (`src/atlas/pipeline/ingest.py`): `pdf_parser.backend` config key now supports four modes: `auto` (Docling first → layout fallback), `auto_layout` (layout first → Docling fallback), `layout` (layout only), `docling` (Docling only). Default changed from layout-first to **Docling-first** (`auto`).
+- **LLM artifact stripping** (`src/atlas/pipeline/refine.py`): `strip_llm_artifacts()` removes leaked `<think>` blocks, markdown fences, preamble/postamble boilerplate as a post-refine step.
+- **Document Editor (Phase 12A+12B)**: Zero-build-step standalone HTML/JS editor served by FastAPI at `/editor`.
+  - **Backend**: `api_editor.py` with 5 endpoints: `page-info`, `render-page`, `source-pdf`, `markdown`, `vision-refine`.
+  - **Frontend**: PDF.js viewer (left) + CodeMirror 6 markdown editor (right), Split.js split view, dark theme, tool palette (VLM Fix, Strip Artifacts, Save, Undo), toast notifications.
+  - **VLM support**: `page_renderer.py` — PyMuPDF-based PDF→PNG rendering with configurable DPI and header/footer crop margins. `build_vision_messages()` constructs multimodal prompts for vision refinement.
+  - **`vision_model` role** in `models.yaml` — dedicated VLM configuration for page-level PDF correction.
+- **Multimodal ChatMessage** (`src/atlas/llm/provider.py`): `ChatMessage.content` now accepts `str | list[ContentPart]` for vision model requests (image + text blocks).
+- **Unclosed `<think>` tag handling** (`src/atlas/llm/openai_compat.py`): New `_THINK_TAG_UNCLOSED_RE` regex strips truncated reasoning blocks (Qwen3 `max_tokens` exhaustion). `finish_reason` logged when not "stop" (truncation warning).
+
+### Changed
+- **Cleanup rules optimized**: Expanded default rule set from 7 to 10 rules, organized into logical sections (heading normalization, content stripping, bullet/list cleanup, paragraph repair). New rules: `fix_numbered_headings`, `strip_headers_footers`, `merge_hardwrapped_paragraphs`.
+- **Builtin cleanup expansion**: `strip_page_numbers` (ON by default) and `strip_repetitive_lines` (OFF by default) now documented in `PIPELINE_REFERENCE.md`.
+- **Refine guardrails tightened**: `min_preservation_ratio` raised from 0.6 → 0.85. Sectional refinement uses section-count guard and dynamic `max_tokens` scaled to input length.
+- **Pipeline config wiring** (`src/atlas/pipeline/runner.py`): `pipeline_cfg.get("pdf_parser")` passed to IngestNode constructor (was hardcoded env var).
+- **Test fixes for Docling-first `auto` backend**: Updated `test_layout_ingest_wiring.py` (renamed `test_backend_auto_prefers_layout` → `test_backend_auto_prefers_docling`, added `test_backend_auto_layout_prefers_layout`) and `test_docling_ingest.py` (force `backend=docling` for Docling-specific error tests to prevent auto-fallback masking).
+
+### Removed
+- **`HLD.md`** — superseded by `ARCHITECTURE.md` + `TECHNICAL_DESIGN.md`. Git history preserves final snapshot.
+- **`PDF_OVERHAUL_PLAN.md`** — completed work absorbed into `TECHNICAL_DESIGN.md` Phases 10-11.
+- **`VALIDATION_REPORT.md`** — frozen v0.7.0 snapshot; test coverage tracked in CHANGELOG.
+- **`CAPABILITIES_AUDIT.md`** — extreme maintenance burden (line-number references stale within days). Capability status now tracked in `TECHNICAL_DESIGN.md` roadmap and CHANGELOG.
+
+### Documentation
+- **E2E_TEST_GUIDE.md**: Test coverage matrix expanded from 7 → 43 test files with mode annotations.
+- **PIPELINE_REFERENCE.md**: Fixed `normalize` section (formatting-only since v0.6.0, not noise-stripping). Added `strip_page_numbers` and `strip_repetitive_lines` to `builtin_cleanup` table (was 3 entries, now 5).
+- **ARCHITECTURE.md**: Updated parser backend description, refine section, test count (485+), HITL section, Next Steps.
+- **TECHNICAL_DESIGN.md**: Added Phases 10-12, removed deleted doc references, updated §9 (documentation), §10 (capabilities audit removed).
+- **README.md**: Removed references to deleted docs, added `pdf_parser:` to config sections, fixed `refine_min_preservation_ratio` default.
+
 ## [0.7.2] - 2026-03-03
 
 ### Added

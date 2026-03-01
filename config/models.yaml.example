@@ -53,3 +53,14 @@ roles:
     provider: lmstudio
     model_name: "bge-reranker"
     params: {}
+
+  # Vision-language model for page-level PDF correction.
+  # Used by the Document Editor's "VLM Fix" tool and the
+  # automated vision quality audit.  Requires a multimodal
+  # model that accepts image_url content blocks.
+  vision_model:
+    provider: lmstudio
+    model_name: "qwen2.5-vl-32b"
+    params:
+      temperature: 0.1
+      max_tokens: 4096

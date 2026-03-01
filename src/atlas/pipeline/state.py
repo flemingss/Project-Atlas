@@ -176,6 +176,7 @@ class PipelineStateManager:
                 "judge_score_history": context.results.get("judge_score_history", []),
                 "cleanup_rejudge_count": context.results.get("cleanup_rejudge_count", 0),
                 "markdown_len": len(context.state.markdown_projection or ""),
+                "is_hitl_resume": context.results.get("is_hitl_resume", False),
             },
             config=config,
         )

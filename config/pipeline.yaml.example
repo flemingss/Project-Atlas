@@ -146,8 +146,9 @@ cleanup_rules: []
 # and table structure recognition.
 #
 # pdf_parser:
-#   # Backend selection: auto | layout | docling
-#   # auto (default): try layout parser first, fall back to Docling on failure.
+#   # Backend selection: auto | auto_layout | layout | docling
+#   # auto (default): try Docling first, fall back to layout parser on failure.
+#   # auto_layout: try layout parser first, fall back to Docling on failure.
 #   backend: auto
 #   # Zoom factor for page rendering (higher = better OCR at cost of speed/RAM).
 #   zoom: 3.0

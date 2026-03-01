@@ -42,6 +42,7 @@ COPY config ./config
 RUN cp -n config/pipeline.yaml.example config/pipeline.yaml 2>/dev/null || true \
  && cp -n config/models.yaml.example config/models.yaml 2>/dev/null || true
 COPY scripts ./scripts
+COPY static ./static
 
 EXPOSE 8080
 

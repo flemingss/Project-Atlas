@@ -48,9 +48,11 @@ class IngestNode:
     - Version tracking with docling_schema_version
     """
 
-    def __init__(self):
+    def __init__(self, pdf_parser_config: dict[str, Any] | None = None):
         self.diagnostics = get_diagnostics()
         self.settings = Settings()
+        # Pipeline.yaml pdf_parser section overrides env-var defaults.
+        self._pdf_cfg = pdf_parser_config or {}
 
     async def process_text(self, *, text: str, mime_type: str) -> IngestResult:
         """Process plain text input.
@@ -84,37 +86,64 @@ class IngestNode:
         source_mime_type: str,
         filename: str | None = None,
     ) -> IngestResult:
-        """Process document bytes via layout parser or Docling (PDF/Office).
+        """Process document bytes via Docling or layout parser (PDF/Office).
 
-        For PDFs, the backend is selected by ``atlas_pdf_parser_backend``:
-        - ``auto`` (default): try layout parser first, fall back to Docling.
-        - ``layout``: layout parser only.
-        - ``docling``: Docling only (legacy behaviour).
+        For PDFs, the backend is selected by ``pdf_parser.backend`` in
+        pipeline.yaml (or the ``ATLAS_PDF_PARSER_BACKEND`` env-var fallback):
+
+        - ``auto`` (default): try Docling first, fall back to layout parser.
+        - ``auto_layout``: try layout parser first, fall back to Docling.
+        - ``layout``: layout parser only (error on failure).
+        - ``docling``: Docling only (skip layout parser).
         """
-        backend = self.settings.atlas_pdf_parser_backend.lower()
+        backend = (
+            self._pdf_cfg.get("backend")
+            or self.settings.atlas_pdf_parser_backend
+        ).lower()
         is_pdf = source_mime_type == "application/pdf"
 
-        # ------ Layout parser path (PDFs only) --------------------------------
-        if is_pdf and backend in ("auto", "layout"):
+        # ------ auto: Docling first, layout fallback --------------------------
+        if is_pdf and backend == "auto":
+            docling_result = await self._docling_parse(doc_bytes, source_mime_type, filename)
+            if docling_result.success:
+                return docling_result
+            _logger.info(
+                "Docling failed for %s — falling back to layout parser",
+                filename or "unnamed",
+            )
+            layout_result = self._try_layout_parser(doc_bytes, filename)
+            if layout_result is not None:
+                return self._apply_pdf_quality_gates(layout_result, source_mime_type, filename)
+            # Both failed — return the Docling error (more informative)
+            return docling_result
+
+        # ------ auto_layout: layout first, Docling fallback -------------------
+        if is_pdf and backend == "auto_layout":
+            layout_result = self._try_layout_parser(doc_bytes, filename)
+            if layout_result is not None:
+                return self._apply_pdf_quality_gates(layout_result, source_mime_type, filename)
+            _logger.info(
+                "Layout parser unavailable/failed for %s — falling back to Docling",
+                filename or "unnamed",
+            )
+            return await self._docling_parse(doc_bytes, source_mime_type, filename)
+
+        # ------ layout: layout parser only (no fallback) ----------------------
+        if is_pdf and backend == "layout":
             result = self._try_layout_parser(doc_bytes, filename)
             if result is not None:
-                # Run quality gates on the layout result
                 return self._apply_pdf_quality_gates(result, source_mime_type, filename)
+            return IngestResult(
+                success=False,
+                markdown_projection="",
+                docling_json={},
+                parse_profile=ParseProfile.PDF_LAYOUT,
+                docling_schema_version="unknown",
+                error_code=ErrorCode.DOC_PARSE_FAILED,
+                error_message="Layout parser failed and backend=layout (no fallback).",
+            )
 
-            if backend == "layout":
-                # Layout was forced but failed — don't fall through
-                return IngestResult(
-                    success=False,
-                    markdown_projection="",
-                    docling_json={},
-                    parse_profile=ParseProfile.PDF_LAYOUT,
-                    docling_schema_version="unknown",
-                    error_code=ErrorCode.DOC_PARSE_FAILED,
-                    error_message="Layout parser failed and backend=layout (no fallback).",
-                )
-            _logger.info("Layout parser unavailable/failed for %s — falling back to Docling", filename or "unnamed")
-
-        # ------ Docling path (all doc types) ----------------------------------
+        # ------ docling / default: Docling only -------------------------------
         return await self._docling_parse(doc_bytes, source_mime_type, filename)
 
     # ------------------------------------------------------------------
@@ -138,12 +167,15 @@ class IngestNode:
                 _logger.info("ONNX models not yet downloaded — downloading now …")
                 mgr.ensure_models()
 
-            zoom = self.settings.atlas_layout_pdf_zoom
+            zoom = float(self._pdf_cfg.get("zoom", 0) or self.settings.atlas_layout_pdf_zoom)
             parser = LayoutPdfParser(models_dir=self.settings.atlas_models_dir)
             result = parser(doc_bytes, zoom=zoom)
 
             # Confidence gate
-            min_conf = self.settings.atlas_layout_ocr_confidence_min
+            min_conf = float(
+                self._pdf_cfg.get("ocr_confidence_min", 0)
+                or self.settings.atlas_layout_ocr_confidence_min
+            )
             if result.mean_ocr_confidence < min_conf:
                 self.diagnostics.log_warning(
                     component="ingest",

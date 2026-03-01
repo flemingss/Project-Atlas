@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import time
@@ -17,6 +18,8 @@ import yaml
 
 from ui import components, theme
 from ui.styles import inject_styles
+
+log = logging.getLogger(__name__)
 
 
 def _ui_upload_timeout_s() -> float:
@@ -704,6 +707,8 @@ def main() -> None:
                     run_id=_run_id_val,
                     error_message=_p.get("error_message") if _p.get("error_code") else None,
                     extraction_meta=_p.get("extraction_meta") if isinstance(_p.get("extraction_meta"), dict) else None,
+                    api_base=api,
+                    admin_token=admin_token,
                 )
                 components.detail_expander("Full response (JSON)", data=payload)
 
@@ -755,6 +760,8 @@ def main() -> None:
                 paused_for_review=bool(_tp.get("paused_for_hitl")),
                 error_message=_tp.get("error_message") if _tp.get("error_code") else None,
                 extraction_meta=_tp.get("extraction_meta") if isinstance(_tp.get("extraction_meta"), dict) else None,
+                api_base=api,
+                admin_token=admin_token,
             )
             components.detail_expander("Full response (JSON)", data=data)
 
@@ -851,7 +858,7 @@ def main() -> None:
                                 if r3.status_code >= 400:
                                     st.error(f"{r3.status_code}: {r3.text}")
                                     d3 = []
-                                components.run_detail_card(d1 or {}, d2 or [], d3 or [])
+                                components.run_detail_card(d1 or {}, d2 or [], d3 or [], api_base=api, admin_token=admin_token)
 
     # =====================================================================
     # SEARCH
@@ -965,19 +972,33 @@ def main() -> None:
             components.auth_gate("Admin token required to review documents.")
         else:
             # Auto-load pending count
+            # Fetch both pending *and* in_progress tasks so the inbox
+            # shows tasks that were auto-assigned but not yet acted on
+            # (prevents "purgatory" where a task is hidden from view).
             if "hitl_tasks" not in st.session_state:
                 _auto_resp, _auto_data = _request_json_diag(
                     label="admin hitl tasks auto",
                     method="GET",
                     url=f"{api}/admin/hitl/tasks",
                     headers=admin_headers,
-                    params={"limit": 200, "status": "pending", "tenant_id": tenant_id, "project_id": project_id},
+                    params={"limit": 200, "tenant_id": tenant_id, "project_id": project_id},
                 )
                 if _auto_resp.status_code < 400:
-                    st.session_state["hitl_tasks"] = _auto_data or []
+                    # Keep only actionable tasks (pending + in_progress).
+                    st.session_state["hitl_tasks"] = [
+                        t for t in (_auto_data or [])
+                        if t.get("status") in ("pending", "in_progress")
+                    ]
 
             tasks = st.session_state.get("hitl_tasks", [])
-            pending_count = sum(1 for t in tasks if t.get("status") == "pending")
+            pending_count = sum(1 for t in tasks if t.get("status") in ("pending", "in_progress"))
+
+            # If there's an in_progress task (auto-assigned earlier), resume it
+            # so the reviewer doesn't lose track.
+            if not st.session_state.get("hitl_current"):
+                _in_progress = [t for t in tasks if t.get("status") == "in_progress"]
+                if _in_progress:
+                    st.session_state["hitl_current"] = _in_progress[0]
 
             # -- Card 1: Status + start reviewing -----------------------------
             with components.card():
@@ -1017,6 +1038,15 @@ def main() -> None:
                         f"Reviewing: {current.get('doc_id')}",
                         f"v{current.get('doc_version')}",
                     )
+                    # Link to Document Editor for side-by-side PDF+markdown view
+                    _hitl_run_id = current.get("run_id")
+                    if _hitl_run_id is not None:
+                        components.editor_link(
+                            int(_hitl_run_id),
+                            api_base=api,
+                            admin_token=admin_token,
+                            label="Open in Editor",
+                        )
 
                     # A3 — Plain-language flagging reason derived from task data
                     _judge = float(current.get("judge_score") or 0)
@@ -1149,8 +1179,8 @@ def main() -> None:
                                     "error": repr(_timeout_err),
                                 }
                             )
-                        except Exception:
-                            pass  # Resume is best-effort; review is already saved
+                        except Exception as _resume_err:
+                            log.warning("HITL resume failed: %s", _resume_err)  # Don't swallow silently
 
                         # Check resume outcome for user feedback
                         _resume_ok = True
@@ -1161,7 +1191,21 @@ def main() -> None:
                             _resume_ok = False
 
                         if _resume_ok:
-                            st.success("Review saved and pipeline resumed! Loading next...")
+                            # Check if the pipeline re-routed to HITL (shouldn't
+                            # happen after the routing fix, but guard anyway).
+                            _paused_again = False
+                            try:
+                                _resume_body = _resume_resp.json()
+                                _paused_again = bool(_resume_body.get("paused_for_hitl"))
+                            except Exception:
+                                pass
+                            if _paused_again:
+                                st.warning(
+                                    "Review saved, but the pipeline flagged the document "
+                                    "for review again. Check the inbox for a new task."
+                                )
+                            else:
+                                st.success("Review saved and pipeline resumed! Loading next...")
                         else:
                             st.warning(
                                 "Review saved, but the pipeline could not be resumed "

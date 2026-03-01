@@ -1,0 +1,54 @@
+- name: standard_import_cleanup
+  match: {}
+  steps:
+    # ── Heading normalisation ────────────────────────────────────
+    # 1. Convert setext headings (===, ---) to ATX (#, ##)
+    #    Must run FIRST so all downstream rules can match ATX style.
+    - kind: normalize_headings
+
+    # 2. Correct heading depth for numbered sections
+    #    e.g. ## 1.1.8 Title → #### 1.1.8 Title (depth = dot-count + 1)
+    - kind: fix_numbered_headings
+
+    # ── Content stripping ────────────────────────────────────────
+    # 3. Remove HTML image comment placeholders (Docling may emit these)
+    - kind: strip_lines_matching
+      pattern: '<!--\s*image\s*-->'
+
+    # 4. Remove change-request boilerplate line
+    - kind: strip_lines_matching
+      pattern: '^\*Enter NR-Not required in the Change Request Number column.*$'
+
+    # 5. Remove "Documentation Conventions" heading + its table block
+    #    Matches any ATX level (# – ######) after heading normalisation.
+    - kind: rewrite_pattern
+      pattern: '(?m)^#{1,6}\s+Documentation Conventions[ \t]*\n(?:[ \t]*\|[^\n]*\n?)*'
+      replacement: ''
+
+    # 6. Remove "Table of Contents" heading + its table block
+    - kind: rewrite_pattern
+      pattern: '(?m)^#{1,6}\s+Table of Contents[ \t]*\n(?:[ \t]*\|[^\n]*\n?)*'
+      replacement: ''
+
+    # 7. Strip recurring page headers / footers
+    #    Add org-specific patterns below as needed.
+    - kind: strip_headers_footers
+      patterns:
+        - '^\s*CONFIDENTIAL\s*$'
+        - '^\s*Internal Use Only\s*$'
+
+    # ── Bullet / list cleanup ────────────────────────────────────
+    # 8. Strip stray Unicode bullet symbols inside markdown bullet lines
+    - kind: rewrite_pattern
+      pattern: '(?m)^(\s*- )\s*[\u2022\u2023\u25AA\u25AB\u25CF\u25CB\u25E6\u2043\u25A0\u25A1\u25B8\u25B6\u25C6\u25C7\u2666\u2605\u2606\u00B7\u2219\u22C5]\s*'
+      replacement: '\1'
+
+    # 9. Standardise bullet markers (*, + → -)
+    - kind: fix_bullets
+
+    # ── Paragraph repair ─────────────────────────────────────────
+    # 10. Re-join hard-wrapped paragraphs (common in Docling output)
+    #     Runs LAST so heading / bullet fixes aren't disrupted.
+    - kind: merge_hardwrapped_paragraphs
+  tags:
+    - auto_fix_only

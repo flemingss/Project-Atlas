@@ -125,6 +125,18 @@ def decide_next_step(
         needs_hitl = bool(state_snapshot.get("needs_hitl", False))
         score_history: list[int] = list(state_snapshot.get("judge_score_history", []))
 
+        # ---- HITL-resume override ----
+        # When a document was explicitly approved by a human reviewer and
+        # the pipeline is re-running to commit chunks, skip all refine /
+        # cleanup-rejudge / HITL-re-escalation logic.  The judge still
+        # runs (its score feeds metadata tiering), but routing always
+        # proceeds to metadata regardless of the score.
+        if state_snapshot.get("is_hitl_resume"):
+            return RoutingDecision(
+                target="metadata",
+                reason=f"HITL-approved document (score={composite}) — proceeding to metadata",
+            )
+
         # Fail-fast: if composite is at or below hard floor, skip refine
         if fail_fast_score and composite <= fail_fast_score:
             return RoutingDecision(

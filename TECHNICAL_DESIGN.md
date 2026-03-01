@@ -2,7 +2,7 @@
 
 This document is the build-continuity technical design for Project Atlas. It covers:
 
-1) **Original intent** (from `HLD.md`)
+1) **Original intent**
 2) **Current implementation** (what is actually in this repo today)
 3) **End-state target architecture** (including pivots discussed)
 4) A **roadmap to completion** with explicit status markers
@@ -33,9 +33,9 @@ The intended operator is a **non-technical domain expert** who can run the appli
 
 ---
 
-## 2) Original HLD intent (baseline requirements)
+## 2) Original design intent (baseline requirements)
 
-The high-level design (`HLD.md`) describes an agentic loop:
+The original high-level design describes an agentic loop:
 
 1. **Ingest** (Docling) → Docling JSON ground truth + markdown projection
 2. **Judge** (few-shot rubric) → score 1–5 + rationale + versioning
@@ -98,8 +98,8 @@ Notes:
 
 - ✅ `POST /rag/ingest/file`
   - stores the original file as an artifact
-  - uses layout-aware ONNX parser (default `auto`) or Docling for PDF/Office parsing with guardrails (max bytes, max pages, timeout, quality gates)
-  - `auto` backend tries layout parser first, falls back to Docling on failure or low OCR confidence
+  - uses layout-aware ONNX parser or Docling for PDF/Office parsing with guardrails (max bytes, max pages, timeout, quality gates)
+  - Four parser backends: `auto` (Docling first → layout fallback), `auto_layout` (layout first → Docling fallback), `layout` (layout only), `docling` (Docling only). Selection is whole-document, not per-page.
   - persists Docling JSON ground truth + markdown projection as artifacts
   - surfaces `extraction_meta` (backend, OCR confidence, layout confidence, scanned flag) in the response
   - falls back to text extraction when both parsers are unavailable
@@ -133,7 +133,7 @@ Notes:
 - ✅ **Cleanup node** (`pipeline/cleanup.py`): deterministic markdown cleanup between Ingest and Judge. Five built-in transforms (normalise whitespace, strip broken links, repair heading hierarchy, strip trailing whitespace, static checks) plus five configurable builtin extraction-artifact fixes (`html_unescape`, `fix_ligatures`, `strip_zero_width_chars` — ON by default; `strip_page_numbers` — ON by default; `strip_repetitive_lines` — OFF by default; via `builtin_cleanup:` config section). Produces `CleanupResult`. Accepts optional `doc_context` and `config` to apply config-driven cleanup rules after built-in transforms.
 - ✅ **Cleanup rules engine** (`pipeline/cleanup_rules.py`): declarative, first-match-wins rule engine for per-corpus / per-mime-type cleanup. Seven step handlers: `strip_lines_matching`, `rewrite_pattern`, `strip_headers_footers`, `normalize_headings`, `merge_hardwrapped_paragraphs`, `fix_bullets`, `html_unescape`. Rules configured in `pipeline.yaml` `cleanup_rules:` section. Rule tags (`hard_failure`, `suspicious_content`, `auto_fix_only`) influence routing decisions. `html_unescape` handler delegates to the shared builtin implementation.
 - ✅ **Judge node** (`pipeline/judge.py`): multi-dimensional rubric — FAITHFULNESS, FORMATTING, COHESION, HALLUCINATION_RISK (each 1–5). Composite score = rounded mean. Per-dimension rationale for scores below 4 with specific issues and improvement guidance. Four few-shot examples including a mixed-score example. Error fallback `score=3` / `needs_refinement=False` (neutral — transient failures don’t burn retries). Legacy single-SCORE fallback preserved. Versioned `judge_version` (model + prompt hash).
-- ✅ **Refine node** (`pipeline/refine.py`): configurable max retries, triggers HITL when exhausted. Receives rich judge context (sub-scores with focus markers, rationale, iteration context). Content-safety guardrails: tightened system prompt (“MUST NOT summarise, condense, or omit”), `min_preservation_ratio` (default 0.6) rejects outputs shorter than 60% of input. Only successful refinements count against retry limit; hard cap at 2× max retries for total attempts. Versioned `refine_version` v2.
+- ✅ **Refine node** (`pipeline/refine.py`): configurable max retries, triggers HITL when exhausted. Receives rich judge context (sub-scores with focus markers, rationale, iteration context). Content-safety guardrails: tightened system prompt ("MUST NOT summarise, condense, or omit"), `min_preservation_ratio` (default 0.85) rejects outputs shorter than 85% of input. Sectional refinement for documents exceeding `max_context_tokens`. Section-count preservation guard (rejects if ≥20% headings lost). LLM artifact stripping (`strip_llm_artifacts()`). Dynamic `max_tokens` per call. Only successful refinements count against retry limit; hard cap at 2× max retries for total attempts. Versioned `refine_version` v2.
 - ✅ **Metadata node**: tiered (tier1 / tier2) with configurable per-doc tier2 cap
 - ✅ **Unified routing** (`pipeline/routing.py`): `decide_next_step()` pure function centralises all branching (fail-fast on composite ≤ `fail_fast_score`, per-dimension floor checks, cleanup-rejudge with cycle guard (max 1), standard refine/HITL paths, rule-tag-aware cleanup routing — `hard_failure`→FAILED, `suspicious_content`→HITL). `RoutingDecision` includes `rollback: bool` field. Score regression rollback (refine made score worse → revert markdown, route appropriately). Diminishing-returns detection (score unchanged after refine → HITL). `content_ok` check includes `hallucination_risk`. `PipelineStateManager.get_next_node()` delegates here.
 - ✅ **Retry/backoff** (`retry.py`): `RetryConfig` + `async_retry()` / `sync_retry()` decorators. Applied to `openai_compat.py`, `qdrant_store.py`, `docling_adapter.py`. Config-driven per subsystem via `pipeline.yaml` `retry:` section.
@@ -315,7 +315,9 @@ Rationale:
    - ✅ Streamlit-based operator console (`ui/app.py`, containerized via `Dockerfile.ui`)
    - ✅ Covers: upload, corpus browsing, HITL review, export, admin controls, Looking Glass views
    - ✅ 4-file design system (theme / styles / components / app) with locked page skeleton
-   - ✅ Operator vs admin separation; 7 tabs; one-primary-action-per-tab; calm workspace-centric tone
+   - ✅ Operator vs admin separation; 6 tabs (Home, Upload, My Collection, Search, Review, Admin); one-primary-action-per-tab; calm workspace-centric tone
+   - 🛠 **Document Editor** — standalone HTML/JS page (PDF.js + CodeMirror + Split.js) for HITL and human refinement. Replaces primitive Streamlit text area.
+   - 💭 Purpose-built React Control Center (replaces Streamlit + editor for production UI)
 
 ---
 
@@ -400,7 +402,7 @@ This is sequenced to maximize repeatability and minimize fantasy risk.
 - ✅ **Phase 8D — Polish**: `html_unescape` dedup (cleanup_rules delegates to cleanup builtin). 40 new tests in `test_phase_refactors.py`.
 - ✅ **Cleanup rules import/export**: `GET /admin/cleanup-rules/export` (YAML download) and `POST /admin/cleanup-rules/import` (replace/merge modes). UI export/import controls in operator console. 10 new tests in `test_cleanup_rules_import_export.py`.
 
-**Definition of done (8A-8D + import/export):** 348 tests passing. Runner consolidated. Refine guardrails prevent content loss. Normalize is formatting-only. Cleanup rules portable via YAML.
+**Definition of done (8A-8D + import/export):** 485+ tests passing. Runner consolidated. Refine guardrails prevent content loss. Normalize is formatting-only. Cleanup rules portable via YAML.
 
 ### Phase 9 — Pipeline quality improvements (v0.7.0)
 
@@ -416,9 +418,53 @@ This is sequenced to maximize repeatability and minimize fantasy risk.
 - ✅ **Phase 9J — Config defaults**: `cleanup_rejudge: true`, `formatting` floor: 2, `cohesion` floor: 2, `refine_max_retries: 3`.
 - ✅ **Phase 9K — UI fixes**: Scope-change cache invalidation, HITL resume failure feedback, rich HITL context display, Project dropdown in sidebar, scope-filtered API calls, text-mode upload checkboxes, Groups hierarchy guidance.
 
-**Definition of done (9A-9K):** 358 tests passing. Pipeline routing significantly improved—fewer unnecessary HITL escalations. Rich context available to operators reviewing HITL tasks.
+**Definition of done (9A-9K):** 485+ tests passing. Pipeline routing significantly improved—fewer unnecessary HITL escalations. Rich context available to operators reviewing HITL tasks.
 
-### Phase 8 — Retrieval-time upgrades (optional / scoped)
+### Phase 10 — Swappable parser backends & Docling-first default (v0.7.2)
+
+- ✅ **Swappable `pdf_parser.backend`**: IngestNode reads `pipeline.yaml → pdf_parser.backend` (was hardcoded env var). Four modes: `auto` (Docling first → layout fallback), `auto_layout` (layout first → Docling fallback), `layout` (deepdoc only), `docling` (Docling only).
+- ✅ **Whole-document selection**: Parser backend chosen once per document (not per-page). This simplifies artifact tracking and avoids stitching inconsistencies.
+- ✅ **Config wiring**: `runner.py` passes `pipeline_cfg.get("pdf_parser")` to IngestNode constructor. `pipeline.yaml.example` and `PIPELINE_REFERENCE.md` updated.
+
+**Definition of done (Phase 10):** Docling is the primary parser for PDF ingest. Operators can override via `pipeline.yaml`. No code changes needed to swap backends.
+
+### Phase 11 — Pipeline quality & cleanup improvements (v0.7.3)
+
+- ✅ **Cleanup rules optimization**: Expanded from 7 to 10 rules, organized into logical sections (heading normalization, content stripping, bullet/list cleanup, paragraph repair). Added `fix_numbered_headings`, `strip_headers_footers`, `merge_hardwrapped_paragraphs`.
+- ✅ **Builtin cleanup expansion**: `strip_repetitive_lines` added as a configurable builtin (default OFF). `strip_page_numbers` remains ON by default.
+- ✅ **Sectional refinement**: Refine node uses section-count guard and `max_tokens` scaled to input length. `min_preservation_ratio` raised from 0.6 → 0.85.
+- ✅ **LLM artifact stripping**: `strip_llm_artifacts()` removes leaked `<think>` blocks, markdown fences, preamble/postamble boilerplate. Applied as a post-refine step.
+- 🔲 **`<think>` tag regex fix**: `_THINK_TAG_RE` in `openai_compat.py` needs to handle unclosed tags (Qwen3 output truncated mid-thought). Also needs `finish_reason` checking.
+
+**Definition of done (Phase 11):** Docling + improved cleanup produces ≤10% noise in refined output for representative corpus. Artifact stripping catches common LLM leaks.
+
+### Phase 12 — Document Editor & VLM integration (planned)
+
+This phase adds operator tooling for surgical document refinement and a vision-language-model (VLM) pipeline.
+
+**Phase 12A — Backend plumbing (~1 day):**
+- 🔲 Multimodal `ChatMessage`: `content` field becomes `str | list[dict]` to support `image_url` blocks.
+- 🔲 `page_renderer.py`: PyMuPDF-based page-to-PNG with configurable DPI and header/footer crop margins.
+- 🔲 `vision_model` role in `models.yaml` (e.g. `qwen2.5-vl-32b` or `qwen3.5-35b-a3b`).
+- 🔲 `/api/vision-refine` endpoint: accepts `(doc_id, page, section_index)`, renders page, sends to VLM with current markdown, returns corrected markdown.
+
+**Phase 12B — Standalone Document Editor (~3-4 days):**
+- 🔲 Zero-build-step HTML/JS page served by FastAPI at `/editor`.
+- 🔲 Left panel: PDF.js viewer (page thumbnails, zoom, page selection).
+- 🔲 Right panel: CodeMirror 6 editor (markdown syntax highlighting, section folding).
+- 🔲 Tool palette: LLM refine, VLM fix, regex find/replace, strip artifacts, re-judge.
+- 🔲 CDN dependencies: PDF.js, CodeMirror 6, Split.js (~3KB). No build toolchain.
+- 🔲 Architecture: standalone HTML file, designed for future React migration (Path A).
+
+**Phase 12C — VLM quality audit (~1 day):**
+- 🔲 Automated post-ingest page-level comparison: VLM renders each page → diff against parsed markdown → flag pages with high divergence for HITL review.
+
+**Phase 12D — VLM-first parser backend (~2-3 days):**
+- 🔲 `backend: vision` mode in `pdf_parser.backend`: render all pages → VLM → stitch markdown.
+- 🔲 Batch/parallel page processing for throughput.
+- 🔲 Cost/latency analysis vs Docling for representative corpus.
+
+### Phase 13 — Retrieval-time upgrades (optional / scoped)
 
 - 🛠 Decision: stay **vector-only** for v1; hybrid/BM25/rerank are out of scope unless a measured failure mode requires them
 
@@ -502,12 +548,16 @@ The minimum “human shakedown ready” bar:
 
 ---
 
-## 9) Known documentation deltas to fix (repo alignment)
+## 9) Documentation
 
-- This document should be treated as the authoritative build-continuity doc; other docs should be adjusted to match.
+Project documentation was consolidated in v0.7.3 to reduce maintenance burden:
+
+- **Removed**: `HLD.md` (superseded by this doc + ARCHITECTURE.md), `PDF_OVERHAUL_PLAN.md` (completed — absorbed into Phases 10-11), `VALIDATION_REPORT.md` (frozen v0.7.0 snapshot), `CAPABILITIES_AUDIT.md` (extreme maintenance burden — capability status tracked here and in CHANGELOG).
+- **Authoritative docs**: This file (build-continuity/roadmap), `ARCHITECTURE.md` (current system state), `README.md` (quickstart), `config/PIPELINE_REFERENCE.md` (config reference).
+- **Supplementary**: `E2E_TEST_GUIDE.md`, `OPTEST.md`, `PIPELINE_QUALITY_IMPROVEMENTS.md`, `ui/` docs.
 
 ---
 
 ## 10) Capabilities Audit
 
-The per-capability status checklist (Wired / Partial / Deferred / Unknown), with code entry points and documentation sources, is maintained in **[`CAPABILITIES_AUDIT.md`](CAPABILITIES_AUDIT.md)**. That document is the central tracking location for advertised vs implemented features.
+*Removed.* The per-capability status checklist was previously maintained in `CAPABILITIES_AUDIT.md` (deleted — extreme maintenance burden; line-number references stale within days of any code change). Current capability status is tracked in this document's roadmap (§6) and in `CHANGELOG.md`. Git history preserves the final snapshot.

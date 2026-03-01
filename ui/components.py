@@ -131,6 +131,45 @@ def friendly_error(
                 st.code(raw_text[:2000])
 
 
+def editor_link(
+    run_id: int | None,
+    *,
+    doc_id: str | None = None,
+    api_base: str = "",
+    admin_token: str = "",
+    label: str = "Open in Editor",
+) -> None:
+    """Render a link that opens the Document Editor for a given document.
+
+    Prefers *doc_id* when available (the editor resolves it to the latest
+    run automatically).  Falls back to *run_id* for backward compatibility.
+
+    The editor is served by the Atlas API at ``/editor``.  When *api_base*
+    is provided (e.g. ``http://localhost:18080``) the link points there;
+    otherwise it falls back to ``/editor`` (same-origin).
+    """
+    if run_id is None and doc_id is None:
+        return
+    base = (api_base or "").rstrip("/")
+    if doc_id:
+        url = f"{base}/editor?doc_id={doc_id}"
+    else:
+        url = f"{base}/editor?run_id={run_id}"
+    if admin_token:
+        url += f"&token={admin_token}"
+    st.markdown(
+        f'<a href="{url}" target="_blank" rel="noopener" '
+        f'style="display:inline-block; margin:0.25rem 0; padding:4px 12px; '
+        f'font-size:0.82rem; font-weight:600; color:{theme.PRIMARY}; '
+        f'border:1px solid {theme.PRIMARY}; border-radius:4px; '
+        f'text-decoration:none; transition:background 0.15s;" '
+        f'onmouseover="this.style.background=\'{theme.BG_PRIMARY_TINT}\'" '
+        f'onmouseout="this.style.background=\'transparent\'"'
+        f'>\u270E {label}</a>',
+        unsafe_allow_html=True,
+    )
+
+
 def ingest_result_card(
     *,
     doc_name: str,
@@ -141,6 +180,8 @@ def ingest_result_card(
     run_id: int | None = None,
     error_message: str | None = None,
     extraction_meta: dict[str, Any] | None = None,
+    api_base: str = "",
+    admin_token: str = "",
 ) -> None:
     """Renders a structured post-upload result card with plain-language status.
 
@@ -224,9 +265,9 @@ def ingest_result_card(
         + f"</table></div>",
         unsafe_allow_html=True,
     )
-
-
-@contextlib.contextmanager
+    # Editor link (prefer doc_id for natural lookup)
+    if run_id is not None:
+        editor_link(run_id, doc_id=doc_id, api_base=api_base, admin_token=admin_token)
 def danger_zone(*, caption: str, warning: str) -> Generator[None, None, None]:
     """Styled expander for destructive operations. Red-tinted via CSS."""
     st.markdown('<div class="atlas-danger">', unsafe_allow_html=True)
@@ -257,10 +298,25 @@ def search_hit_card(
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-def run_detail_card(run_data: dict, node_runs: list, artifacts: list) -> None:
+def run_detail_card(
+    run_data: dict,
+    node_runs: list,
+    artifacts: list,
+    *,
+    api_base: str = "",
+    admin_token: str = "",
+) -> None:
     """Renders the full run detail view. Used in the History tab."""
     with card(elevated=True):
         section_header("Run")
+        # Show editor link if this is a PDF run
+        _run_id = run_data.get("id")
+        _mime = (run_data.get("meta") or {}).get("source_mime_type", "")
+        _fname = (run_data.get("meta") or {}).get("source_filename", "")
+        _is_pdf = "pdf" in _mime.lower() or str(_fname).lower().endswith(".pdf")
+        if _run_id is not None and _is_pdf:
+            _doc_id = run_data.get("doc_id")
+            editor_link(int(_run_id), doc_id=_doc_id, api_base=api_base, admin_token=admin_token)
         st.json(run_data)
     section_header("Steps")
     data_table(node_runs if isinstance(node_runs, list) else [], empty_msg="No steps recorded.")

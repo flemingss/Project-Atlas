@@ -870,6 +870,7 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
             "run_id": res.get("run_id"),
             "collection": res.get("collection"),
             "chunks_upserted": int(res.get("chunks_upserted", 0)),
+            "paused_for_hitl": bool(res.get("paused_for_hitl", False)),
         }
 
     @r.post("/hitl/tasks/{task_id}/skip", response_model=HitlTaskResponse)

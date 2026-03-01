@@ -139,7 +139,7 @@ def _build_orchestrator(*, settings: Settings, models_cfg: dict[str, Any], pipel
     except Exception:
         pass
 
-    ingest_node = IngestNode()
+    ingest_node = IngestNode(pdf_parser_config=pipeline_cfg.get("pdf_parser") or {})
     judge_node = JudgeNode(provider=judge_provider, model_name=judge.model_name, model_params=judge.params)
     refine_node = RefineNode(
         provider=refine_provider,
@@ -644,6 +644,7 @@ async def ingest_text_via_pipeline(
     is_finalized: bool,
     is_sensitive: bool,
     metadata: dict[str, Any],
+    is_hitl_resume: bool = False,
 ) -> dict[str, Any]:
     settings = Settings()
     artifacts_dir = Path(settings.atlas_artifacts_dir)
@@ -723,6 +724,12 @@ async def ingest_text_via_pipeline(
         parse_profile=str(ingest_res.parse_profile),
     )
     ctx.set_docling_health(_health.to_dict())
+
+    # When resuming from a completed HITL task, mark context so that
+    # routing skips cleanup-rejudge / refine loops — the human already
+    # approved the markdown.
+    if is_hitl_resume:
+        ctx.results["is_hitl_resume"] = True
 
     ctx = await orch.process_document(ctx)
 
@@ -884,8 +891,8 @@ async def ingest_file_via_pipeline(
     except Exception:
         log.warning("Failed to store source artifact for run %s", run_id, exc_info=True)
 
-    # Ingest via Docling
-    ingest_node = IngestNode()
+    # Ingest via configured parser (pdf_parser.backend in pipeline.yaml)
+    ingest_node = IngestNode(pdf_parser_config=pipeline_cfg.get("pdf_parser") or {})
     ingest_res = await ingest_node.process_document(content=file_bytes, mime_type=source_mime_type)
 
     # Record ingest node run and persist docling artifacts (best-effort)
@@ -1152,6 +1159,8 @@ async def resume_completed_hitl_task(
         session.commit()
 
     # Re-run pipeline + commit using the existing run_id.
+    # ``is_hitl_resume=True`` tells routing to skip cleanup-rejudge and
+    # refine loops — the human reviewer already approved the content.
     return await ingest_text_via_pipeline(
         config_manager=config_manager,
         session_factory=session_factory,
@@ -1166,4 +1175,5 @@ async def resume_completed_hitl_task(
         is_finalized=is_finalized,
         is_sensitive=bool(task.is_sensitive),
         metadata=req_meta,
+        is_hitl_resume=True,
     )

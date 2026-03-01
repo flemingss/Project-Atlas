@@ -4,11 +4,7 @@ Local-first RAG system with a running FastAPI service (admin + RAG MVP), config 
 
 Pipeline: **Ingest → Cleanup → Judge → Refine → Metadata → Embeddings → Chunking → Commit** (11 nodes). Features config-driven cleanup rules engine, cleanup feedback API, metrics aggregation, LLM-assisted rule suggestion, Cleanup & Tuning UI, multi-dimensional judge rubric with per-dimension rationale, rich judge-to-refine context injection (sub-scores + iteration context), score regression rollback, diminishing-returns detection, cleanup-rejudge cycle guard, refine content-safety guardrails (min_preservation_ratio), failed-refines-don't-burn-retries semantics, rich HITL task context with resume loop guard, retry/backoff on all external calls, chunk QA with automatic fallback, Docling health scoring, unified routing with fail-fast and rule-tag escalation, fidelity mode search filtering, and five configurable builtin extraction-artifact fixes.
 
-Design source of truth: `TECHNICAL_DESIGN.md` (build-continuity plan; current reality vs target end-state). `HLD.md` is retained as historical original intent.
-
-## Capabilities Audit
-
-The authoritative checklist of all advertised capabilities (status, code entry points, and doc sources) is maintained in **[`CAPABILITIES_AUDIT.md`](CAPABILITIES_AUDIT.md)**.
+Design source of truth: `TECHNICAL_DESIGN.md` (build-continuity plan; current reality vs target end-state). `ARCHITECTURE.md` covers the current system architecture.
 
 ## Prereqs
 
@@ -287,7 +283,8 @@ Key `pipeline.yaml` sections:
 - `cleanup_rejudge:` — toggle for re-running cleanup when formatting score is low but content is OK (default `true`, cycle-guarded to max 1)
 - `cleanup_rules:` — declarative per-corpus/per-mime-type cleanup rules (7 step handlers, rule tags for routing)
 - `builtin_cleanup:` — toggle individual builtin extraction-artifact fixes (`html_unescape`, `fix_ligatures`, `strip_zero_width_chars`, `strip_page_numbers`, `strip_repetitive_lines`)
-- `refine_min_preservation_ratio:` — minimum output/input length ratio for refine (default 0.6; prevents content loss)
+- `pdf_parser:` — PDF parser backend selection (`auto` = Docling first → layout fallback, `auto_layout`, `layout`, `docling`)
+- `refine_min_preservation_ratio:` — minimum output/input length ratio for refine (default 0.85; prevents content loss)
 
 Goal: change models and thresholds without code edits by updating YAML and/or DB-stored config versions.
 

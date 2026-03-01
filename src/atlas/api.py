@@ -3,8 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from atlas.api_admin import make_admin_router
+from atlas.api_editor import make_editor_router
 from atlas.api_rag import make_rag_router
 from atlas.config_manager import ConfigManager
 from atlas.db import make_engine, make_sessionmaker
@@ -45,5 +47,11 @@ def create_app() -> FastAPI:
 
     app.include_router(make_admin_router(config_manager=config_manager, session_factory=session_factory))
     app.include_router(make_rag_router(config_manager=config_manager, session_factory=session_factory))
+    app.include_router(make_editor_router(config_manager=config_manager, session_factory=session_factory))
+
+    # Serve the editor static files (HTML/JS/CSS) at /editor
+    editor_static = Path(__file__).resolve().parent.parent.parent / "static" / "editor"
+    if editor_static.is_dir():
+        app.mount("/editor", StaticFiles(directory=str(editor_static), html=True), name="editor")
 
     return app

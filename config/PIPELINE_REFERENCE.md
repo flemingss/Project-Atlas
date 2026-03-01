@@ -160,17 +160,18 @@ limits:
 ### `normalize`
 
 Post-pipeline markdown normalisation applied **after** the agentic loop
-completes but **before** chunking/embedding.
+completes but **before** chunking/embedding. As of v0.6.0, normalize is
+**formatting-only** — noise stripping (page numbers, repetitive lines) has
+moved to `builtin_cleanup`.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | `bool` | `true` | Toggle the normalisation pass. |
 
 When enabled, `normalize_markdown()` applies:
-1. **Noise stripping** — removes page numbers, repetitive short lines (≥4 occurrences)
-2. **Heading spacing** — ensures blank line after headings
-3. **List normalisation** — converts `1)` style to `1.`
-4. **Blank line collapsing** — 3+ consecutive blank lines → 2
+1. **Heading spacing** — ensures blank line after headings
+2. **List normalisation** — converts `1)` style to `1.`
+3. **Blank line collapsing** — 3+ consecutive blank lines → 2
 
 ```yaml
 normalize:
@@ -312,12 +313,16 @@ or a key is omitted.
 | `html_unescape` | `bool` | `true` | Decode all HTML/XML character entities (`&amp;` → `&`, `&#8212;` → —, `&nbsp;` → non-breaking space). Uses Python's `html.unescape()`. |
 | `fix_ligatures` | `bool` | `true` | Decompose common Unicode ligatures to ASCII equivalents (ﬁ → fi, ﬂ → fl, ﬀ → ff, ﬃ → ffi, ﬄ → ffl). |
 | `strip_zero_width_chars` | `bool` | `true` | Remove zero-width and invisible Unicode characters (BOM, zero-width space/joiner/non-joiner, soft hyphen, word joiner, etc.). |
+| `strip_page_numbers` | `bool` | `true` | Remove standalone page-number lines (e.g. `Page 3`, `— 12 —`, bare digits). |
+| `strip_repetitive_lines` | `bool` | `false` | Remove lines that repeat ≥4 times in the document (headers/footers carried through from PDF extraction). |
 
 ```yaml
 builtin_cleanup:
   html_unescape: true
   fix_ligatures: true
   strip_zero_width_chars: true
+  strip_page_numbers: true
+  strip_repetitive_lines: false
 ```
 
 To disable a specific toggle:
@@ -353,14 +358,14 @@ See the full reference below.
 Controls how PDF files are parsed during the Ingest node. The layout parser
 uses ONNX models (auto-downloaded from HuggingFace `InfiniFlow/deepdoc`) for
 page-layout detection, OCR, and table structure recognition. When backend is
-`auto` (the default), the layout parser is tried first and Docling is used as
-a fallback if the layout parser fails or produces low confidence output.
+`auto` (the default), Docling is tried first and the layout parser is used as
+a fallback if Docling fails. Selection is **whole-document** (not per-page).
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `backend` | `str` | `"auto"` | Parser selection: `auto` (try layout → Docling), `layout` (layout only, error on failure), `docling` (Docling only, skip layout). |
+| `backend` | `str` | `"auto"` | Parser selection: `auto` (Docling → layout fallback), `auto_layout` (layout → Docling fallback), `layout` (layout only, error on failure), `docling` (Docling only, skip layout). |
 | `zoom` | `float` | `3.0` | Page rendering zoom factor — higher produces better OCR at the cost of speed and RAM. |
-| `ocr_confidence_min` | `float` | `0.5` | Minimum mean OCR confidence (0.0–1.0) to accept layout parser output. Below this threshold, the result is rejected (and Docling used if `auto`). |
+| `ocr_confidence_min` | `float` | `0.5` | Minimum mean OCR confidence (0.0–1.0) to accept layout parser output. Below this threshold, the result is rejected (and Docling used if `auto`/`auto_layout`). |
 | `table_extraction` | `bool` | `true` | Enable table structure recognition. When disabled, tables are treated as regular text regions. |
 
 ```yaml
@@ -677,7 +682,7 @@ Ingest → Cleanup → Judge → Refine* → Metadata → Embeddings → Chunkin
                      └── cleanup-rejudge (max 1 cycle)
 ```
 
-- **Ingest** — Document conversion via layout parser (ONNX) or Docling (PDF/DOCX/HTML → Markdown). Backend selected by `pdf_parser.backend` (`auto`/`layout`/`docling`; default `auto` tries layout first, falls back to Docling).
+- **Ingest** — Document conversion via Docling or layout parser (ONNX) (PDF/DOCX/HTML → Markdown). Backend selected by `pdf_parser.backend` (`auto`/`auto_layout`/`layout`/`docling`; default `auto` tries Docling first, falls back to layout parser). Selection is whole-document, not per-page.
 - **Cleanup** — Built-in transforms + config-driven rule engine.
 - **Judge** — LLM grades quality on 4 dimensions (1–5 each). Per-dimension rationale for scores below 4.
 - **Refine** — LLM rewrites the document to improve quality (if score < cutoff). Receives judge sub-scores, rationale, and iteration context. For documents exceeding `limits.max_context_tokens`, sectional refinement splits the document on headings and refines each section independently.

@@ -45,7 +45,8 @@ class Settings(BaseSettings):
     atlas_pdf_quality_garbled_ratio_max: float = 0.02
 
     # -------------------- Layout PDF parser --------------------
-    # Backend selection: "auto" tries layout parser first, falls back to Docling.
+    # Backend selection: "auto" tries Docling first, layout fallback.
+    # "auto_layout" tries layout first, Docling fallback.
     # "layout" forces layout parser only. "docling" forces Docling only.
     atlas_pdf_parser_backend: str = "auto"
     # Directory for ONNX models (layout, OCR, table structure).

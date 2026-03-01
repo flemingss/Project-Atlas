@@ -27,7 +27,11 @@ def _is_retryable_http(exc: BaseException) -> bool:
 
 # Pattern to match <think>...</think> blocks emitted by reasoning models
 # (Qwen3, DeepSeek-R1, etc.).  Uses DOTALL so '.' matches newlines.
+# Handles both closed (<think>...</think>) and unclosed (<think>... EOF)
+# tags — Qwen3 output is frequently truncated mid-thought when max_tokens
+# is exhausted.
 _THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+_THINK_TAG_UNCLOSED_RE = re.compile(r"<think>(?:(?!</think>).)*$", re.DOTALL)
 
 
 def strip_reasoning_tags(text: str) -> str:
@@ -38,10 +42,14 @@ def strip_reasoning_tags(text: str) -> str:
     ``max_tokens`` budget and corrupt downstream consumers that expect
     clean markdown or structured output.
 
+    Handles both properly closed ``<think>…</think>`` blocks and
+    unclosed ``<think>…`` blocks (from max_tokens truncation).
+
     Returns the text with all ``<think>`` blocks removed and leading
     whitespace stripped.
     """
     cleaned = _THINK_TAG_RE.sub("", text)
+    cleaned = _THINK_TAG_UNCLOSED_RE.sub("", cleaned)
     return cleaned.strip()
 
 
@@ -87,6 +95,19 @@ class OpenAICompatibleProvider(ILlmProvider):
         except Exception as e:  # noqa: BLE001
             raise ValueError(f"Unexpected chat response shape: {data}") from e
 
+        # Log finish_reason — helps diagnose max_tokens truncation
+        finish_reason = None
+        try:
+            finish_reason = data["choices"][0].get("finish_reason")
+        except (KeyError, IndexError, TypeError):
+            pass
+        if finish_reason and finish_reason != "stop":
+            log.warning(
+                "LLM finish_reason=%s for model=%s (may indicate truncation)",
+                finish_reason,
+                payload.get("model", "unknown"),
+            )
+
         # Strip <think> reasoning blocks from models like Qwen3 / DeepSeek-R1
         cleaned = strip_reasoning_tags(raw_content)
         if len(cleaned) != len(raw_content):
@@ -128,9 +149,13 @@ class OpenAICompatibleProvider(ILlmProvider):
     # ------------------------------------------------------------------
 
     async def chat(self, *, model: str, messages: list[ChatMessage], params: dict[str, Any]) -> str:
+        # Serialize messages — content may be str or list[dict] (multimodal)
+        serialized_messages = []
+        for m in messages:
+            serialized_messages.append({"role": m.role, "content": m.content})
         payload: dict[str, Any] = {
             "model": model,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": serialized_messages,
             **(params or {}),
         }
         if os.environ.get("ATLAS_OPENAI_TRACE"):

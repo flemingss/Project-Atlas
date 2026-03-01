@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, Union
+
+# Multimodal content: either a plain string or a list of content parts
+# (e.g. [{"type": "text", "text": "..."}, {"type": "image_url", "image_url": {"url": "data:..."}}])
+ContentPart = dict[str, Any]
+MessageContent = Union[str, list[ContentPart]]
 
 
 @dataclass(frozen=True)
 class ChatMessage:
     role: str
-    content: str
+    content: MessageContent
 
 
 class ILlmProvider(Protocol):

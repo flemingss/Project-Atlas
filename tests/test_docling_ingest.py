@@ -175,6 +175,9 @@ def test_rag_ingest_pdf_ocr_empty_returns_error_code(tmp_path: Path, monkeypatch
     app, _session_factory = _make_test_app(tmp_root=tmp_path, monkeypatch=monkeypatch)
     client = TestClient(app)
 
+    # Force backend=docling so auto-fallback to layout parser doesn't mask the error.
+    monkeypatch.setenv("ATLAS_PDF_PARSER_BACKEND", "docling")
+
     # Override the patched parser to simulate an OCR-empty PDF.
     def _fake_parse_document_path_empty(*, doc_path: Path, source_mime_type: str) -> DoclingParseResult:  # noqa: ARG001
         return DoclingParseResult(
@@ -239,6 +242,9 @@ def test_rag_ingest_docling_unavailable_returns_error_code(tmp_path: Path, monke
 
     app, _session_factory = _make_test_app(tmp_root=tmp_path, monkeypatch=monkeypatch)
     client = TestClient(app)
+
+    # Force backend=docling so auto-fallback to layout parser doesn't mask the error.
+    monkeypatch.setenv("ATLAS_PDF_PARSER_BACKEND", "docling")
 
     def _raise_unavailable(*, doc_path: Path, source_mime_type: str) -> None:  # noqa: ARG001
         raise DoclingUnavailableError()

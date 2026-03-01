@@ -1,10 +1,10 @@
-# Project Atlas - Architecture
+﻿# Project Atlas - Architecture
 
 ## Overview
 
 Project Atlas implements a modular, diagnosable document ingestion + retrieval service with a pipeline scaffold.
 
-Source of truth: `TECHNICAL_DESIGN.md` (current reality, explicit scope decisions, and roadmap). `HLD.md` is historical original intent.
+Source of truth: `TECHNICAL_DESIGN.md` (current reality, explicit scope decisions, and roadmap).
 
 ## Core Modules
 
@@ -12,12 +12,12 @@ Source of truth: `TECHNICAL_DESIGN.md` (current reality, explicit scope decision
 
 Pipeline implementing the full agentic flow: **Ingest → Cleanup → Judge → Refine → Metadata → Embeddings → Chunking → Commit** (11 nodes including HITL, COMPLETED, FAILED).
 
-Status note (Feb 2026): `/rag/ingest/*` is pipeline-backed (text + file). All nodes are wired with real provider calls. v0.7.0 adds rich judge-to-refine context injection (sub-scores, rationale, iteration context), per-dimension judge rationale, score regression rollback, diminishing-returns detection, cleanup-rejudge cycle guard, failed-refine-doesn’t-burn-retry semantics, judge error fallback → neutral (score=3), rich HITL task context, HITL resume loop guard (MAX_HITL_RESUMES=2), updated config defaults (cleanup_rejudge=true, formatting/cohesion floors=2, refine_max_retries=3), scope-change cache invalidation in UI, and HITL resume failure feedback. v0.6.0 adds refine content-safety guardrails and runner consolidation. v0.5.0 adds config-driven cleanup rules engine, cleanup feedback capture, metrics aggregation, LLM-assisted rule suggestion, and Cleanup & Tuning UI on top of v0.4.0’s deterministic Cleanup node, multi-dimensional judge rubric, unified routing, retry/backoff, chunk QA with fallback, and Docling health scoring.
+Status note (Mar 2026): `/rag/ingest/*` is pipeline-backed (text + file). All nodes wired with real provider calls. See `CHANGELOG.md` for version-by-version feature details.
 
 - **`ingest.py`** - Document ingestion node
   - Scaffold for ingest orchestration
   - Docling-based parsing is supported as an optional dependency (best-effort; see `TECHNICAL_DESIGN.md` Phase 4)
-  - **Layout PDF parser** (v0.7.2): ONNX-based layout-aware PDF pipeline derived from RAGFlow deepdoc (Apache 2.0). Selected via `atlas_pdf_parser_backend` setting (`auto`/`layout`/`docling`). Default `auto` tries layout parser first, falls back to Docling on failure or low OCR confidence.
+  - **Layout PDF parser** (v0.7.2): ONNX-based layout-aware PDF pipeline derived from RAGFlow deepdoc (Apache 2.0). Selected via `atlas_pdf_parser_backend` setting or `pipeline.yaml` `pdf_parser.backend`. Four modes: `auto` (Docling first → layout fallback), `auto_layout` (layout first → Docling fallback), `layout` (layout only), `docling` (Docling only). Selection is whole-document, not per-page.
 
 ### Ingest Subsystem (`atlas.ingest`)
 
@@ -55,7 +55,11 @@ Layout-aware PDF parsing pipeline ported from RAGFlow's deepdoc engine:
 
 - **`refine.py`** - Document refinement node
   - Receives rich judge context: per-dimension sub-scores (with “← focus here” markers for low dimensions), rationale, and iteration context (“Attempt X of Y”)
-  - Content-safety guardrails: tightened system prompt (“MUST NOT summarise, condense, or omit”), `min_preservation_ratio` (default 0.6) rejects outputs shorter than 60% of input
+  - Content-safety guardrails: tightened system prompt ("MUST NOT summarise, condense, or omit"), `min_preservation_ratio` (default 0.85) rejects outputs shorter than 85% of input
+  - **Sectional refinement** (v0.7.1): documents exceeding `max_context_tokens` are split on headings and refined section-by-section, then reassembled
+  - **Section-count preservation guard**: rejects outputs that drop ≥20% of input headings (min 3 headings to trigger)
+  - **LLM artifact stripping** (`strip_llm_artifacts()`): deterministic removal of `<think>` tags, preamble/postamble, code fences, meta-commentary
+  - Dynamic `max_tokens` per call: `max(512, int(input_est * 1.15))`
   - Versioned `refine_version` (v2) with prompt hash tracking
   - Configurable max retries → HITL escalation when exhausted; only successful refinements count against the retry limit
 
@@ -167,11 +171,11 @@ Human-in-the-Loop workflow:
   - Before/after markdown tracking
   - Reason for edit documentation
 
-- **Integration surface** (scaffold)
+- **Integration surface**
   - Current: Postgres-backed HITL tasks + admin endpoints under `/admin/hitl/*`
   - In-memory queue remains present but is no longer the primary runtime path
   - Dify integration remains optional/experimental
-  - Primary direction is a purpose-built console (“Control Center”) per `TECHNICAL_DESIGN.md`
+  - Primary direction: **Document Editor** — standalone HTML/JS page with PDF.js + CodeMirror + VLM tools, replacing primitive Streamlit text area. Long-term: React-based Control Center.
 
 ### Retry / Backoff (`atlas.retry`)
 
@@ -292,7 +296,7 @@ Three chunking strategies available (configurable via `pipeline.yaml`). Default 
 
 ## Testing
 
-Current automated coverage (**358 tests passing**, 0 failures):
+Current automated coverage (**530+ tests passing**, 0 failures):
 - Schema creation and validation (incl. `CleanupResult`, `JudgeResult.sub_scores`)
 - Diagnostics and error handling
 - Pipeline state transitions (11 nodes)
@@ -304,17 +308,19 @@ Current automated coverage (**358 tests passing**, 0 failures):
 - Chunk QA + fallback (`test_chunk_qa.py` — 9 tests)
 - Cleanup node (`test_cleanup.py` — 15 tests)
 - Docling health score (`test_docling_health.py` — 15 tests)
-- Routing logic (`test_routing.py` — 21 tests)
-- **Cleanup rules engine** (`test_cleanup_rules.py` — 34 tests)
+- Routing logic (`test_routing.py` — 21 tests + `test_routing_layout.py`)
+- **Cleanup rules engine** (`test_cleanup_rules.py` — 34 tests + `test_cleanup_layout.py`)
 - **Cleanup feedback API** (`test_cleanup_feedback.py` — 7 tests)
 - **Metrics aggregation** (`test_metrics_aggregation.py` — 3 tests)
 - **Rule suggestion** (`test_rule_suggestion.py` — 13 tests)
 - **Phase refactors** (`test_phase_refactors.py` — 40 tests): refine guardrails, normalize boundary, runner consolidation, html_unescape dedup
-- **Cleanup rules import/export** (`test_cleanup_rules_import_export.py` — 10 tests): export YAML, import replace/merge, validation, round-trip
+- **Cleanup rules import/export** (`test_cleanup_rules_import_export.py` — 10 tests)
+- **Layout parser** (`test_layout_types.py`, `test_model_manager.py`, `test_postprocess.py`, `test_layout_ingest_wiring.py` — 79 tests)
+- **LLM artifact stripping** (`test_llm_artifact_stripping.py`)
 
 Run tests:
 ```bash
-pytest -q                    # All tests (358 passing)
+pytest -q                    # All tests (530+ passing)
 pytest -m integration        # Integration tests only
 ```
 
@@ -336,11 +342,15 @@ The current implementation (v0.5.0) provides:
 - ✅ Enhanced chunking (3 strategies + QA)
 - ✅ Fidelity mode search filter
 
-All Phase 7 items (7A–7E) are complete.
-- ✅ Refine content-safety guardrails (min_preservation_ratio, tightened prompt, refine_version v2)
-- ✅ Normalize refactored to formatting-only (whitespace/line-break normalization); page-number and noise stripping moved to cleanup builtins
+All Phase 7–9 items are complete. Phase 10 (layout parser) complete. Phase 11 (quality improvements) in progress.
+- ✅ Layout-aware PDF parser (8 ONNX modules from RAGFlow deepdoc) with swappable backends
+- ✅ Refine content-safety guardrails, sectional refinement, LLM artifact stripping
+- ✅ Token utilities, dynamic max_tokens, section-count preservation guard
+- ✅ Normalize refactored to formatting-only; page-number and noise stripping moved to cleanup builtins
 - ✅ Runner consolidation (5 shared helpers, 37% line reduction)
 - 🔄 Prompt/rubric tuning as real-world usage data accumulates
-- 🔄 Retrieval upgrades (hybrid/rerank) are explicitly deferred unless a measured failure mode requires them
-- 🔄 Semantic cache implementation
-- 🔄 Purpose-built Control Center console (replaces Streamlit for full HITL + monitoring)
+- 🔄 Retrieval upgrades (hybrid/rerank) deferred unless a measured failure mode requires them
+- ✅ **Document Editor (Phase 12A+12B)** — standalone HTML/JS editor page at `/editor` with PDF.js viewer + CodeMirror 6 markdown editor + VLM tool palette, 5 API endpoints (`page-info`, `render-page`, `source-pdf`, `markdown`, `vision-refine`)
+- ✅ **Vision Language Model (VLM) integration** — multimodal `ChatMessage`, `page_renderer.py` (PyMuPDF), `vision_model` role in `models.yaml`, unclosed `<think>` tag handling
+- 🛠 **VLM-first parser backend** — future `backend: vision` parser that uses VLM as sole PDF→markdown converter (see TECHNICAL_DESIGN.md Phase 13)
+- 🔄 Purpose-built React Control Center (replaces Streamlit + editor page for full production UI)

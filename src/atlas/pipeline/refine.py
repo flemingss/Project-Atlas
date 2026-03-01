@@ -5,6 +5,8 @@ Uses vision model to improve document quality when judge score is low.
 
 from __future__ import annotations
 
+import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -14,6 +16,8 @@ from atlas.llm.provider import ILlmProvider
 from atlas.llm.provider import ChatMessage
 from atlas.pipeline.tokens import count_headings, estimate_tokens, split_into_sections
 from atlas.schemas import FidelityFlag, RefineResult
+
+_log = logging.getLogger(__name__)
 
 
 REFINE_SYSTEM_PROMPT = """You are a document refinement assistant.
@@ -31,18 +35,183 @@ You MUST NOT:
 - Add new information or commentary
 - Restructure the document layout beyond fixing formatting errors
 - Remove sections even if they seem redundant
+- Add ANY conversational text before or after the document
+- Wrap the output in markdown code fences (``` or ```markdown)
+- Include preamble such as "Here is the improved document",
+  "Sure, here's the refined version", "Below is the corrected text",
+  or any similar introductory language
+- Include postamble such as "Let me know if you need changes",
+  "I hope this helps", "Feel free to ask", or any closing remarks
+- Add meta-commentary sections like "Summary of Changes" or
+  "Improvements Made" — these are NOT part of the document
+- Use self-referential language ("As an AI", "I noticed", "I've cleaned")
 
 Pay special attention to the per-dimension scores and rationale provided
 in the JUDGE FEEDBACK section.  Focus your improvements on dimensions
 scored below 4.
 
-Return ONLY the improved markdown. Do not add explanations."""
+Your output must begin with the first line of the actual document content
+(typically a heading or paragraph) and end with the last line of document
+content. Nothing else.
+
+Return ONLY the improved markdown. No explanations. No wrapper."""
 
 # Minimum ratio of refined output length to input length.  If the refined
 # text is shorter than this fraction of the original the refinement is
 # rejected and the original text is kept.  Configurable via
 # ``thresholds.refine_min_preservation_ratio`` in pipeline.yaml.
 _DEFAULT_MIN_PRESERVATION_RATIO = 0.6
+
+
+# ---------------------------------------------------------------------------
+# Post-refine LLM artifact stripping (deterministic, Layer 1)
+# ---------------------------------------------------------------------------
+# Despite explicit prompt instructions, LLMs occasionally inject
+# conversational preamble/postamble, code fences, or meta-commentary.
+# These patterns are stripped deterministically from the raw model output
+# before downstream guardrails run.
+
+# Preamble lines: conversational openers at the start of output.
+# Anchored to the very first non-blank line(s).
+_PREAMBLE_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(
+        r"^(?:here\s+is|below\s+is|sure[,!]?\s|certainly[,!]?\s|of\s+course[,!]?\s"
+        r"|i(?:'ve|'ve| have)\s+(?:made|improved|refined|cleaned|corrected|fixed|updated)"
+        r"|the\s+(?:improved|refined|corrected|updated|cleaned)\s+(?:document|markdown|text|version)"
+        r"|i\s+(?:noticed|found|see|observe|detected)"
+        r"|as\s+(?:an?\s+ai|requested|instructed))",
+        re.IGNORECASE,
+    ),
+]
+
+# Postamble lines: conversational closers at the end of output.
+_POSTAMBLE_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(
+        r"^(?:let\s+me\s+know|i\s+hope\s+this|feel\s+free|if\s+you\s+(?:need|want|have)"
+        r"|please\s+(?:let|don't\s+hesitate)|don't\s+hesitate"
+        r"|is\s+there\s+anything\s+else"
+        r"|note:\s+i(?:'ve|'ve| have)\s+(?:made|kept|preserved)"
+        r"|i\s+(?:made|kept|preserved)\s+(?:the\s+following|all|every)"
+        r"|summary\s+of\s+(?:changes|improvements|modifications))",
+        re.IGNORECASE,
+    ),
+]
+
+# Meta-section headings that LLMs sometimes inject.
+_META_HEADING_RE = re.compile(
+    r"^#{1,3}\s+(?:summary\s+of\s+changes|improvements?\s+made"
+    r"|changes?\s+(?:log|list|summary)|notes?\s+on\s+(?:changes|improvements)"
+    r"|what\s+(?:was|i)\s+(?:changed|improved|fixed))\s*$",
+    re.IGNORECASE,
+)
+
+# Whole-output markdown code fence wrapper.
+_CODE_FENCE_WRAPPER_RE = re.compile(
+    r"^```(?:markdown|md|text)?\s*\n(.*?)\n```\s*$",
+    re.DOTALL,
+)
+
+
+def strip_llm_artifacts(text: str) -> str:
+    """Strip common LLM conversational artifacts from refined output.
+
+    This is a deterministic post-processing pass applied to raw LLM output
+    before preservation guardrails.  It handles:
+
+    1. Wrapping markdown code fences (```markdown … ```)
+    2. Conversational preamble (first 1-3 lines)
+    3. Conversational postamble (last 1-3 lines)
+    4. Injected meta-commentary sections ("## Summary of Changes")
+
+    Returns the cleaned text.  If stripping would reduce the text to <50%
+    of the original, the original is returned unchanged (safety valve).
+    """
+    if not text or not text.strip():
+        return text
+
+    original_len = len(text.strip())
+    cleaned = text
+
+    # --- 1. Strip wrapping code fences ---
+    m = _CODE_FENCE_WRAPPER_RE.match(cleaned.strip())
+    if m:
+        cleaned = m.group(1)
+        _log.debug("strip_llm_artifacts: removed wrapping code fence")
+
+    # --- 2. Strip preamble (up to 3 leading non-blank lines) ---
+    lines = cleaned.split("\n")
+    preamble_end = 0
+    for i, line in enumerate(lines[:5]):  # scan first 5 lines max
+        stripped = line.strip()
+        if not stripped:
+            continue  # skip blanks
+        if any(p.search(stripped) for p in _PREAMBLE_PATTERNS):
+            preamble_end = i + 1
+        else:
+            break  # stop at first non-matching non-blank line
+    if preamble_end > 0:
+        _log.debug("strip_llm_artifacts: removed %d preamble line(s)", preamble_end)
+        lines = lines[preamble_end:]
+        cleaned = "\n".join(lines)
+
+    # --- 3. Strip postamble (up to 3 trailing non-blank lines) ---
+    lines = cleaned.split("\n")
+    postamble_start = len(lines)
+    for i in range(len(lines) - 1, max(len(lines) - 6, -1), -1):
+        stripped = lines[i].strip()
+        if not stripped:
+            continue
+        if any(p.search(stripped) for p in _POSTAMBLE_PATTERNS):
+            postamble_start = i
+        else:
+            break
+    if postamble_start < len(lines):
+        _log.debug(
+            "strip_llm_artifacts: removed %d postamble line(s)",
+            len(lines) - postamble_start,
+        )
+        lines = lines[:postamble_start]
+        cleaned = "\n".join(lines)
+
+    # --- 4. Strip injected meta-sections ---
+    # Remove lines from a meta-heading through the next real heading or end
+    out_lines: list[str] = []
+    in_meta = False
+    for line in cleaned.split("\n"):
+        if _META_HEADING_RE.match(line.strip()):
+            in_meta = True
+            _log.debug("strip_llm_artifacts: removing meta-section '%s'", line.strip())
+            continue
+        if in_meta:
+            # Exit meta-section when we hit a real heading
+            if re.match(r"^#{1,6}\s+", line) and not _META_HEADING_RE.match(line.strip()):
+                in_meta = False
+                out_lines.append(line)
+            # else: skip lines inside meta-section
+            continue
+        out_lines.append(line)
+    cleaned = "\n".join(out_lines)
+
+    # --- Safety valve ---
+    # Protect against false-positive regex matches stripping real content.
+    # Only trigger when: (a) the original is long enough for the ratio to
+    # be meaningful (>200 chars), AND (b) stripping removed >50%.
+    # For shorter texts (typical test/LLM outputs), artifact lines are
+    # often a large fraction — stripping them is correct.
+    cleaned = cleaned.strip()
+    if (
+        original_len > 200
+        and len(cleaned) < original_len * 0.5
+    ):
+        _log.warning(
+            "strip_llm_artifacts: stripping removed >50%% of content "
+            "(%d→%d chars); keeping original",
+            original_len,
+            len(cleaned),
+        )
+        return text
+
+    return cleaned
 
 
 class RefineNode:
@@ -417,7 +586,11 @@ class RefineNode:
         result = await self.provider.chat(model=self.model_name, messages=messages, params=params)
         # Safety net: strip any <think> tags that survived the provider layer
         # (e.g. when using a non-OpenAICompatible provider in tests).
-        return strip_reasoning_tags(result)
+        result = strip_reasoning_tags(result)
+        # Deterministic post-processing: strip conversational artifacts
+        # (preamble, postamble, code fences, meta-sections) that the LLM
+        # may inject despite explicit prompt instructions.
+        return strip_llm_artifacts(result)
 
     def _analyze_improvements(self, original: str, refined: str) -> list[str]:
         """Analyze what improvements were made."""

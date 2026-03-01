@@ -124,11 +124,28 @@ async def test_backend_auto_falls_back_to_docling(monkeypatch):
     assert result.parse_profile == ParseProfile.PDF_TEXT  # Docling's profile
 
 
-async def test_backend_auto_prefers_layout(monkeypatch):
-    """When backend='auto' and layout parser succeeds, layout result is used."""
+async def test_backend_auto_prefers_docling(monkeypatch):
+    """When backend='auto' and Docling succeeds, Docling result is used (Docling-first)."""
     _install_docling_mock(monkeypatch)
     node = IngestNode()
     monkeypatch.setattr(node.settings, "atlas_pdf_parser_backend", "auto")
+
+    # Even though layout parser would succeed, Docling is tried first and wins.
+    monkeypatch.setattr(node, "_try_layout_parser", lambda *a, **kw: _make_layout_result())
+
+    result = await node.process_doc_bytes(
+        doc_bytes=b"%PDF-1.4 fake",
+        source_mime_type="application/pdf",
+    )
+    assert result.success is True
+    assert result.parse_profile == ParseProfile.PDF_TEXT  # Docling wins under 'auto'
+
+
+async def test_backend_auto_layout_prefers_layout(monkeypatch):
+    """When backend='auto_layout' and layout parser succeeds, layout result is used."""
+    _install_docling_mock(monkeypatch)
+    node = IngestNode()
+    monkeypatch.setattr(node.settings, "atlas_pdf_parser_backend", "auto_layout")
 
     monkeypatch.setattr(node, "_try_layout_parser", lambda *a, **kw: _make_layout_result())
 
