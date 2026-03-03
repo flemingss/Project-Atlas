@@ -17,6 +17,7 @@ export interface StartSessionResponse {
   page_count: number;
   source_filename: string;
   status: string;
+  headless: boolean;
 }
 
 export interface PageSettingsUpdate {

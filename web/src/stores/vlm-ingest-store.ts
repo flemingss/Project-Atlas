@@ -51,6 +51,7 @@ export interface VlmIngestState {
   filename: string;
   pageCount: number;
   sessionStatus: string;
+  headless: boolean;
 
   // Wizard
   step: WizardStep;
@@ -111,6 +112,7 @@ const INITIAL_STATE: Omit<VlmIngestState, 'setSession' | 'setStep' | 'setGlobalC
   filename: '',
   pageCount: 0,
   sessionStatus: '',
+  headless: false,
   step: 'start',
   dpi: 200,
   cropTop: 0.04,
@@ -145,6 +147,7 @@ export const useVlmIngestStore = create<VlmIngestState>((set) => ({
       filename: session.source_filename,
       pageCount: session.page_count,
       sessionStatus: session.status,
+      headless: session.headless,
       pages: Array.from({ length: session.page_count }, (_, i) => ({
         pageNum: i,
         enabled: true,
