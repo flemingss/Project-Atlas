@@ -1,15 +1,28 @@
 services:
   atlas:
-    # Dev override: bind-mount source + reload, so you don't rebuild on every code change.
+    # Dev override: bind-mount source.
+    # Stable by default (no uvicorn --reload) to avoid wiping in-memory VLM sessions mid-wizard.
+    # Enable reload explicitly with ATLAS_DEV_AUTO_RELOAD=true when editing backend code.
     environment:
       PYTHONPATH: /app/src
+      ATLAS_DEV_BYPASS_ADMIN_AUTH: "true"
+      # Stable default for VLM ingest sessions (in-memory registry).
+      # Set to "true" only when actively editing backend code.
+      ATLAS_DEV_AUTO_RELOAD: ${ATLAS_DEV_AUTO_RELOAD:-false}
     volumes:
       - ./src:/app/src
       - ./config:/app/config
       - ./scripts:/app/scripts
       - ./artifacts:/app/artifacts
       - ./static:/app/static
-    command: ["uvicorn", "atlas.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080", "--reload", "--reload-dir", "/app/src"]
+      # React build output (run `npm run build` in web/ to update)
+      # For live React dev, run 'npm run dev' locally and use Vite's dev server
+    command:
+      [
+        "sh",
+        "-lc",
+        "if [ \"$$ATLAS_DEV_AUTO_RELOAD\" = \"true\" ]; then uvicorn atlas.api:create_app --factory --host 0.0.0.0 --port 8080 --reload --reload-dir /app/src; else uvicorn atlas.api:create_app --factory --host 0.0.0.0 --port 8080; fi",
+      ]
 
   ui:
     # Dev override: bind-mount UI source so Streamlit auto-reloads on file save.

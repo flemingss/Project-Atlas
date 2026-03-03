@@ -175,7 +175,18 @@ Human-in-the-Loop workflow:
   - Current: Postgres-backed HITL tasks + admin endpoints under `/admin/hitl/*`
   - In-memory queue remains present but is no longer the primary runtime path
   - Dify integration remains optional/experimental
-  - Primary direction: **Document Editor** — standalone HTML/JS page with PDF.js + CodeMirror + VLM tools, replacing primitive Streamlit text area. Long-term: React-based Control Center.
+  - Primary direction: **Document Editor** — React SPA (`web/`) built with Vite + TypeScript + shadcn/ui, served at `/editor`. Features: PDF.js viewer, CodeMirror 6 markdown editor, VLM tool palette, React Query mutations, Zustand state. See `web/README.md` for full developer guide.
+
+### VLM Ingest (`atlas.vlm_ingest` + `api_vlm_ingest`)
+
+Vision-language-model-first PDF ingestion — interactive wizard + headless pipeline mode:
+
+- **`stitcher.py`** — Deterministic page-level markdown assembler: page comment insertion, duplicate header/footer removal, table continuation merge, heading dedup
+- **`session.py`** — In-memory session registry with TTL, per-page config overrides (DPI, crop), serializable config for headless reuse
+- **`api_vlm_ingest.py`** — 14-endpoint FastAPI router at `/api/editor/vlm-ingest`: start session (run ID or upload), configure globals + per-page overrides, thumbnails, preview (with crop overlay params), process page, stitch, commit, export/import config
+- **React wizard** (`web/src/pages/vlm-ingest/`): 7-step interactive workflow (start → configure → pages → process → review → stitch → commit). Features: PDF preview with red crop guide overlays, Fit Page/Width/Actual zoom modes, auto-advance processing, per-page markdown correction, config export for headless reuse
+- **Session-expired recovery**: Red banner UI when backend session is lost (404). Zustand state + `isSessionNotFoundError()` helper detect session loss across all mutation hooks
+- **Headless mode**: `IngestNode._vlm_parse()` in `pipeline/ingest.py` — per-page isolation, deterministic stitch, config from `pipeline.yaml → pdf_parser.vlm`
 
 ### Retry / Backoff (`atlas.retry`)
 
@@ -296,7 +307,7 @@ Three chunking strategies available (configurable via `pipeline.yaml`). Default 
 
 ## Testing
 
-Current automated coverage (**530+ tests passing**, 0 failures):
+Current automated coverage (**585+ tests passing**, 0 failures):
 - Schema creation and validation (incl. `CleanupResult`, `JudgeResult.sub_scores`)
 - Diagnostics and error handling
 - Pipeline state transitions (11 nodes)
@@ -317,10 +328,11 @@ Current automated coverage (**530+ tests passing**, 0 failures):
 - **Cleanup rules import/export** (`test_cleanup_rules_import_export.py` — 10 tests)
 - **Layout parser** (`test_layout_types.py`, `test_model_manager.py`, `test_postprocess.py`, `test_layout_ingest_wiring.py` — 79 tests)
 - **LLM artifact stripping** (`test_llm_artifact_stripping.py`)
+- **VLM ingest** (`test_vlm_stitcher.py` — 22 tests, `test_vlm_ingest_session.py` — 25 tests, `test_vlm_ingest_api.py` — 8 tests): stitcher dedup/merge, session lifecycle, API endpoint contracts
 
 Run tests:
 ```bash
-pytest -q                    # All tests (530+ passing)
+pytest -q                    # All tests (585+ passing)
 pytest -m integration        # Integration tests only
 ```
 
@@ -350,7 +362,7 @@ All Phase 7–9 items are complete. Phase 10 (layout parser) complete. Phase 11 
 - ✅ Runner consolidation (5 shared helpers, 37% line reduction)
 - 🔄 Prompt/rubric tuning as real-world usage data accumulates
 - 🔄 Retrieval upgrades (hybrid/rerank) deferred unless a measured failure mode requires them
-- ✅ **Document Editor (Phase 12A+12B)** — standalone HTML/JS editor page at `/editor` with PDF.js viewer + CodeMirror 6 markdown editor + VLM tool palette, 5 API endpoints (`page-info`, `render-page`, `source-pdf`, `markdown`, `vision-refine`)
+- ✅ **Document Editor (Phase 12A+12B+12C)** — React SPA (`web/`, 30 source files) replacing the original HTML/JS editor. Vite 6 + React 18 + TypeScript + shadcn/ui + Tailwind CSS. PDF.js viewer, CodeMirror 6 markdown editor, VLM tool palette, 9 API endpoints via `api_editor.py`. Builds to `static/editor/`, served by FastAPI at `/editor`.
 - ✅ **Vision Language Model (VLM) integration** — multimodal `ChatMessage`, `page_renderer.py` (PyMuPDF), `vision_model` role in `models.yaml`, unclosed `<think>` tag handling
-- 🛠 **VLM-first parser backend** — future `backend: vision` parser that uses VLM as sole PDF→markdown converter (see TECHNICAL_DESIGN.md Phase 13)
-- 🔄 Purpose-built React Control Center (replaces Streamlit + editor page for full production UI)
+- ✅ **VLM-first parser backend (Phase 12E)** — `backend: vision` parser mode. `vlm_ingest` package (deterministic stitcher + session manager), 14-endpoint API router (`api_vlm_ingest.py`), React wizard page (`/editor/vlm-ingest`), headless mode via `IngestNode._vlm_parse()`. Interactive wizard + config export/import for headless reuse across documents.
+- 🔄 Full React Control Center (absorb remaining Streamlit operator console surfaces into `web/`)

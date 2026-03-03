@@ -15,6 +15,10 @@ def require_admin_token(
 
     configured = (settings.atlas_admin_token or "").strip()
 
+    # Explicit dev bypass toggle for local workflows.
+    if settings.atlas_env == "dev" and settings.atlas_dev_bypass_admin_auth:
+        return
+
     # Dev convenience: if no token is configured, keep admin endpoints open.
     if settings.atlas_env == "dev" and not configured:
         return

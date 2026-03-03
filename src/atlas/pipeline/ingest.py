@@ -128,6 +128,10 @@ class IngestNode:
             )
             return await self._docling_parse(doc_bytes, source_mime_type, filename)
 
+        # ------ vision: VLM-first (render → VLM per page → stitch) -----------
+        if is_pdf and backend == "vision":
+            return await self._vlm_parse(doc_bytes, source_mime_type, filename)
+
         # ------ layout: layout parser only (no fallback) ----------------------
         if is_pdf and backend == "layout":
             result = self._try_layout_parser(doc_bytes, filename)
@@ -217,6 +221,150 @@ class IngestNode:
             )
             _logger.debug("Layout parser traceback", exc_info=True)
             return None
+
+    # ------------------------------------------------------------------
+    # VLM-first parser (headless mode)
+    # ------------------------------------------------------------------
+
+    async def _vlm_parse(
+        self,
+        doc_bytes: bytes,
+        source_mime_type: str,
+        filename: str | None,
+    ) -> IngestResult:
+        """Parse PDF via VLM — render each page and send to vision model.
+
+        This is the headless/automated path for ``backend: vision``.
+        Uses the same per-page VLM logic as the interactive wizard but
+        with default settings (no operator preview).
+        """
+        from atlas.ingest.page_renderer import (
+            CropMargins,
+            build_vision_messages,
+            page_count as pdf_page_count,
+            render_page_base64,
+        )
+        from atlas.llm.provider import ChatMessage
+        from atlas.llm.registry import ModelRegistry
+        from atlas.vlm_ingest.stitcher import PageResult, stitch_pages
+
+        try:
+            n_pages = pdf_page_count(doc_bytes)
+        except Exception as exc:
+            return IngestResult(
+                success=False,
+                markdown_projection="",
+                docling_json={},
+                parse_profile=ParseProfile.PDF_LAYOUT,
+                docling_schema_version="unknown",
+                error_code=ErrorCode.DOC_PARSE_FAILED,
+                error_message=f"Failed to read PDF pages: {exc}",
+            )
+
+        # Resolve vision model
+        try:
+            from atlas.config_manager import ConfigManager
+            config_dir = Path(self.settings.atlas_config_dir).resolve()
+            config_manager = ConfigManager(config_dir=config_dir)
+            models_cfg = config_manager.get().models
+            model_registry = ModelRegistry(settings=self.settings, models_cfg=models_cfg)
+            resolved = model_registry.resolve("vision_model")
+            provider = model_registry.provider_for(resolved.provider_name)
+        except KeyError:
+            return IngestResult(
+                success=False,
+                markdown_projection="",
+                docling_json={},
+                parse_profile=ParseProfile.PDF_LAYOUT,
+                docling_schema_version="unknown",
+                error_code=ErrorCode.DOC_PARSE_FAILED,
+                error_message="No vision_model configured in models.yaml for backend=vision.",
+            )
+
+        # Get crop settings from pipeline config
+        vlm_cfg = self._pdf_cfg.get("vlm", {}) or {}
+        dpi = int(vlm_cfg.get("dpi", 200))
+        crop = CropMargins(
+            top=float(vlm_cfg.get("crop_top", 0.04)),
+            bottom=float(vlm_cfg.get("crop_bottom", 0.04)),
+        )
+        system_prompt = vlm_cfg.get("system_prompt")
+
+        # Process pages sequentially — one at a time to avoid hallucination
+        page_results: list[PageResult] = []
+        for p in range(n_pages):
+            try:
+                page_uri = render_page_base64(doc_bytes, p, dpi=dpi, crop=crop)
+                raw_messages = build_vision_messages(
+                    page_image_uri=page_uri,
+                    current_markdown="",
+                    system_prompt=system_prompt,
+                )
+                messages = [ChatMessage(role=m["role"], content=m["content"]) for m in raw_messages]
+
+                _logger.info(
+                    "VLM ingest (headless): page %d/%d model=%s dpi=%d file=%s",
+                    p + 1, n_pages, resolved.model_name, dpi, filename or "unnamed",
+                )
+
+                corrected = await provider.chat(
+                    model=resolved.model_name,
+                    messages=messages,
+                    params=resolved.params,
+                )
+
+                page_results.append(PageResult(
+                    page_num=p,
+                    markdown=corrected,
+                    model=resolved.model_name,
+                    dpi=dpi,
+                    crop_top=crop.top,
+                    crop_bottom=crop.bottom,
+                ))
+            except Exception as exc:
+                _logger.warning(
+                    "VLM page %d failed: %s — skipping", p, exc,
+                )
+
+        if not page_results:
+            return IngestResult(
+                success=False,
+                markdown_projection="",
+                docling_json={},
+                parse_profile=ParseProfile.PDF_LAYOUT,
+                docling_schema_version="unknown",
+                error_code=ErrorCode.DOC_PARSE_FAILED,
+                error_message="VLM failed on all pages.",
+            )
+
+        # Stitch deterministically
+        stitched = stitch_pages(page_results)
+
+        meta: dict[str, Any] = {
+            "extraction_backend": "vision",
+            "vlm_model": resolved.model_name,
+            "dpi": dpi,
+            "page_count": n_pages,
+            "pages_processed": stitched.pages_processed,
+            "tables_merged": stitched.tables_merged,
+            "headings_merged": stitched.headings_merged,
+        }
+        docling_json = {
+            "content": stitched.markdown,
+            "mime_type": "application/pdf",
+            "parsed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "parser": "vision",
+            "metadata": meta,
+        }
+
+        return IngestResult(
+            success=True,
+            markdown_projection=stitched.markdown,
+            docling_json=docling_json,
+            parse_profile=ParseProfile.PDF_LAYOUT,
+            docling_schema_version="1.0",
+            meta=meta,
+        )
 
     # ------------------------------------------------------------------
     # Docling path (original logic)

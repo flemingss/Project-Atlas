@@ -11,6 +11,9 @@ class Settings(BaseSettings):
 
     # Minimal RC auth: shared secret required for /admin endpoints in non-dev.
     atlas_admin_token: str = ""
+    # Dev-only escape hatch to avoid auth friction in local bind-mount workflows.
+    # Never enable in non-dev environments.
+    atlas_dev_bypass_admin_auth: bool = False
 
     atlas_host: str = "127.0.0.1"
     atlas_port: int = 8080

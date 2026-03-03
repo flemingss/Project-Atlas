@@ -2,6 +2,10 @@
 
 A Streamlit-based operator console for the Project Atlas RAG pipeline.
 
+> **Scope note:** This document covers the **Streamlit operator console** (`ui/`).
+> The **Document Editor** at `/editor` is a separate React SPA built from `web/`.
+> See [`web/README.md`](../web/README.md) for that system's developer guide.
+
 ## Running the UI
 
 ```bash

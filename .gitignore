@@ -25,6 +25,7 @@ config/models.yaml
 .idea/
 .vscode/*.code-workspace
 .env
+.serena/
 artifacts/
 volumes/
 models/

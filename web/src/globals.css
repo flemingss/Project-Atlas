@@ -1,0 +1,83 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Atlas Design Tokens
+ * Adapted from RAGFlow's token structure; values tuned for Atlas.
+ * Dark-first (matches the existing editor aesthetic).
+ */
+@layer base {
+  :root {
+    /* ── Radius ── */
+    --radius: 0.5rem;
+
+    /* ── Light mode ── */
+    --bg-base: #ffffff;
+    --bg-surface: #f4f4f5;
+    --bg-card: rgba(0, 0, 0, 0.04);
+    --bg-overlay: rgba(0, 0, 0, 0.6);
+
+    --text-primary: #161618;
+    --text-secondary: #75787a;
+    --text-muted: #a1a1aa;
+
+    --border-default: rgba(0, 0, 0, 0.15);
+
+    --accent-primary: #53c0f0;
+    --accent-hover: #38bdf8;
+    --accent-foreground: #000000;
+
+    --state-success: #4ade80;
+    --state-warning: #fbbf24;
+    --state-error: #f87171;
+  }
+
+  .dark {
+    --bg-base: #1a1a2e;
+    --bg-surface: #16213e;
+    --bg-card: rgba(255, 255, 255, 0.05);
+    --bg-overlay: rgba(0, 0, 0, 0.7);
+
+    --text-primary: #e2e8f0;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
+
+    --border-default: #334155;
+
+    --accent-primary: #53c0f0;
+    --accent-hover: #38bdf8;
+    --accent-foreground: #000000;
+
+    --state-success: #4ade80;
+    --state-warning: #fbbf24;
+    --state-error: #f87171;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-bg-base text-text-primary;
+    font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+      sans-serif;
+  }
+
+  /* Scrollbar (dark-friendly) */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--text-muted);
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--text-secondary);
+  }
+}

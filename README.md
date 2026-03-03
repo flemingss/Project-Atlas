@@ -18,11 +18,15 @@ Design source of truth: `TECHNICAL_DESIGN.md` (build-continuity plan; current re
 docker compose up -d
 ```
 
+For the bind-mount dev override (`docker-compose.dev.yml`), Atlas now defaults to **no auto-reload**
+to keep in-memory VLM ingest sessions stable while using the wizard.
+If you need backend live-reload while coding, set `ATLAS_DEV_AUTO_RELOAD=true` before `docker compose up`.
+
 If you set `ATLAS_ENV` to a non-dev value (e.g. `prod`), Atlas will refuse to start unless you also set `ATLAS_ADMIN_TOKEN`.
 
 This starts:
 - Postgres on `localhost:5432`
-- Qdrant on `localhost:6333`
+- Qdrant on `localhost:16333`
 - Atlas API on `http://localhost:18080`
 
 By default, this repo’s compose stack brings up the **baseline appliance** only.
@@ -113,6 +117,9 @@ Doc versioning + export:
 
 Admin auth:
 - If `ATLAS_ADMIN_TOKEN` is set, `/admin/*` requires header `X-Atlas-Admin-Token: <token>`.
+- Editor/VLM ingest APIs that mutate state also use the same admin token header.
+- React editor convenience: opening `/editor` with `?token=<token>` auto-persists the token to browser localStorage (`atlas_admin_token`) for subsequent API calls.
+- Dev-only bypass: set `ATLAS_DEV_BYPASS_ADMIN_AUTH=true` to keep local editor/admin flows unblocked even if `ATLAS_ADMIN_TOKEN` is set. Keep this **off** outside local dev.
 - If `ATLAS_ENV` is non-dev, Atlas refuses to start unless `ATLAS_ADMIN_TOKEN` is set to a non-placeholder secret.
 
 Tuning endpoints (Postgres-backed config versions):
@@ -145,6 +152,28 @@ Notes:
 - The repo disables Streamlit usage stats by default via `.streamlit/config.toml` (reduces noisy browser console errors in restricted/offline networks).
 - If something goes wrong, use the UI sidebar **Diagnostics → Download logs (json)**.
 
+## Document Editor (React SPA)
+
+A purpose-built editor for surgical document refinement, served at `/editor`.
+
+**Features:** PDF.js viewer (left) + CodeMirror 6 markdown editor (right) + VLM tool palette (VLM Fix, LLM Refine, Strip Artifacts, Re-Judge, Save, Undo).
+
+**Stack:** Vite 6, React 18, TypeScript, shadcn/ui, Tailwind CSS, Zustand, TanStack React Query.
+
+```powershell
+# Development (live reload, proxies API to :18080)
+cd web
+npm install
+npm run dev        # http://localhost:5173
+
+# Production build (outputs to static/editor/)
+npm run build
+```
+
+The Docker image builds the React app automatically (Node.js multi-stage).
+
+See [`web/README.md`](web/README.md) for the full developer guide (directory structure, design tokens, adding components/pages).
+
 ## Tests
 
 **For comprehensive testing documentation, see [`E2E_TEST_GUIDE.md`](E2E_TEST_GUIDE.md).**
@@ -158,7 +187,8 @@ Fast unit/breadcrumb tests (no Docker/LM Studio required):
 Integration breadcrumbs (hit live external services like Docker Qdrant):
 
 ```powershell
-# Ensure docker compose is up and Qdrant is reachable at ATLAS_QDRANT_URL (defaults to http://localhost:6333)
+# Ensure docker compose is up and Qdrant is reachable at ATLAS_QDRANT_URL.
+# With this compose file, host Qdrant is exposed at http://localhost:16333.
 & ".\.venv\Scripts\python.exe" -m pytest -m integration -q
 ```
 

@@ -15,6 +15,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Frontend**: PDF.js viewer (left) + CodeMirror 6 markdown editor (right), Split.js split view, dark theme, tool palette (VLM Fix, Strip Artifacts, Save, Undo), toast notifications.
   - **VLM support**: `page_renderer.py` — PyMuPDF-based PDF→PNG rendering with configurable DPI and header/footer crop margins. `build_vision_messages()` constructs multimodal prompts for vision refinement.
   - **`vision_model` role** in `models.yaml` — dedicated VLM configuration for page-level PDF correction.
+- **React SPA Document Editor (Phase 12C)**: Replaces the standalone HTML/JS editor with a full React application.
+  - **Stack**: Vite 6 + React 18 + TypeScript + shadcn/ui (Radix + CVA) + Tailwind CSS + TanStack React Query 5 + Zustand 4.
+  - **30 source files** in `web/`: 10 shadcn/ui primitives, 5 editor components (PDF viewer, markdown editor, toolbar, VLM settings, status bar), typed API client, Zustand store, React Query hooks.
+  - **Build**: `npm run build` → `static/editor/` (served by FastAPI at `/editor`). Dockerfile multi-stage: Node.js build + Python runtime.
+  - **9 API endpoints** (`api_editor.py`): `resolve-doc`, `page-info`, `source-pdf`, `markdown`, `page-markdown`, `vision-refine`, `save-markdown`, `llm-refine`, `re-judge`.
+  - **Developer guide**: `web/README.md` with stack reference, directory structure, design tokens, dev/build workflow.
+- **VLM-first parser backend (Phase 12E)**: Full VLM ingestion workflow — interactive wizard + headless reuse.
+  - **`backend: vision`** in `pdf_parser.backend`: renders all pages → VLM extracts markdown per page → deterministic stitch.
+  - **`vlm_ingest` package** (`src/atlas/vlm_ingest/`): `stitcher.py` (page comment insertion, duplicate header/footer removal, table continuation merge, heading dedup), `session.py` (in-memory session registry with TTL, per-page config overrides, serializable config for headless reuse).
+  - **14-endpoint API router** (`api_vlm_ingest.py` at `/api/editor/vlm-ingest`): start session (run ID or upload), configure globals + per-page overrides, thumbnails, preview, process page one-at-a-time, stitch, commit, export/import config.
+  - **React wizard page** (`/editor/vlm-ingest`): 7-step interactive workflow (start → configure → pages → process → review → stitch → commit) with auto-advance, per-page corrections, config export.
+  - **Headless mode**: `IngestNode._vlm_parse()` processes pages sequentially with no cross-page context, stitches deterministically, configurable via `pipeline.yaml → pdf_parser.vlm`.
+  - **55+ new tests**: stitcher (22), session (25), API-level (8) — all passing.
+- **VLM wizard PDF preview** (`ConfigureStep`): Live PDF page preview with crop guide overlays (red dashed lines), page navigation, zoom controls, and three fit modes (Fit Page, Fit Width, Actual Size) with ResizeObserver-based auto-fit.
+- **Session-expired recovery banner**: Red recovery UI appears when backend session is lost (404). Zustand `sessionExpired`/`sessionExpiredReason` state + `isSessionNotFoundError()` detection helper.
+- **VLM backend diagnostics**: `[VLM_DIAG]` prefix logging via `uvicorn.error` logger for session lifecycle tracing.
+- **Web style guide** (`web/STYLE_GUIDE.md`): Comprehensive React page style guide covering layout patterns, preview fit modes, state wiring, error/recovery UX.
 - **Multimodal ChatMessage** (`src/atlas/llm/provider.py`): `ChatMessage.content` now accepts `str | list[ContentPart]` for vision model requests (image + text blocks).
 - **Unclosed `<think>` tag handling** (`src/atlas/llm/openai_compat.py`): New `_THINK_TAG_UNCLOSED_RE` regex strips truncated reasoning blocks (Qwen3 `max_tokens` exhaustion). `finish_reason` logged when not "stop" (truncation warning).
 
@@ -24,6 +41,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Refine guardrails tightened**: `min_preservation_ratio` raised from 0.6 → 0.85. Sectional refinement uses section-count guard and dynamic `max_tokens` scaled to input length.
 - **Pipeline config wiring** (`src/atlas/pipeline/runner.py`): `pipeline_cfg.get("pdf_parser")` passed to IngestNode constructor (was hardcoded env var).
 - **Test fixes for Docling-first `auto` backend**: Updated `test_layout_ingest_wiring.py` (renamed `test_backend_auto_prefers_layout` → `test_backend_auto_prefers_docling`, added `test_backend_auto_layout_prefers_layout`) and `test_docling_ingest.py` (force `backend=docling` for Docling-specific error tests to prevent auto-fallback masking).
+- **Dev stack default to stable mode** (`docker-compose.dev.yml`): Removed `--reload` from uvicorn command. Prevents session loss when backend files change. Add `--reload` manually when needed.
+- **VLM ingest commit for uploads** (`api_vlm_ingest.py`): `commit_session` now auto-creates a workflow run when `run_id` is `None` (PDF uploaded directly), saves source PDF as artifact, assigns `run_id` to session. Frontend commit button no longer disabled for uploads.
+
+### Fixed
+- **VLM wizard blank state after API restart**: Session data lost when uvicorn auto-reloaded. Fixed by switching dev stack to stable mode (no `--reload`).
+- **VLM wizard Pages step render loop**: `useEffect` depended on entire Zustand store object, causing infinite re-renders. Fixed by selecting only stable action references.
+- **VLM processing page loop**: Stale closure in `processNext` re-processed already-done pages. Fixed by reading fresh state via `useVlmIngestStore.getState()` and marking pages as `'processing'` in `onMutate`.
+- **VLM page correction flicker** (`useUpdatePageResult`): Hook-level `onSuccess` set markdown to empty string before component could set the correct value. Fixed by using `variables.markdown` (the submitted input) directly.
+- **VLM commit missing runId update** (`useCommit`): Backend auto-creates a workflow run for uploaded PDFs and returns `run_id`, but hook never updated the store. Fixed by writing `data.run_id` back to Zustand state on success.
+- **VLM session polling after 404** (`useVlmSession`): `refetchInterval: 5_000` continued polling after backend returned 404. Fixed with conditional interval: `(query) => query.state.error ? false : 5_000`.
 
 ### Removed
 - **`HLD.md`** — superseded by `ARCHITECTURE.md` + `TECHNICAL_DESIGN.md`. Git history preserves final snapshot.
@@ -34,9 +61,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Documentation
 - **E2E_TEST_GUIDE.md**: Test coverage matrix expanded from 7 → 43 test files with mode annotations.
 - **PIPELINE_REFERENCE.md**: Fixed `normalize` section (formatting-only since v0.6.0, not noise-stripping). Added `strip_page_numbers` and `strip_repetitive_lines` to `builtin_cleanup` table (was 3 entries, now 5).
-- **ARCHITECTURE.md**: Updated parser backend description, refine section, test count (485+), HITL section, Next Steps.
-- **TECHNICAL_DESIGN.md**: Added Phases 10-12, removed deleted doc references, updated §9 (documentation), §10 (capabilities audit removed).
+- **ARCHITECTURE.md**: Updated parser backend description, refine section, test count (585+), HITL section, Next Steps. Added VLM ingest wizard and session-expired recovery details.
+- **TECHNICAL_DESIGN.md**: Added Phases 10-12, removed deleted doc references, updated §9 (documentation), §10 (capabilities audit removed). Phase 12E completed with all sub-items checked.
 - **README.md**: Removed references to deleted docs, added `pdf_parser:` to config sections, fixed `refine_min_preservation_ratio` default.
+- **web/STYLE_GUIDE.md**: New React page style guide covering layout, preview fit modes, state wiring, and error/recovery UX patterns.
 
 ## [0.7.2] - 2026-03-03
 

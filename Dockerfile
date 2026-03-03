@@ -1,3 +1,13 @@
+# ── Stage 1: Build React UI ──
+FROM node:20-slim AS ui-build
+WORKDIR /ui
+COPY web/package.json web/package-lock.json* ./
+RUN npm ci
+COPY web/ .
+RUN npm run build
+# Output lands in /ui/../static/editor → /static/editor
+
+# ── Stage 2: Python runtime ──
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -43,6 +53,8 @@ RUN cp -n config/pipeline.yaml.example config/pipeline.yaml 2>/dev/null || true 
  && cp -n config/models.yaml.example config/models.yaml 2>/dev/null || true
 COPY scripts ./scripts
 COPY static ./static
+# Overlay the React build output (overrides the HTML editor placeholder)
+COPY --from=ui-build /static/editor ./static/editor
 
 EXPOSE 8080
 
