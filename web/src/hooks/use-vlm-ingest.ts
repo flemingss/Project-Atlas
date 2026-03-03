@@ -28,19 +28,9 @@ const KEYS = {
   sessions: ['vlm-ingest', 'sessions'] as const,
   session: (sid: string) => ['vlm-ingest', 'session', sid] as const,
   thumbnails: (sid: string) => ['vlm-ingest', 'thumbnails', sid] as const,
-  pageResult: (sid: string, page: number) =>
-    ['vlm-ingest', 'page-result', sid, page] as const,
 };
 
 // ── Queries ───────────────────────────────────────────────────────
-
-export function useVlmSessions() {
-  return useQuery({
-    queryKey: KEYS.sessions,
-    queryFn: () => vlmIngestApi.listSessions(),
-    refetchInterval: 10_000,
-  });
-}
 
 export function useVlmSession(sid: string | null) {
   return useQuery<SessionSummary>({
