@@ -6,6 +6,7 @@ All tests are async (pytest-asyncio with asyncio_mode=auto from pyproject.toml).
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -86,3 +87,63 @@ def test_get_concurrency_guard_singleton() -> None:
     g1 = get_concurrency_guard()
     g2 = get_concurrency_guard()
     assert g1 is g2
+
+
+# ---------------------------------------------------------------------------
+# VRAM monitoring tests
+# ---------------------------------------------------------------------------
+
+
+def _make_nvidia_proc(stdout_text: str, returncode: int = 0) -> MagicMock:
+    """Return a mock async subprocess whose communicate() yields the given output."""
+    proc = MagicMock()
+    proc.returncode = returncode
+    proc.communicate = AsyncMock(return_value=(stdout_text.encode(), b""))
+    proc.kill = MagicMock()
+    return proc
+
+
+async def test_check_resources_normal() -> None:
+    """nvidia-smi returns valid output below threshold → vram_percent is computed."""
+    guard = ConcurrencyGuard(vram_threshold_percent=92.0)
+    proc = _make_nvidia_proc("8000, 16000\n")
+
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=proc)):
+        metrics = await guard.check_resources()
+
+    assert metrics.vram_percent == pytest.approx(50.0)
+
+
+async def test_check_resources_threshold_exceeded() -> None:
+    """VRAM above threshold causes should_fallback_to_frontier to return True."""
+    guard = ConcurrencyGuard(vram_threshold_percent=80.0)
+    proc = _make_nvidia_proc("14000, 16000\n")  # 87.5 % > 80 %
+
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=proc)):
+        fallback = await guard.should_fallback_to_frontier(frontier_enabled=True)
+
+    assert fallback is True
+
+
+async def test_check_resources_nvidia_smi_not_found() -> None:
+    """FileNotFoundError (no nvidia-smi) → vram_percent == 0.0, no exception."""
+    guard = ConcurrencyGuard(vram_threshold_percent=92.0)
+
+    with patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError):
+        metrics = await guard.check_resources()
+
+    assert metrics.vram_percent == 0.0
+
+
+async def test_check_resources_timeout() -> None:
+    """asyncio.TimeoutError during communicate() → vram_percent == 0.0, no exception."""
+    guard = ConcurrencyGuard(vram_threshold_percent=92.0)
+    proc = MagicMock()
+    proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
+    proc.kill = MagicMock()
+    proc.communicate = AsyncMock(side_effect=[asyncio.TimeoutError, (b"", b"")])
+
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=proc)):
+        metrics = await guard.check_resources()
+
+    assert metrics.vram_percent == 0.0
