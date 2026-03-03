@@ -150,6 +150,7 @@ class SessionSummary(BaseModel):
     headless: bool
     progress: dict[str, int]
     config: dict[str, Any]
+    page_statuses: dict[str, str] = {}
 
 
 class ExportConfigResponse(BaseModel):

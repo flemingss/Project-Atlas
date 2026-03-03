@@ -149,7 +149,7 @@ export const useVlmIngestStore = create<VlmIngestState>((set) => ({
       pages: Array.from({ length: session.page_count }, (_, i) => ({
         pageNum: i,
         enabled: true,
-        status: 'pending',
+        status: session.page_statuses?.[String(i)] ?? 'pending',
         markdown: '',
         model: '',
         dpiOverride: null,

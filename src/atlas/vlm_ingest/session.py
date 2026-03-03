@@ -239,6 +239,7 @@ class VlmIngestSession:
             "progress": self.progress(),
             "config": self.config.to_dict(),
             "created_at": self.created_at,
+            "page_statuses": {str(p): s.value for p, s in self.page_statuses.items()},
         }
 
 

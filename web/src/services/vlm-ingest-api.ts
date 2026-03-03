@@ -81,6 +81,7 @@ export interface SessionSummary {
   headless: boolean;
   progress: Record<string, number>;
   config: Record<string, unknown>;
+  page_statuses?: Record<string, string>;
 }
 
 export interface ExportConfigResponse {
