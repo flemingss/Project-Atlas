@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import subprocess
 from dataclasses import dataclass
 
 from datetime import datetime, timezone
@@ -75,14 +76,46 @@ class ConcurrencyGuard:
             message="Released heavy task slot",
         )
 
-    async def check_resources(self) -> ResourceMetrics:
-        """Check current resource usage.
+    async def _get_vram_percent(self) -> float:
+        """Return highest GPU VRAM usage (%) across all GPUs via nvidia-smi.
 
-        Note: VRAM monitoring requires platform-specific implementation.
-        This is a placeholder that returns mock data.
+        Returns 0.0 when nvidia-smi is unavailable or times out so that
+        resource checks degrade gracefully on CPU-only hosts.
         """
-        # TODO: Implement actual VRAM monitoring via nvidia-smi or torch
-        vram_percent = 0.0  # Placeholder
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "nvidia-smi",
+                "--query-gpu=memory.used,memory.total",
+                "--format=csv,noheader,nounits",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.communicate()
+                return 0.0
+            if proc.returncode != 0:
+                return 0.0  # nvidia-smi present but failed → assume OK
+            max_percent = 0.0
+            for line in stdout.decode().strip().split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    used, total = map(float, line.split(","))
+                    if total > 0:
+                        max_percent = max(max_percent, (used / total) * 100.0)
+                except ValueError:
+                    continue  # skip malformed lines
+            return max_percent
+        except FileNotFoundError:
+            return 0.0  # nvidia-smi not available → skip check
+
+    async def check_resources(self) -> ResourceMetrics:
+        """Check current resource usage, including GPU VRAM via nvidia-smi."""
+        vram_percent = await self._get_vram_percent()
         metrics = ResourceMetrics(
             vram_percent=vram_percent,
             queue_depth=self.queue_depth,
