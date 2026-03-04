@@ -70,7 +70,7 @@ export function useStartSession() {
         source_filename: data.source_filename,
         run_id: variables.run_id,
         page_count: data.page_count,
-        headless: false,
+        headless: data.headless,
         progress: {},
         config: {},
       });
@@ -101,7 +101,7 @@ export function useStartSessionUpload() {
         source_filename: data.source_filename,
         run_id: null,
         page_count: data.page_count,
-        headless: false,
+        headless: data.headless,
         progress: {},
         config: {},
       });

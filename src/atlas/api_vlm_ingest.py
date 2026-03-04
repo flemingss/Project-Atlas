@@ -82,6 +82,7 @@ class StartSessionResponse(BaseModel):
     page_count: int
     source_filename: str
     status: str
+    headless: bool
 
 
 class PageSettingsUpdate(BaseModel):
@@ -266,6 +267,7 @@ def make_vlm_ingest_router(
             page_count=n_pages,
             source_filename=filename,
             status=s.status.value,
+            headless=s.headless,
         )
 
     @r.post("/start-upload", response_model=StartSessionResponse)
@@ -303,6 +305,7 @@ def make_vlm_ingest_router(
             page_count=n_pages,
             source_filename=file.filename or "upload.pdf",
             status=s.status.value,
+            headless=s.headless,
         )
 
     # ------------------------------------------------------------------
