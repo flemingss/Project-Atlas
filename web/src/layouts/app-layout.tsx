@@ -9,7 +9,6 @@ import {
   Sun,
   Upload,
   UserCheck,
-  Zap,
 } from 'lucide-react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { useState } from 'react';
@@ -24,7 +23,7 @@ import { useMobile } from '@/hooks/use-mobile';
 
 const NAV_ITEMS = [
   { to: '/', label: 'Dashboard', icon: Home },
-  { to: '/upload', label: 'Upload', icon: Upload },
+  { to: '/ingest', label: 'Ingest', icon: Upload },
   { to: '/library', label: 'Library', icon: Library },
   { to: '/search', label: 'Search', icon: Search },
   { to: '/review', label: 'Review', icon: UserCheck },
@@ -116,22 +115,6 @@ export function AppLayout() {
               <span className="hidden lg:inline">Admin</span>
             </NavLink>
           )}
-
-          {/* VLM Ingest (tool page) */}
-          <NavLink
-            to="/vlm-ingest"
-            className={({ isActive }) =>
-              cn(
-                'flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors',
-                isActive
-                  ? 'bg-accent/10 text-accent'
-                  : 'text-text-secondary hover:bg-bg-card hover:text-text-primary',
-              )
-            }
-          >
-            <Zap className="size-3.5" />
-            <span className="hidden lg:inline">VLM Ingest</span>
-          </NavLink>
         </nav>
 
         <div className="flex-1" />

@@ -8,7 +8,6 @@ import { ErrorBoundary } from './components/error-boundary';
 import { AppLayout } from './layouts/app-layout';
 import { AdminLayout } from './layouts/admin-layout';
 import { DashboardPage } from './pages/dashboard';
-import { UploadPage } from './pages/upload';
 import { LibraryPage } from './pages/library';
 import { SearchPage } from './pages/search';
 import { ReviewPage } from './pages/review';
@@ -17,7 +16,7 @@ import { AdminCleanupPage } from './pages/admin/cleanup';
 import { AdminGroupsPage } from './pages/admin/groups';
 import { AdminDangerPage } from './pages/admin/danger';
 import { EditorPage } from './pages/editor';
-import { VlmIngestPage } from './pages/vlm-ingest';
+import { IngestPage } from './pages/ingest';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -53,7 +52,8 @@ export function App() {
           <Routes>
             <Route element={<ErrorBoundary><AppLayout /></ErrorBoundary>}>
               <Route index element={<ErrorBoundary><DashboardPage /></ErrorBoundary>} />
-              <Route path="upload" element={<ErrorBoundary><UploadPage /></ErrorBoundary>} />
+              <Route path="ingest" element={<ErrorBoundary><IngestPage /></ErrorBoundary>} />
+              <Route path="upload" element={<Navigate to="/ingest" replace />} />
               <Route path="library" element={<ErrorBoundary><LibraryPage /></ErrorBoundary>} />
               <Route path="search" element={<ErrorBoundary><SearchPage /></ErrorBoundary>} />
               <Route path="review" element={<ErrorBoundary><ReviewPage /></ErrorBoundary>} />
@@ -66,7 +66,7 @@ export function App() {
               </Route>
               <Route path="doc/:docId" element={<ErrorBoundary><EditorPage /></ErrorBoundary>} />
               <Route path="run/:runId" element={<ErrorBoundary><EditorPage /></ErrorBoundary>} />
-              <Route path="vlm-ingest" element={<ErrorBoundary><VlmIngestPage /></ErrorBoundary>} />
+              <Route path="vlm-ingest" element={<Navigate to="/ingest" replace />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
           </Routes>

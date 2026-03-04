@@ -183,6 +183,67 @@ export function useProcessPage() {
   });
 }
 
+export function useProcessAll() {
+  const setPageResult = useVlmIngestStore((s) => s.setPageResult);
+  const setPageError = useVlmIngestStore((s) => s.setPageError);
+  const setProcessing = useVlmIngestStore((s) => s.setProcessing);
+  const setStitchResult = useVlmIngestStore((s) => s.setStitchResult);
+  const setStatus = useVlmIngestStore((s) => s.setStatus);
+  const markSessionExpired = useVlmIngestStore((s) => s.markSessionExpired);
+
+  return useMutation({
+    mutationFn: (sid: string) => vlmIngestApi.processAll(sid),
+    onMutate: () => {
+      setProcessing(true);
+      setStatus('busy', 'Processing all pages (server-side)…');
+    },
+    onSuccess: async (data) => {
+      setProcessing(false);
+
+      // Sync page-level results from the session
+      const sid = useVlmIngestStore.getState().sessionId;
+      if (sid) {
+        try {
+          const session = await vlmIngestApi.getSession(sid);
+          if (session.pages) {
+            for (const page of session.pages) {
+              if (page.status === 'done') {
+                setPageResult(page.page_num, page.markdown, page.model, 'done');
+              } else if (page.status === 'error') {
+                setPageError(page.page_num, 'Processing failed');
+              } else if (page.status === 'skipped') {
+                setPageResult(page.page_num, '', '', 'skipped');
+              }
+            }
+          }
+        } catch {
+          // Non-fatal: pages will show as stale but stitch result is still valid
+        }
+      }
+
+      if (data.stitch) {
+        setStitchResult(data.stitch);
+      }
+      const failCount = data.pages_failed;
+      const msg = `${data.pages_processed} processed, ${data.pages_skipped} skipped${failCount ? `, ${failCount} failed` : ''}`;
+      setStatus('idle', msg);
+      if (failCount) {
+        toast.warning(`Bulk processing done with ${failCount} error(s): ${msg}`);
+      } else {
+        toast.success(`Bulk processing complete: ${msg}`);
+      }
+    },
+    onError: (err: Error) => {
+      if (isSessionNotFoundError(err)) {
+        markSessionExpired('The backend session was lost during bulk processing.');
+      }
+      setProcessing(false);
+      setStatus('error', 'Bulk processing failed');
+      toast.error(err.message);
+    },
+  });
+}
+
 export function useStitch() {
   const setStitchResult = useVlmIngestStore((s) => s.setStitchResult);
   const setStatus = useVlmIngestStore((s) => s.setStatus);
@@ -217,8 +278,9 @@ export function useCommit() {
     onMutate: () => setStatus('busy', 'Committing…'),
     onSuccess: (data) => {
       if (data.run_id != null) useVlmIngestStore.setState({ runId: data.run_id });
-      setStatus('idle', `Committed: ${data.chars.toLocaleString()} chars`);
-      toast.success(`Committed to ${data.path} (${data.chars.toLocaleString()} chars)`);
+      const chunkInfo = data.chunks_upserted ? ` — ${data.chunks_upserted} chunks indexed` : '';
+      setStatus('idle', `Committed: ${data.chars.toLocaleString()} chars${chunkInfo}`);
+      toast.success(data.message || `Committed (${data.chars.toLocaleString()} chars${chunkInfo})`);
       qc.invalidateQueries({ queryKey: KEYS.sessions });
     },
     onError: (err: Error) => {

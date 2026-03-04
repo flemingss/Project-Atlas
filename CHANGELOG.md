@@ -34,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Web style guide** (`web/STYLE_GUIDE.md`): Comprehensive React page style guide covering layout patterns, preview fit modes, state wiring, error/recovery UX.
 - **Multimodal ChatMessage** (`src/atlas/llm/provider.py`): `ChatMessage.content` now accepts `str | list[ContentPart]` for vision model requests (image + text blocks).
 - **Unclosed `<think>` tag handling** (`src/atlas/llm/openai_compat.py`): New `_THINK_TAG_UNCLOSED_RE` regex strips truncated reasoning blocks (Qwen3 `max_tokens` exhaustion). `finish_reason` logged when not "stop" (truncation warning).
+- **Unified Ingest page** (`web/src/pages/ingest/ingest-page.tsx`): Replaces separate Upload and VLM Ingest pages with a single wizard-style interface. Four methods (Docling, VLM, Import, Paste) with method-aware step progression. Old `/upload` and `/vlm-ingest` routes redirect to `/ingest`.
+- **Bulk VLM processing** (`api_vlm_ingest.py`): New `POST /{session_id}/process-all` endpoint processes all pending enabled pages sequentially on the server in a single request, then auto-stitches. `ProcessAllResponse` includes per-page error tracking and the stitched result. Frontend offers "Bulk (Server)" and "Page-by-Page" mode toggle.
+- **Export INDEX.md inventory** (`export_package.py`, `corpus_package.py`): All multi-doc ZIP exports (corpus, project, tenant — both full and lean) now include an `INDEX.md` markdown table listing every document with doc ID, version, workspace, project, collection, chunk count, and filename.
+- **Lean export YAML frontmatter** (`export_package.py`, `corpus_package.py`): Single-doc and corpus lean markdown exports now include YAML frontmatter (`---` delimited) with scope metadata (`tenant_id`, `project_id`, `corpus_id`, `doc_id`, `doc_version`, `exported_at`). `build_frontmatter()` helper accepts arbitrary keys and skips `None` values for extensibility.
+- **VLM heading formatting rules** (`page_renderer.py`): Default VLM system prompt now includes explicit heading hierarchy guidance — numbered sections (`# 1`, `## 1.1`, `### 1.1.1`) and appendix sections (`# A`, `## A.1`, `### A.1.1`).
 
 ### Changed
 - **Cleanup rules optimized**: Expanded default rule set from 7 to 10 rules, organized into logical sections (heading normalization, content stripping, bullet/list cleanup, paragraph repair). New rules: `fix_numbered_headings`, `strip_headers_footers`, `merge_hardwrapped_paragraphs`.
@@ -57,6 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`PDF_OVERHAUL_PLAN.md`** — completed work absorbed into `TECHNICAL_DESIGN.md` Phases 10-11.
 - **`VALIDATION_REPORT.md`** — frozen v0.7.0 snapshot; test coverage tracked in CHANGELOG.
 - **`CAPABILITIES_AUDIT.md`** — extreme maintenance burden (line-number references stale within days). Capability status now tracked in `TECHNICAL_DESIGN.md` roadmap and CHANGELOG.
+- **Dead page files** — `web/src/pages/upload/` and `web/src/pages/vlm-ingest/` removed (superseded by unified `ingest-page.tsx`).
 
 ### Documentation
 - **E2E_TEST_GUIDE.md**: Test coverage matrix expanded from 7 → 43 test files with mode annotations.

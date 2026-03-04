@@ -271,21 +271,21 @@ export function AdminDangerPage() {
             <p className="text-xs text-text-muted">No config versions found</p>
           ) : (
             configVersions.map((cv) => (
-              <div key={cv.config_id} className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+              <div key={cv.id} className="flex items-center justify-between rounded-md border border-border px-3 py-2">
                 <div className="space-y-0.5">
                   <p className="text-xs font-medium">
-                    Version {cv.config_id}
+                    Version {cv.id}
                     {cv.is_active && (
                       <Badge variant="default" className="ml-2 text-[10px]">Active</Badge>
                     )}
                   </p>
                   <p className="text-[11px] text-text-muted">
                     {cv.created_at ? new Date(cv.created_at).toLocaleString() : ''}
-                    {cv.comment ? ` — ${cv.comment}` : ''}
+                    {cv.notes ? ` — ${cv.notes}` : ''}
                   </p>
                 </div>
                 {!cv.is_active && (
-                  <Button variant="outline" size="sm" onClick={() => handleActivateVersion(cv.config_id)}>
+                  <Button variant="outline" size="sm" onClick={() => handleActivateVersion(cv.id)}>
                     Activate
                   </Button>
                 )}

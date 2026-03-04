@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from starlette.concurrency import run_in_threadpool
 
 from atlas.config_manager import ConfigManager
-from atlas.export_package import export_doc_package, get_doc_markdown
+from atlas.export_package import export_doc_package, get_doc_markdown, build_frontmatter, build_index_md
 from atlas.pipeline.runner import ingest_text_via_pipeline
 from atlas.settings import Settings
 from atlas.vectorstore.qdrant_store import QdrantStore
@@ -48,6 +48,7 @@ async def export_corpus_package(
 
     Output ZIP:
       - corpus_manifest.json
+      - INDEX.md (inventory of all docs in the export)
       - docs/<doc_id>_v<doc_version>.zip (doc export packages)
     """
 
@@ -66,6 +67,7 @@ async def export_corpus_package(
     points = await run_in_threadpool(store.scroll_points, must=must, limit=256, max_points=200_000)
 
     seen: set[tuple[str, str]] = set()
+    chunk_counts: dict[tuple[str, str], int] = {}
     docs: list[dict[str, str]] = []
     for p in points:
         payload = p.get("payload") if isinstance(p, dict) else getattr(p, "payload", {})
@@ -75,12 +77,16 @@ async def export_corpus_package(
         if not doc_id or not doc_version:
             continue
         key = (doc_id, doc_version)
+        chunk_counts[key] = chunk_counts.get(key, 0) + 1
         if key in seen:
             continue
         seen.add(key)
         docs.append({"doc_id": doc_id, "doc_version": doc_version})
         if len(docs) >= int(max_docs):
             break
+
+    import datetime as _dt
+    exported_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as z:
@@ -101,6 +107,7 @@ async def export_corpus_package(
             ),
         )
 
+        index_entries: list[dict[str, Any]] = []
         for d in docs:
             doc_id = d["doc_id"]
             doc_version = d["doc_version"]
@@ -112,8 +119,19 @@ async def export_corpus_package(
                 doc_id=doc_id,
                 doc_version=doc_version,
             )
-            name = f"docs/{_safe_filename(doc_id)}_v{_safe_filename(doc_version)}.zip"
-            z.writestr(name, blob)
+            arcname = f"docs/{_safe_filename(doc_id)}_v{_safe_filename(doc_version)}.zip"
+            z.writestr(arcname, blob)
+            index_entries.append({
+                "doc_id": doc_id,
+                "doc_version": doc_version,
+                "workspace": tenant_id,
+                "project": project_id,
+                "collection": corpus_id,
+                "chunks": chunk_counts.get((doc_id, doc_version), 0),
+                "file": arcname,
+            })
+
+        z.writestr("INDEX.md", build_index_md(index_entries, exported_at=exported_at))
 
     return buf.getvalue()
 
@@ -128,8 +146,8 @@ async def export_corpus_lean(
 ) -> bytes:
     """Lean corpus export: a flat ZIP of ``docs/{doc_id}.md`` files.
 
-    Each file contains clean markdown with no Atlas frontmatter or metadata,
-    ready to drop directly into any RAG pipeline.
+    Each file contains markdown with YAML frontmatter carrying scope
+    metadata.  An ``INDEX.md`` inventory file is included at the root.
     """
     settings = Settings()
     store = QdrantStore(url=settings.atlas_qdrant_url, api_key=None, collection="atlas_chunks")
@@ -145,6 +163,7 @@ async def export_corpus_lean(
     points = await run_in_threadpool(store.scroll_points, must=must, limit=256, max_points=200_000)
 
     seen: set[tuple[str, str]] = set()
+    chunk_counts: dict[tuple[str, str], int] = {}
     docs: list[dict[str, str]] = []
     for p in points:
         payload = p.get("payload") if isinstance(p, dict) else getattr(p, "payload", {})
@@ -154,12 +173,16 @@ async def export_corpus_lean(
         if not doc_id or not doc_version:
             continue
         key = (doc_id, doc_version)
+        chunk_counts[key] = chunk_counts.get(key, 0) + 1
         if key in seen:
             continue
         seen.add(key)
         docs.append({"doc_id": doc_id, "doc_version": doc_version})
         if len(docs) >= int(max_docs):
             break
+
+    import datetime as _dt
+    exported_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as z:
@@ -181,6 +204,7 @@ async def export_corpus_lean(
             ),
         )
 
+        index_entries: list[dict[str, Any]] = []
         for d in docs:
             doc_id = d["doc_id"]
             doc_version = d["doc_version"]
@@ -195,8 +219,28 @@ async def export_corpus_lean(
                 )
             except Exception:  # noqa: BLE001
                 content = ""
-            name = f"docs/{_safe_filename(doc_id)}.md"
-            z.writestr(name, content or "")
+            arcname = f"docs/{_safe_filename(doc_id)}.md"
+            # Add YAML frontmatter to each MD file
+            fm = build_frontmatter({
+                "exported_at": exported_at,
+                "tenant_id": tenant_id,
+                "project_id": project_id,
+                "corpus_id": corpus_id,
+                "doc_id": doc_id,
+                "doc_version": doc_version,
+            })
+            z.writestr(arcname, fm + (content or ""))
+            index_entries.append({
+                "doc_id": doc_id,
+                "doc_version": doc_version,
+                "workspace": tenant_id,
+                "project": project_id,
+                "collection": corpus_id,
+                "chunks": chunk_counts.get((doc_id, doc_version), 0),
+                "file": arcname,
+            })
+
+        z.writestr("INDEX.md", build_index_md(index_entries, exported_at=exported_at))
 
     return buf.getvalue()
 
@@ -247,6 +291,9 @@ async def export_project_package(
             ),
         )
 
+        import datetime as _dt
+        _exported_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
+        _index_entries: list[dict[str, Any]] = []
         for cid in ordered_corpora:
             blob = await export_corpus_package(
                 session_factory=session_factory,
@@ -255,7 +302,18 @@ async def export_project_package(
                 corpus_id=cid,
                 max_docs=int(max_docs),
             )
-            z.writestr(f"corpora/{_safe_filename(cid)}.zip", blob)
+            arcname = f"corpora/{_safe_filename(cid)}.zip"
+            z.writestr(arcname, blob)
+            _index_entries.append({
+                "doc_id": cid,
+                "doc_version": "",
+                "workspace": tenant_id,
+                "project": project_id,
+                "collection": cid,
+                "chunks": "",
+                "file": arcname,
+            })
+        z.writestr("INDEX.md", build_index_md(_index_entries, exported_at=_exported_at, title="Project Export Inventory"))
 
     return buf.getvalue()
 
@@ -307,6 +365,9 @@ async def export_project_lean(
             ),
         )
 
+        import datetime as _dt
+        _exported_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
+        _index_entries: list[dict[str, Any]] = []
         for cid in ordered_corpora:
             blob = await export_corpus_lean(
                 session_factory=session_factory,
@@ -315,7 +376,18 @@ async def export_project_lean(
                 corpus_id=cid,
                 max_docs=int(max_docs),
             )
-            z.writestr(f"corpora/{_safe_filename(cid)}.zip", blob)
+            arcname = f"corpora/{_safe_filename(cid)}.zip"
+            z.writestr(arcname, blob)
+            _index_entries.append({
+                "doc_id": cid,
+                "doc_version": "",
+                "workspace": tenant_id,
+                "project": project_id,
+                "collection": cid,
+                "chunks": "",
+                "file": arcname,
+            })
+        z.writestr("INDEX.md", build_index_md(_index_entries, exported_at=_exported_at, title="Project Lean Export Inventory"))
 
     return buf.getvalue()
 
@@ -368,6 +440,9 @@ async def export_tenant_package(
             ),
         )
 
+        import datetime as _dt
+        _exported_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
+        _index_entries: list[dict[str, Any]] = []
         for pid in ordered_projects:
             for cid in sorted(projects[pid]):
                 blob = await export_corpus_package(
@@ -377,10 +452,18 @@ async def export_tenant_package(
                     corpus_id=cid,
                     max_docs=int(max_docs),
                 )
-                z.writestr(
-                    f"projects/{_safe_filename(pid)}/corpora/{_safe_filename(cid)}.zip",
-                    blob,
-                )
+                arcname = f"projects/{_safe_filename(pid)}/corpora/{_safe_filename(cid)}.zip"
+                z.writestr(arcname, blob)
+                _index_entries.append({
+                    "doc_id": cid,
+                    "doc_version": "",
+                    "workspace": tenant_id,
+                    "project": pid,
+                    "collection": cid,
+                    "chunks": "",
+                    "file": arcname,
+                })
+        z.writestr("INDEX.md", build_index_md(_index_entries, exported_at=_exported_at, title="Tenant Export Inventory"))
 
     return buf.getvalue()
 
@@ -434,6 +517,9 @@ async def export_tenant_lean(
             ),
         )
 
+        import datetime as _dt
+        _exported_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
+        _index_entries: list[dict[str, Any]] = []
         for pid in ordered_projects:
             for cid in sorted(projects[pid]):
                 blob = await export_corpus_lean(
@@ -443,10 +529,18 @@ async def export_tenant_lean(
                     corpus_id=cid,
                     max_docs=int(max_docs),
                 )
-                z.writestr(
-                    f"projects/{_safe_filename(pid)}/corpora/{_safe_filename(cid)}.zip",
-                    blob,
-                )
+                arcname = f"projects/{_safe_filename(pid)}/corpora/{_safe_filename(cid)}.zip"
+                z.writestr(arcname, blob)
+                _index_entries.append({
+                    "doc_id": cid,
+                    "doc_version": "",
+                    "workspace": tenant_id,
+                    "project": pid,
+                    "collection": cid,
+                    "chunks": "",
+                    "file": arcname,
+                })
+        z.writestr("INDEX.md", build_index_md(_index_entries, exported_at=_exported_at, title="Tenant Lean Export Inventory"))
 
     return buf.getvalue()
 

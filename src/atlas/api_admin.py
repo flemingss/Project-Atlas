@@ -70,7 +70,7 @@ from atlas.feedback_ledger import (
     to_feedback_response,
 )
 from atlas.rule_suggester import suggest_cleanup_rule
-from atlas.models import CleanupFeedback, Corpus, HitlTaskRow, NodeRun, Project, Tenant, WorkflowRun
+from atlas.models import ActiveDocVersion, CleanupFeedback, Corpus, HitlTaskRow, NodeRun, Project, Tenant, WorkflowRun
 from atlas.pipeline.runner import resume_completed_hitl_task
 from atlas.vectorstore.qdrant_store import QdrantStore
 
@@ -87,6 +87,31 @@ class SetActiveDocVersionRequest(BaseModel):
     tenant_id: str | None = None
     project_id: str | None = None
     corpus_id: str | None = None
+
+
+class ReassociateRunScopeRequest(BaseModel):
+    tenant_id: str
+    project_id: str
+    corpus_id: str
+
+
+class CleanupOrphansRequest(BaseModel):
+    dry_run: bool = True
+    max_points: int = 10000
+    tenant_id: str | None = None
+    project_id: str | None = None
+    corpus_id: str | None = None
+
+
+class AdoptOrphanGroupRequest(BaseModel):
+    """Move orphaned Qdrant chunks to a valid scope and register a synthetic WorkflowRun."""
+    old_tenant_id: str
+    old_project_id: str
+    old_doc_id: str
+    old_doc_version: str
+    tenant_id: str
+    project_id: str
+    corpus_id: str
 
 
 class TenantCreateRequest(BaseModel):
@@ -1807,6 +1832,404 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
             "doc_id": doc_id,
             "active_doc_version": str(row.active_doc_version),
         }
+
+    @r.post("/runs/{run_id}/reassociate-scope")
+    async def reassociate_run_scope(run_id: int, req: ReassociateRunScopeRequest) -> dict[str, Any]:
+        """Re-associate a run (and its indexed chunks) to a new scope.
+
+        Updates:
+        - workflow_runs.tenant_id / project_id / meta.corpus_id
+        - hitl_tasks scope columns for the run
+        - active_doc_versions row for this doc scope (best-effort move)
+        - Qdrant payload scope fields for matching chunks
+        """
+        target_tenant = _clean_scope_id("tenant_id", req.tenant_id)
+        target_project = _clean_scope_id("project_id", req.project_id)
+        target_corpus = _clean_scope_id("corpus_id", req.corpus_id)
+
+        with session_factory() as session:
+            run = get_workflow_run(session, run_id=run_id)
+            if run is None:
+                from fastapi import HTTPException
+
+                raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+
+            old_tenant = str(run.tenant_id)
+            old_project = str(run.project_id)
+            old_doc_id = str(run.doc_id)
+            old_doc_version = str(run.doc_version)
+            old_meta = dict(run.meta or {})
+            old_corpus = str(old_meta.get("corpus_id") or settings.atlas_default_corpus_id)
+
+            run.tenant_id = target_tenant
+            run.project_id = target_project
+            next_meta = dict(old_meta)
+            next_meta["corpus_id"] = target_corpus
+            run.meta = next_meta
+
+            hitl_rows = list(
+                session.query(HitlTaskRow)
+                .filter(HitlTaskRow.run_id == run_id)
+                .all()
+            )
+            for row in hitl_rows:
+                row.tenant_id = target_tenant
+                row.project_id = target_project
+
+            # Best-effort: move ActiveDocVersion row to the new scope.
+            old_adv = (
+                session.query(ActiveDocVersion)
+                .filter(
+                    ActiveDocVersion.tenant_id == old_tenant,
+                    ActiveDocVersion.project_id == old_project,
+                    ActiveDocVersion.doc_id == old_doc_id,
+                )
+                .first()
+            )
+            moved_active_version = None
+            if old_adv is not None:
+                existing_new = (
+                    session.query(ActiveDocVersion)
+                    .filter(
+                        ActiveDocVersion.tenant_id == target_tenant,
+                        ActiveDocVersion.project_id == target_project,
+                        ActiveDocVersion.doc_id == old_doc_id,
+                    )
+                    .first()
+                )
+                if existing_new is None:
+                    existing_new = ActiveDocVersion(
+                        tenant_id=target_tenant,
+                        project_id=target_project,
+                        doc_id=old_doc_id,
+                        active_doc_version=old_adv.active_doc_version,
+                    )
+                    session.add(existing_new)
+                moved_active_version = str(old_adv.active_doc_version)
+                session.delete(old_adv)
+
+            session.commit()
+
+        # Update Qdrant payload scope for this doc+version in old scope.
+        store = QdrantStore(url=settings.atlas_qdrant_url, api_key=None, collection=_qdrant_collection())
+        qdrant_updated = True
+        qdrant_error = ""
+        try:
+            must = [
+                qm.FieldCondition(key="tenant_id", match=qm.MatchValue(value=old_tenant)),
+                qm.FieldCondition(key="project_id", match=qm.MatchValue(value=old_project)),
+                qm.FieldCondition(key="doc_id", match=qm.MatchValue(value=old_doc_id)),
+                qm.FieldCondition(key="doc_version", match=qm.MatchValue(value=old_doc_version)),
+            ]
+            await run_in_threadpool(
+                store.set_payload,
+                payload={
+                    "tenant_id": target_tenant,
+                    "project_id": target_project,
+                    "corpus_id": target_corpus,
+                },
+                must=must,
+            )
+        except Exception as exc:  # noqa: BLE001
+            qdrant_updated = False
+            qdrant_error = str(exc)
+
+        return {
+            "ok": True,
+            "run_id": int(run_id),
+            "doc_id": old_doc_id,
+            "doc_version": old_doc_version,
+            "from": {
+                "tenant_id": old_tenant,
+                "project_id": old_project,
+                "corpus_id": old_corpus,
+            },
+            "to": {
+                "tenant_id": target_tenant,
+                "project_id": target_project,
+                "corpus_id": target_corpus,
+            },
+            "hitl_rows_updated": len(hitl_rows),
+            "active_doc_version_moved": moved_active_version,
+            "qdrant_payload_updated": qdrant_updated,
+            "qdrant_error": qdrant_error,
+        }
+
+    @r.post("/maintenance/cleanup-orphan-chunks")
+    async def cleanup_orphan_chunks(req: CleanupOrphansRequest) -> dict[str, Any]:
+        """Find and optionally delete Qdrant points with no matching WorkflowRun scope.
+
+        A point is considered orphaned when (tenant_id, project_id, doc_id, doc_version)
+        does not exist in workflow_runs.
+        """
+        max_points = max(1, min(int(req.max_points), 200000))
+
+        with session_factory() as session:
+            stmt = select(
+                WorkflowRun.tenant_id,
+                WorkflowRun.project_id,
+                WorkflowRun.doc_id,
+                WorkflowRun.doc_version,
+            )
+            if req.tenant_id:
+                stmt = stmt.where(WorkflowRun.tenant_id == req.tenant_id)
+            if req.project_id:
+                stmt = stmt.where(WorkflowRun.project_id == req.project_id)
+            run_rows = session.execute(stmt).all()
+
+        valid_keys = {
+            (str(t), str(p), str(d), str(v))
+            for t, p, d, v in run_rows
+        }
+
+        collection = _qdrant_collection()
+        scanned = 0
+        orphan_groups: dict[tuple[str, str, str, str], int] = {}
+
+        scope_must_qm: list[qm.FieldCondition] = []
+        if req.tenant_id:
+            scope_must_qm.append(qm.FieldCondition(key="tenant_id", match=qm.MatchValue(value=req.tenant_id)))
+        if req.project_id:
+            scope_must_qm.append(qm.FieldCondition(key="project_id", match=qm.MatchValue(value=req.project_id)))
+        if req.corpus_id:
+            scope_must_qm.append(qm.FieldCondition(key="corpus_id", match=qm.MatchValue(value=req.corpus_id)))
+
+        store = QdrantStore(url=settings.atlas_qdrant_url, api_key=None, collection=collection)
+        points = await run_in_threadpool(
+            store.scroll_points,
+            must=scope_must_qm,
+            limit=500,
+            max_points=max_points,
+        )
+        scanned = len(points)
+
+        for point in points:
+            payload = {}
+            if isinstance(point, dict):
+                payload = point.get("payload") or {}
+            else:
+                payload = getattr(point, "payload", {}) or {}
+
+            tenant_id = payload.get("tenant_id")
+            project_id = payload.get("project_id")
+            doc_id = payload.get("doc_id")
+            doc_version = payload.get("doc_version")
+            if not tenant_id or not project_id or not doc_id or not doc_version:
+                continue
+
+            key = (str(tenant_id), str(project_id), str(doc_id), str(doc_version))
+            if key in valid_keys:
+                continue
+            orphan_groups[key] = orphan_groups.get(key, 0) + 1
+
+        deleted_groups = 0
+        if not req.dry_run and orphan_groups:
+            for tenant_id, project_id, doc_id, doc_version in orphan_groups.keys():
+                must = [
+                    qm.FieldCondition(key="tenant_id", match=qm.MatchValue(value=tenant_id)),
+                    qm.FieldCondition(key="project_id", match=qm.MatchValue(value=project_id)),
+                    qm.FieldCondition(key="doc_id", match=qm.MatchValue(value=doc_id)),
+                    qm.FieldCondition(key="doc_version", match=qm.MatchValue(value=doc_version)),
+                ]
+                if req.corpus_id:
+                    must.append(qm.FieldCondition(key="corpus_id", match=qm.MatchValue(value=req.corpus_id)))
+                await run_in_threadpool(store.delete_by_filter, must=must)
+                deleted_groups += 1
+
+        orphan_points = sum(orphan_groups.values())
+
+        # ── Reverse direction: DB runs with no Qdrant chunks (dangling runs) ──
+        qdrant_keys: set[tuple[str, str, str, str]] = set()
+        for point in points:
+            payload = {}
+            if isinstance(point, dict):
+                payload = point.get("payload") or {}
+            else:
+                payload = getattr(point, "payload", {}) or {}
+            t = payload.get("tenant_id")
+            p = payload.get("project_id")
+            d = payload.get("doc_id")
+            v = payload.get("doc_version")
+            if t and p and d and v:
+                qdrant_keys.add((str(t), str(p), str(d), str(v)))
+
+        dangling_runs_list: list[dict[str, Any]] = []
+        with session_factory() as session:
+            stmt = select(WorkflowRun)
+            if req.tenant_id:
+                stmt = stmt.where(WorkflowRun.tenant_id == req.tenant_id)
+            if req.project_id:
+                stmt = stmt.where(WorkflowRun.project_id == req.project_id)
+            stmt = stmt.order_by(WorkflowRun.id.desc()).limit(200)
+            all_runs = session.execute(stmt).scalars().all()
+            for run in all_runs:
+                rkey = (str(run.tenant_id), str(run.project_id), str(run.doc_id), str(run.doc_version))
+                if rkey not in qdrant_keys:
+                    dangling_runs_list.append({
+                        "run_id": int(run.id),
+                        "tenant_id": str(run.tenant_id),
+                        "project_id": str(run.project_id),
+                        "doc_id": str(run.doc_id),
+                        "doc_version": str(run.doc_version),
+                        "status": str(run.status),
+                        "current_node": str(run.current_node),
+                        "corpus_id": (run.meta or {}).get("corpus_id", ""),
+                        "created_at": run.created_at.isoformat() if run.created_at else None,
+                    })
+                if len(dangling_runs_list) >= 50:
+                    break
+
+        return {
+            "ok": True,
+            "dry_run": bool(req.dry_run),
+            "scanned_points": int(scanned),
+            "max_points": int(max_points),
+            "orphan_groups": int(len(orphan_groups)),
+            "orphan_points_estimated": int(orphan_points),
+            "deleted_groups": int(deleted_groups),
+            "sample_orphans": [
+                {
+                    "tenant_id": k[0],
+                    "project_id": k[1],
+                    "doc_id": k[2],
+                    "doc_version": k[3],
+                    "points": v,
+                }
+                for k, v in list(orphan_groups.items())[:20]
+            ],
+            "dangling_runs": dangling_runs_list,
+        }
+
+    @r.post("/maintenance/adopt-orphan-group")
+    async def adopt_orphan_group(req: AdoptOrphanGroupRequest) -> dict[str, Any]:
+        """Adopt orphaned Qdrant chunks by moving them to a valid scope.
+
+        Creates a synthetic WorkflowRun so the chunks are no longer orphaned,
+        then updates the Qdrant payload scope fields.
+        """
+        target_tenant = _clean_scope_id("tenant_id", req.tenant_id)
+        target_project = _clean_scope_id("project_id", req.project_id)
+        target_corpus = _clean_scope_id("corpus_id", req.corpus_id)
+        old_tenant = req.old_tenant_id.strip()
+        old_project = req.old_project_id.strip()
+        old_doc_id = req.old_doc_id.strip()
+        old_doc_version = req.old_doc_version.strip()
+
+        if not old_tenant or not old_project or not old_doc_id or not old_doc_version:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=400, detail="All old scope fields must be non-empty")
+
+        # Count existing Qdrant points in the old scope.
+        store = QdrantStore(url=settings.atlas_qdrant_url, api_key=None, collection=_qdrant_collection())
+        old_must = [
+            qm.FieldCondition(key="tenant_id", match=qm.MatchValue(value=old_tenant)),
+            qm.FieldCondition(key="project_id", match=qm.MatchValue(value=old_project)),
+            qm.FieldCondition(key="doc_id", match=qm.MatchValue(value=old_doc_id)),
+            qm.FieldCondition(key="doc_version", match=qm.MatchValue(value=old_doc_version)),
+        ]
+        old_points = await run_in_threadpool(
+            store.scroll_points, must=old_must, limit=1, max_points=1,
+        )
+        if not old_points:
+            from fastapi import HTTPException
+            raise HTTPException(
+                status_code=404,
+                detail=f"No Qdrant points found for ({old_tenant}/{old_project}/{old_doc_id}/{old_doc_version})",
+            )
+
+        # Create a synthetic WorkflowRun so this group is no longer orphaned.
+        with session_factory() as session:
+            wf_run = create_workflow_run(
+                session,
+                req=WorkflowRunCreateRequest(
+                    tenant_id=target_tenant,
+                    project_id=target_project,
+                    doc_id=old_doc_id,
+                    doc_version=old_doc_version,
+                    status="complete",
+                    current_node="adopted",
+                    meta={
+                        "source": "orphan_adoption",
+                        "corpus_id": target_corpus,
+                        "adopted_from": {
+                            "tenant_id": old_tenant,
+                            "project_id": old_project,
+                        },
+                    },
+                ),
+            )
+            session.commit()
+            run_id = int(wf_run.id)
+
+        # Update Qdrant payload scope.
+        qdrant_updated = True
+        qdrant_error = ""
+        try:
+            await run_in_threadpool(
+                store.set_payload,
+                payload={
+                    "tenant_id": target_tenant,
+                    "project_id": target_project,
+                    "corpus_id": target_corpus,
+                },
+                must=old_must,
+            )
+        except Exception as exc:  # noqa: BLE001
+            qdrant_updated = False
+            qdrant_error = str(exc)
+
+        return {
+            "ok": True,
+            "run_id": run_id,
+            "doc_id": old_doc_id,
+            "doc_version": old_doc_version,
+            "from": {
+                "tenant_id": old_tenant,
+                "project_id": old_project,
+            },
+            "to": {
+                "tenant_id": target_tenant,
+                "project_id": target_project,
+                "corpus_id": target_corpus,
+            },
+            "qdrant_payload_updated": qdrant_updated,
+            "qdrant_error": qdrant_error,
+        }
+
+    @r.delete("/maintenance/dangling-run/{run_id}")
+    async def delete_dangling_run(run_id: int) -> dict[str, Any]:
+        """Delete a DB-only WorkflowRun that has NO matching Qdrant chunks.
+
+        This is the inverse of orphan cleanup: the run exists in the DB but
+        zero Qdrant points reference its (tenant, project, doc_id, doc_version).
+        """
+        with session_factory() as session:
+            run = session.get(WorkflowRun, run_id)
+            if run is None:
+                from fastapi import HTTPException
+                raise HTTPException(status_code=404, detail=f"WorkflowRun {run_id} not found")
+
+            # Verify it really is dangling (no Qdrant points).
+            store = QdrantStore(url=settings.atlas_qdrant_url, api_key=None, collection=_qdrant_collection())
+            must = [
+                qm.FieldCondition(key="tenant_id", match=qm.MatchValue(value=str(run.tenant_id))),
+                qm.FieldCondition(key="project_id", match=qm.MatchValue(value=str(run.project_id))),
+                qm.FieldCondition(key="doc_id", match=qm.MatchValue(value=str(run.doc_id))),
+                qm.FieldCondition(key="doc_version", match=qm.MatchValue(value=str(run.doc_version))),
+            ]
+            pts = await run_in_threadpool(store.scroll_points, must=must, limit=1, max_points=1)
+            if pts:
+                from fastapi import HTTPException
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Run {run_id} still has Qdrant chunks; not dangling",
+                )
+
+            doc_id = str(run.doc_id)
+            session.delete(run)
+            session.commit()
+
+        return {"ok": True, "deleted_run_id": run_id, "doc_id": doc_id}
 
     @r.delete("/docs/{doc_id}")
     async def delete_doc(

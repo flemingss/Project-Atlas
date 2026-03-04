@@ -123,6 +123,8 @@ class DiagnosticsManager:
         self.logger = logging.getLogger("atlas.diagnostics")
         self.events: list[DiagnosticEvent] = []
         self.metrics: list[PerformanceMetrics] = []
+        self._max_events: int = 5_000
+        self._max_metrics: int = 10_000
 
     def log_event(
         self,
@@ -147,6 +149,8 @@ class DiagnosticsManager:
             trace_data=trace_data or {},
         )
         self.events.append(event)
+        if len(self.events) > self._max_events:
+            self.events = self.events[-self._max_events:]
 
         # Log to standard logger
         log_method = getattr(self.logger, level.lower(), self.logger.info)
@@ -232,6 +236,8 @@ class DiagnosticsManager:
             metadata=metadata or {},
         )
         self.metrics.append(metric)
+        if len(self.metrics) > self._max_metrics:
+            self.metrics = self.metrics[-self._max_metrics:]
 
         if self.trace_level in (TraceLevel.DETAILED, TraceLevel.FULL):
             self.logger.debug(f"Metric: {operation} took {duration_ms:.2f}ms (success={success})")

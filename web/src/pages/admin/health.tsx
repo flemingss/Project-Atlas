@@ -1,17 +1,19 @@
 /**
  * Admin Health page — Pipeline metrics, Looking Glass views, diagnostics.
  */
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   Activity,
   AlertTriangle,
   CheckCircle2,
   Clock,
   Database,
+  FolderSearch,
   HardDrive,
   Loader2,
   RefreshCw,
   Server,
+  Trash2,
   XCircle,
 } from 'lucide-react';
 import { PageShell } from '@/components/layout';
@@ -32,7 +34,17 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { adminApi, type LookingGlassMetrics, type RunSummary, type LookingGlassQdrant } from '@/services/admin-api';
+import { ConfirmDialog } from '@/components/confirm-dialog';
+import {
+  adminApi,
+  type LookingGlassMetrics,
+  type RunSummary,
+  type LookingGlassQdrant,
+  type OrphanGroup,
+  type OrphanScanResult,
+  type DanglingRun,
+} from '@/services/admin-api';
+import { useScopeStore } from '@/stores/scope-store';
 import { toast } from 'sonner';
 
 export function AdminHealthPage() {
@@ -170,8 +182,8 @@ export function AdminHealthPage() {
                 </TableRow>
               ) : (
                 runs.map((r) => (
-                  <TableRow key={r.run_id}>
-                    <TableCell className="font-mono text-xs">{r.run_id}</TableCell>
+                  <TableRow key={r.id}>
+                    <TableCell className="font-mono text-xs">{r.id}</TableCell>
                     <TableCell className="max-w-[160px] truncate font-mono text-xs">
                       {r.doc_id ?? '—'}
                     </TableCell>
@@ -194,6 +206,11 @@ export function AdminHealthPage() {
           </Table>
         </CardContent>
       </Card>
+
+      <Separator />
+
+      {/* Orphan maintenance */}
+      <OrphanSection />
 
       {/* Self-test result */}
       {selfTestResult && (
@@ -264,5 +281,285 @@ function JsonSection({
         </CollapsibleContent>
       </Card>
     </Collapsible>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Orphan Maintenance Section
+// ---------------------------------------------------------------------------
+
+function OrphanSection() {
+  const [scanResult, setScanResult] = useState<OrphanScanResult | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [adopting, setAdopting] = useState<string | null>(null); // key of group being adopted
+
+  // Use the global scope store — whatever the user picked in the sidebar cascade
+  const { workspace, project, collection } = useScopeStore();
+  const scopeReady = !!(workspace && project && collection);
+
+  const scan = useCallback(async () => {
+    setScanning(true);
+    try {
+      const result = await adminApi.scanOrphans();
+      setScanResult(result);
+      // Auto-expand if orphans found
+      if (result.orphan_groups > 0 || (result.dangling_runs?.length ?? 0) > 0) setOpen(true);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Orphan scan failed');
+    } finally {
+      setScanning(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    scan();
+  }, [scan]);
+
+  const handleDeleteAll = async () => {
+    try {
+      const result = await adminApi.deleteOrphans();
+      toast.success(`Deleted ${result.deleted_groups} orphan group(s)`);
+      setScanResult(result);
+      if (result.orphan_groups === 0) setOpen(false);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Delete failed');
+    }
+  };
+
+  const handleAdopt = async (group: OrphanGroup) => {
+    if (!scopeReady) return;
+    const key = `${group.tenant_id}/${group.project_id}/${group.doc_id}/${group.doc_version}`;
+    setAdopting(key);
+    try {
+      const result = await adminApi.adoptOrphanGroup({
+        old_tenant_id: group.tenant_id,
+        old_project_id: group.project_id,
+        old_doc_id: group.doc_id,
+        old_doc_version: group.doc_version,
+        tenant_id: workspace,
+        project_id: project,
+        corpus_id: collection,
+      });
+      if (result.ok) {
+        toast.success(`Adopted ${group.doc_id} → ${workspace}/${project}/${collection}`);
+        scan();
+      } else {
+        toast.error('Adoption failed');
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Adoption failed');
+    } finally {
+      setAdopting(null);
+    }
+  };
+
+  const orphans = scanResult?.sample_orphans ?? [];
+  const danglingRuns = scanResult?.dangling_runs ?? [];
+  const hasOrphans = (scanResult?.orphan_groups ?? 0) > 0;
+  const hasDangling = danglingRuns.length > 0;
+  const hasIssues = hasOrphans || hasDangling;
+
+  const handleDeleteDangling = async (run: DanglingRun) => {
+    try {
+      const result = await adminApi.deleteDanglingRun(run.run_id);
+      if (result.ok) {
+        toast.success(`Deleted dangling run ${run.run_id} (${run.doc_id})`);
+        scan(); // refresh
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Delete failed');
+    }
+  };
+
+  return (
+    <>
+      <Collapsible open={open} onOpenChange={setOpen}>
+        <Card>
+          <CollapsibleTrigger asChild>
+            <CardHeader className="cursor-pointer pb-2">
+              <CardTitle className="flex items-center gap-2 text-sm">
+                <FolderSearch className="size-4" />
+                Orphan maintenance
+                {scanResult && (
+                  <Badge
+                    variant={hasIssues ? 'destructive' : 'outline'}
+                    className="ml-1 text-[10px]"
+                  >
+                    {hasIssues
+                      ? [hasOrphans ? `${scanResult.orphan_groups} orphan` : '', hasDangling ? `${danglingRuns.length} dangling` : ''].filter(Boolean).join(' · ')
+                      : 'Clean'}
+                  </Badge>
+                )}
+                <Badge variant="outline" className="ml-auto text-[10px]">
+                  {open ? 'Collapse' : 'Expand'}
+                </Badge>
+              </CardTitle>
+              <CardDescription className="text-xs">
+                Qdrant chunks with no matching pipeline run, and DB runs with no indexed content.
+              </CardDescription>
+            </CardHeader>
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <CardContent className="space-y-3">
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={scan} disabled={scanning}>
+                  {scanning
+                    ? <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                    : <RefreshCw className="mr-1.5 size-3.5" />}
+                  Re-scan
+                </Button>
+                {hasOrphans && (
+                  <ConfirmDialog
+                    title="Delete all orphan groups?"
+                    description={`This will permanently remove ${scanResult?.orphan_points_estimated ?? 0} orphaned Qdrant points across ${scanResult?.orphan_groups ?? 0} group(s). This cannot be undone.`}
+                    confirmLabel="Delete all"
+                    variant="destructive"
+                    onConfirm={handleDeleteAll}
+                  >
+                    <Button variant="destructive" size="sm">
+                      <Trash2 className="mr-1.5 size-3.5" />
+                      Delete all orphans
+                    </Button>
+                  </ConfirmDialog>
+                )}
+              </div>
+
+              {hasOrphans && (
+                <p className="text-xs text-text-muted">
+                  Adopt target: <span className="font-mono font-semibold">{scopeReady ? `${workspace} / ${project} / ${collection}` : 'no scope selected — pick one in the sidebar'}</span>
+                </p>
+              )}
+
+              {scanResult && scanResult.scanned_points > 0 && (
+                <p className="text-xs text-text-muted">
+                  Scanned {scanResult.scanned_points.toLocaleString()} points (max {scanResult.max_points.toLocaleString()})
+                </p>
+              )}
+
+              {orphans.length === 0 ? (
+                <div className="flex items-center gap-2 py-4 text-sm text-text-muted">
+                  <CheckCircle2 className="size-4 text-state-success" />
+                  No orphaned chunks found
+                </div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="text-xs">Workspace</TableHead>
+                      <TableHead className="text-xs">Project</TableHead>
+                      <TableHead className="text-xs">Doc ID</TableHead>
+                      <TableHead className="text-xs">Version</TableHead>
+                      <TableHead className="text-xs text-right">Points</TableHead>
+                      <TableHead className="text-xs text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {orphans.map((g) => (
+                      <TableRow key={`${g.tenant_id}/${g.project_id}/${g.doc_id}/${g.doc_version}`}>
+                        <TableCell className="font-mono text-xs">{g.tenant_id}</TableCell>
+                        <TableCell className="font-mono text-xs">{g.project_id}</TableCell>
+                        <TableCell className="max-w-[200px] truncate font-mono text-xs" title={g.doc_id}>
+                          {g.doc_id}
+                        </TableCell>
+                        <TableCell className="text-xs">{g.doc_version}</TableCell>
+                        <TableCell className="text-right text-xs">{g.points}</TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-1">
+                            <ConfirmDialog
+                              title={`Adopt ${g.doc_id}?`}
+                              description={`Move to ${workspace} / ${project} / ${collection}. A synthetic pipeline run will be created and Qdrant payloads updated.`}
+                              confirmLabel="Adopt"
+                              onConfirm={() => handleAdopt(g)}
+                            >
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-7 text-xs"
+                                disabled={!scopeReady || adopting === `${g.tenant_id}/${g.project_id}/${g.doc_id}/${g.doc_version}`}
+                              >
+                                {adopting === `${g.tenant_id}/${g.project_id}/${g.doc_id}/${g.doc_version}`
+                                  ? <Loader2 className="mr-1 size-3 animate-spin" />
+                                  : null}
+                                Adopt
+                              </Button>
+                            </ConfirmDialog>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+
+              {scanResult && scanResult.orphan_groups > 20 && (
+                <p className="text-xs text-text-muted">
+                  Showing first 20 of {scanResult.orphan_groups} groups
+                </p>
+              )}
+
+              {/* Dangling runs — DB records with no Qdrant chunks */}
+              <Separator />
+              <h4 className="text-xs font-semibold text-text-secondary">Dangling runs (DB only, no indexed chunks)</h4>
+
+              {danglingRuns.length === 0 ? (
+                <div className="flex items-center gap-2 py-4 text-sm text-text-muted">
+                  <CheckCircle2 className="size-4 text-state-success" />
+                  No dangling runs found
+                </div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="text-xs">Run</TableHead>
+                      <TableHead className="text-xs">Doc ID</TableHead>
+                      <TableHead className="text-xs">Version</TableHead>
+                      <TableHead className="text-xs">Status</TableHead>
+                      <TableHead className="text-xs">Node</TableHead>
+                      <TableHead className="text-xs">Created</TableHead>
+                      <TableHead className="text-xs text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {danglingRuns.map((r) => (
+                      <TableRow key={r.run_id}>
+                        <TableCell className="font-mono text-xs">#{r.run_id}</TableCell>
+                        <TableCell className="max-w-[200px] truncate font-mono text-xs" title={r.doc_id}>
+                          {r.doc_id}
+                        </TableCell>
+                        <TableCell className="text-xs">{r.doc_version}</TableCell>
+                        <TableCell className="text-xs">
+                          <Badge variant={r.status === 'complete' ? 'outline' : 'destructive'} className="text-[10px]">
+                            {r.status}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-xs">{r.current_node}</TableCell>
+                        <TableCell className="text-xs">
+                          {r.created_at ? new Date(r.created_at).toLocaleDateString() : '—'}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <ConfirmDialog
+                            title={`Delete dangling run #${r.run_id}?`}
+                            description={`This will remove the DB record for ${r.doc_id} (v${r.doc_version}). The run has no indexed Qdrant chunks.`}
+                            confirmLabel="Delete"
+                            variant="destructive"
+                            onConfirm={() => handleDeleteDangling(r)}
+                          >
+                            <Button variant="destructive" size="sm" className="h-7 text-xs">
+                              <Trash2 className="mr-1 size-3" />
+                              Delete
+                            </Button>
+                          </ConfirmDialog>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </CardContent>
+          </CollapsibleContent>
+        </Card>
+      </Collapsible>
+    </>
   );
 }

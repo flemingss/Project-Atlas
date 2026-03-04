@@ -88,7 +88,7 @@ export function ReviewPage() {
     try {
       const t = await hitlApi.nextTask({ tenant_id: workspace || undefined });
       openTask(t);
-      toast.success(`Claimed task #${t.task_id}`);
+      toast.success(`Claimed task #${t.id}`);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'No pending tasks');
     }
@@ -98,11 +98,11 @@ export function ReviewPage() {
     if (!activeTask) return;
     setActionInProgress(true);
     try {
-      await hitlApi.completeTask(activeTask.task_id, {
+      await hitlApi.completeTask(activeTask.id, {
         after_md: editedMd,
-        reason: reason || undefined,
+        reason_for_edit: reason || undefined,
       });
-      toast.success(`Task #${activeTask.task_id} completed`);
+      toast.success(`Task #${activeTask.id} completed`);
       setActiveTask(null);
       loadTasks();
     } catch (e) {
@@ -116,8 +116,8 @@ export function ReviewPage() {
     if (!activeTask) return;
     setActionInProgress(true);
     try {
-      await hitlApi.skipTask(activeTask.task_id, { reason: reason || 'Skipped' });
-      toast.success(`Task #${activeTask.task_id} skipped`);
+      await hitlApi.skipTask(activeTask.id, { reason: reason || 'Skipped' });
+      toast.success(`Task #${activeTask.id} skipped`);
       setActiveTask(null);
       loadTasks();
     } catch (e) {
@@ -131,8 +131,8 @@ export function ReviewPage() {
     if (!activeTask) return;
     setActionInProgress(true);
     try {
-      await hitlApi.rejectTask(activeTask.task_id, { reason: reason || undefined });
-      toast.success(`Task #${activeTask.task_id} rejected`);
+      await hitlApi.rejectTask(activeTask.id, { reason: reason || undefined });
+      toast.success(`Task #${activeTask.id} rejected`);
       setActiveTask(null);
       loadTasks();
     } catch (e) {
@@ -146,8 +146,8 @@ export function ReviewPage() {
     if (!activeTask) return;
     setActionInProgress(true);
     try {
-      await hitlApi.resumeTask(activeTask.task_id);
-      toast.success(`Pipeline resumed for task #${activeTask.task_id}`);
+      await hitlApi.resumeTask(activeTask.id);
+      toast.success(`Pipeline resumed for task #${activeTask.id}`);
       setActiveTask(null);
       loadTasks();
     } catch (e) {
@@ -159,6 +159,14 @@ export function ReviewPage() {
 
   const pendingCount = tasks.filter((t) => t.status === 'pending').length;
 
+  // Typed accessors for opaque meta dict
+  const taskMeta = (activeTask?.meta ?? {}) as {
+    refine_attempts?: number;
+    max_refine_attempts?: number;
+    judge_rationale?: string;
+    judge_sub_scores?: Record<string, number>;
+  };
+
   // ─── Detail view ──────────────────────────────────────────────
   if (activeTask) {
     return (
@@ -168,7 +176,7 @@ export function ReviewPage() {
         </Button>
 
         <div className="flex items-center gap-3">
-          <h1 className="text-lg font-bold text-text-primary">Task #{activeTask.task_id}</h1>
+          <h1 className="text-lg font-bold text-text-primary">Task #{activeTask.id}</h1>
           <Badge className={statusColors[activeTask.status] ?? ''}>
             {activeTask.status}
           </Badge>
@@ -178,43 +186,43 @@ export function ReviewPage() {
         <div className="flex flex-wrap gap-4 text-xs text-text-secondary">
           <span><strong>Doc&nbsp;ID:</strong> {activeTask.doc_id}</span>
           <span><strong>Version:</strong> {activeTask.doc_version}</span>
-          {activeTask.chunk_index != null && (
-            <span><strong>Chunk:</strong> {activeTask.chunk_index}</span>
+          {activeTask.chunk_id && (
+            <span><strong>Chunk:</strong> {activeTask.chunk_id}</span>
           )}
-          {activeTask.meta?.judge_score != null && (
-            <span><strong>Score:</strong> {(activeTask.meta.judge_score * 100).toFixed(0)}%</span>
+          {activeTask.judge_score != null && (
+            <span><strong>Score:</strong> {(activeTask.judge_score * 100).toFixed(0)}%</span>
           )}
-          {activeTask.meta?.refine_attempts != null && (
+          {taskMeta.refine_attempts != null && (
             <span>
-              <strong>Refine:</strong> {activeTask.meta.refine_attempts}
-              {activeTask.meta.max_refine_attempts != null && `/${activeTask.meta.max_refine_attempts}`}
+              <strong>Refine:</strong> {taskMeta.refine_attempts}
+              {taskMeta.max_refine_attempts != null && `/${taskMeta.max_refine_attempts}`}
             </span>
           )}
         </div>
 
         {/* Judge rationale */}
-        {activeTask.meta?.judge_rationale && (
+        {taskMeta.judge_rationale && (
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-xs">Judge rationale</CardTitle>
             </CardHeader>
             <CardContent className="text-xs leading-relaxed text-text-secondary">
-              {activeTask.meta.judge_rationale}
+              {taskMeta.judge_rationale}
             </CardContent>
           </Card>
         )}
 
         {/* Sub-scores */}
-        {activeTask.meta?.judge_sub_scores && Object.keys(activeTask.meta.judge_sub_scores).length > 0 && (
+        {taskMeta.judge_sub_scores && Object.keys(taskMeta.judge_sub_scores).length > 0 && (
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-xs">Sub-scores</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="flex flex-wrap gap-2">
-                {Object.entries(activeTask.meta.judge_sub_scores).map(([k, v]) => (
+                {Object.entries(taskMeta.judge_sub_scores).map(([k, v]) => (
                   <Badge key={k} variant="outline" className="text-[11px]">
-                    {k}: {((v as number) * 100).toFixed(0)}%
+                    {k}: {(v * 100).toFixed(0)}%
                   </Badge>
                 ))}
               </div>
@@ -362,18 +370,18 @@ export function ReviewPage() {
               ) : (
                 tasks.map((t) => (
                   <TableRow
-                    key={t.task_id}
+                    key={t.id}
                     className="cursor-pointer"
                     onClick={() => openTask(t)}
                   >
-                    <TableCell className="font-mono text-xs">#{t.task_id}</TableCell>
+                    <TableCell className="font-mono text-xs">#{t.id}</TableCell>
                     <TableCell className="max-w-[150px] truncate font-mono text-xs">{t.doc_id}</TableCell>
                     <TableCell className="text-xs">
-                      {t.chunk_index != null ? `#${t.chunk_index}` : '—'}
+                      {t.chunk_id ? `#${t.chunk_id}` : '—'}
                     </TableCell>
                     <TableCell className="text-xs">
-                      {t.meta?.judge_score != null
-                        ? `${(t.meta.judge_score * 100).toFixed(0)}%`
+                      {t.judge_score != null
+                        ? `${(t.judge_score * 100).toFixed(0)}%`
                         : '—'}
                     </TableCell>
                     <TableCell>

@@ -18,13 +18,63 @@ from atlas.settings import Settings
 from atlas.vectorstore.qdrant_store import QdrantStore
 
 
-def _frontmatter_yaml(meta: dict[str, Any]) -> str:
+def build_frontmatter(meta: dict[str, Any]) -> str:
+    """Build a YAML frontmatter block from a metadata dict.
+
+    The dict is intentionally open-ended so callers can add custom
+    fields (tags, labels, etc.) without changing this function.
+    """
     lines: list[str] = ["---"]
     for k, v in meta.items():
+        if v is None:
+            continue
         # YAML accepts JSON scalars; this avoids adding PyYAML.
         lines.append(f"{k}: {json.dumps(v, ensure_ascii=False)}")
     lines.append("---")
     return "\n".join(lines) + "\n\n"
+
+
+# keep the old private name as an alias for any in-tree callers
+_frontmatter_yaml = build_frontmatter
+
+
+def build_index_md(
+    docs: list[dict[str, Any]],
+    *,
+    exported_at: str | None = None,
+    title: str = "Export Inventory",
+) -> str:
+    """Build an INDEX.md markdown document inventorying exported files.
+
+    Each entry in *docs* should have at least ``doc_id``; other supported
+    keys: ``doc_version``, ``workspace``, ``project``, ``collection``,
+    ``chunks``, ``file``.
+    """
+    parts: list[str] = [f"# {title}", ""]
+    if exported_at:
+        parts.append(f"Exported: {exported_at}  ")
+    parts.append(f"Total documents: {len(docs)}")
+    parts.append("")
+    parts.append("| # | Doc ID | Version | Workspace | Project | Collection | Chunks | File |")
+    parts.append("|---|--------|---------|-----------|---------|------------|--------|------|")
+    for i, d in enumerate(docs, start=1):
+        def _cell(key: str) -> str:
+            v = d.get(key)
+            return str(v) if v is not None else ""
+        row = (
+            f"| {i} "
+            f"| {_cell('doc_id')} "
+            f"| {_cell('doc_version')} "
+            f"| {_cell('workspace')} "
+            f"| {_cell('project')} "
+            f"| {_cell('collection')} "
+            f"| {_cell('chunks')} "
+            f"| {_cell('file')} |"
+        )
+        parts.append(row)
+    parts.append("")
+    return "\n".join(parts)
+
 
 
 def _as_point_id(p: Any) -> str:
@@ -235,7 +285,7 @@ async def export_doc_package(
         except Exception:
             pass
 
-    frontmatter = _frontmatter_yaml(
+    frontmatter = build_frontmatter(
         {
             "exported_at": exported_at,
             "tenant_id": tenant_id,
@@ -381,10 +431,11 @@ async def export_doc_lean(
     doc_id: str,
     doc_version: str | None = None,
 ) -> bytes:
-    """Lean export: a ZIP containing only ``document.md`` with no Atlas metadata.
+    """Lean export: a ZIP containing ``document.md`` with YAML frontmatter.
 
     The resulting ZIP is suitable for dropping directly into another RAG
-    pipeline — no manifest, no artifacts, no index JSON.
+    pipeline — no manifest, no artifacts, no index JSON.  Frontmatter
+    carries scope metadata so downstream systems can infer provenance.
     """
     content = await get_doc_markdown(
         session_factory=session_factory,
@@ -395,7 +446,20 @@ async def export_doc_lean(
         doc_version=doc_version,
     )
 
+    exported_at = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    frontmatter = build_frontmatter(
+        {
+            "exported_at": exported_at,
+            "tenant_id": tenant_id,
+            "project_id": project_id,
+            "corpus_id": corpus_id,
+            "doc_id": doc_id,
+            "doc_version": doc_version,
+        }
+    )
+    enriched = frontmatter + (content or "")
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as z:
-        z.writestr("document.md", content or "")
+        z.writestr("document.md", enriched)
     return buf.getvalue()

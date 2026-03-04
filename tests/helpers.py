@@ -150,6 +150,18 @@ class FakeQdrantStore:
                 p_payload.update(payload or {})
                 p["payload"] = p_payload
 
+    def delete_by_filter(self, *, must: list[Any]) -> None:
+        to_delete: list[str] = []
+        for pid, point in FakeQdrantStore._storage.items():
+            if self._matches(point.get("payload") or {}, must):
+                to_delete.append(pid)
+        for pid in to_delete:
+            FakeQdrantStore._storage.pop(pid, None)
+        FakeQdrantStore.last_points = [
+            p for p in FakeQdrantStore.last_points
+            if str(getattr(p, "id", "")) not in set(to_delete)
+        ]
+
     def search(
         self, *, query_vector: list[float], limit: int, must: list[Any]
     ) -> list[QdrantHit]:

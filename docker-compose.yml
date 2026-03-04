@@ -27,6 +27,13 @@ services:
       - "16334:6334"
     volumes:
       - atlas_qdrant:/qdrant/storage
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:6333/readyz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   atlas:
     build:
@@ -39,7 +46,7 @@ services:
       postgres:
         condition: service_healthy
       qdrant:
-        condition: service_started
+        condition: service_healthy
     environment:
       ATLAS_ENV: ${ATLAS_ENV:-dev}
       ATLAS_LOG_LEVEL: ${ATLAS_LOG_LEVEL:-INFO}
@@ -58,6 +65,18 @@ services:
       ATLAS_QDRANT_URL: http://qdrant:6333
     ports:
       - "28080:8080"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "25m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import httpx; r=httpx.get('http://localhost:8080/health',timeout=3); exit(0 if r.status_code==200 else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     volumes:
       - ./artifacts:/app/artifacts
 

@@ -52,6 +52,14 @@ export interface ProcessPageResponse {
   finish_reason?: string | null;
 }
 
+export interface ProcessAllResponse {
+  pages_processed: number;
+  pages_skipped: number;
+  pages_failed: number;
+  errors: Record<number, string>;
+  stitch: StitchResponse | null;
+}
+
 export interface StitchResponse {
   markdown: string;
   page_count: number;
@@ -64,12 +72,16 @@ export interface StitchResponse {
 export interface CommitRequest {
   markdown?: string | null;
   feed_pipeline?: boolean;
+  tenant_id?: string;
+  project_id?: string;
+  corpus_id?: string;
 }
 
 export interface CommitResponse {
   run_id: number | null;
   path: string;
   chars: number;
+  chunks_upserted: number;
   message: string;
 }
 
@@ -271,6 +283,14 @@ export const vlmIngestApi = {
       method: 'POST',
       headers: jsonHeaders(),
       body: JSON.stringify(req),
+    });
+  },
+
+  /** Process ALL pending pages sequentially on the server, then auto-stitch. */
+  processAll(sid: string) {
+    return apiFetch<ProcessAllResponse>(`${BASE}/${sid}/process-all`, {
+      method: 'POST',
+      headers: jsonHeaders(),
     });
   },
 

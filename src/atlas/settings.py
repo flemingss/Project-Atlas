@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     atlas_default_project_id: str = "default"
     atlas_default_corpus_id: str = "default"
 
+    # Maintenance: periodic orphan Qdrant chunk cleanup.
+    atlas_orphan_cleanup_enabled: bool = True
+    atlas_orphan_cleanup_interval_s: int = 24 * 60 * 60
+    atlas_orphan_cleanup_max_points: int = 5000
+    atlas_orphan_cleanup_grace_hours: int = 48  # hours before auto-deleting orphan groups
+
     atlas_db_url: str = "postgresql+psycopg://atlas:atlas@localhost:5432/atlas"
     atlas_qdrant_url: str = "http://localhost:6333"
     atlas_redis_url: str = "redis://localhost:6379/0"

@@ -223,3 +223,20 @@ class TestBuildVisionMessages:
         text_block = msgs[1]["content"][1]
         assert "## Section" in text_block["text"]
         assert "Content here." in text_block["text"]
+
+    def test_default_prompt_heading_hierarchy(self) -> None:
+        msgs = build_vision_messages(
+            page_image_uri="data:image/png;base64,abc",
+            current_markdown="",
+        )
+        system = msgs[0]["content"]
+        # Numbered section hierarchy
+        assert "# 1" in system
+        assert "## 1.1" in system
+        assert "### 1.1.1" in system
+        # Appendix hierarchy
+        assert "# A" in system
+        assert "## A.1" in system
+        assert "### A.1.1" in system
+        # General heading rules
+        assert "heading" in system.lower()

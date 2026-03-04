@@ -298,13 +298,13 @@ export function AdminCleanupPage() {
                 </TableRow>
               ) : (
                 feedbackList.map((fb) => (
-                  <TableRow key={fb.feedback_id}>
-                    <TableCell className="font-mono text-xs">{fb.feedback_id}</TableCell>
+                  <TableRow key={fb.id}>
+                    <TableCell className="font-mono text-xs">{fb.id}</TableCell>
                     <TableCell className="max-w-[120px] truncate font-mono text-xs">{fb.doc_id}</TableCell>
                     <TableCell>
                       <Badge variant="secondary" className="text-[11px]">{fb.category}</Badge>
                     </TableCell>
-                    <TableCell className="max-w-[200px] truncate text-xs">{fb.comment ?? '—'}</TableCell>
+                    <TableCell className="max-w-[200px] truncate text-xs">{fb.description ?? '—'}</TableCell>
                     <TableCell className="text-xs text-text-muted">
                       {fb.created_at ? new Date(fb.created_at).toLocaleDateString() : '—'}
                     </TableCell>
@@ -314,7 +314,7 @@ export function AdminCleanupPage() {
                         description="Remove this feedback entry?"
                         confirmLabel="Delete"
                         variant="destructive"
-                        onConfirm={() => handleDeleteFeedback(fb.feedback_id)}
+                        onConfirm={() => handleDeleteFeedback(fb.id)}
                       >
                         <Button variant="ghost" size="icon" className="size-6">
                           <Trash2 className="size-3" />

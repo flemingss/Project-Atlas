@@ -20,6 +20,7 @@ roles:
   judge_model:
     provider: lmstudio
     model_name: "qwen3-14b"
+    think_tag: "<think>"
     params:
       temperature: 0.0
       max_tokens: 500
@@ -27,6 +28,7 @@ roles:
   refine_model:
     provider: lmstudio
     model_name: "qwen3-8b"
+    think_tag: "<think>"
     params:
       temperature: 0.2
 
@@ -38,6 +40,7 @@ roles:
   metadata_tier1_model:
     provider: lmstudio
     model_name: "qwen3-14b"
+    think_tag: "<think>"
     params:
       temperature: 0.0
       max_tokens: 1000
@@ -45,6 +48,7 @@ roles:
   metadata_tier2_model:
     provider: lmstudio
     model_name: "qwen3-14b"
+    think_tag: "<think>"
     params:
       temperature: 0.0
       max_tokens: 1000
@@ -61,6 +65,7 @@ roles:
   vision_model:
     provider: lmstudio
     model_name: "qwen2.5-vl-32b"
+    think_tag: "<think>"
     params:
       temperature: 0.1
       max_tokens: 4096

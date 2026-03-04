@@ -7,29 +7,25 @@ import { apiFetch } from './shared';
 // ── Types ─────────────────────────────────────────────────────────
 
 export interface HitlTask {
-  task_id: number;
+  id: number;
+  run_id: number;
+  tenant_id: string;
+  project_id: string;
   doc_id: string;
   doc_version: string;
-  chunk_id?: string;
-  chunk_index?: number;
-  status: 'pending' | 'completed' | 'skipped' | 'rejected';
-  before_md?: string;
-  after_md?: string;
-  reason?: string;
-  created_at?: string;
-  updated_at?: string;
-  meta?: {
-    source?: string;
-    judge_score?: number;
-    judge_sub_scores?: Record<string, number>;
-    judge_rationale?: string;
-    score_history?: number[];
-    refine_attempts?: number;
-    max_refine_attempts?: number;
-    last_improvements?: string[];
-    is_sensitive?: boolean;
-    [key: string]: unknown;
-  };
+  chunk_id: string;
+  priority_score: number;
+  is_sensitive: boolean;
+  judge_score: number;
+  status: string;
+  assigned_to: string;
+  before_md: string;
+  after_md: string;
+  reason_for_edit: string;
+  meta: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
 }
 
 export interface HitlTaskListResponse {
@@ -62,8 +58,8 @@ export const hitlApi = {
   },
 
   /** Complete a task with edited markdown and reason. */
-  completeTask(taskId: number, payload: { after_md: string; reason?: string }) {
-    return apiFetch<{ status: string }>(`/admin/hitl/tasks/${taskId}/complete`, {
+  completeTask(taskId: number, payload: { after_md: string; reason_for_edit?: string }) {
+    return apiFetch<HitlTask>(`/admin/hitl/tasks/${taskId}/complete`, {
       method: 'POST',
       body: JSON.stringify(payload),
     });
@@ -71,7 +67,7 @@ export const hitlApi = {
 
   /** Skip a task with a reason. */
   skipTask(taskId: number, payload: { reason: string }) {
-    return apiFetch<{ status: string }>(`/admin/hitl/tasks/${taskId}/skip`, {
+    return apiFetch<HitlTask>(`/admin/hitl/tasks/${taskId}/skip`, {
       method: 'POST',
       body: JSON.stringify(payload),
     });
@@ -79,7 +75,7 @@ export const hitlApi = {
 
   /** Reject a task. */
   rejectTask(taskId: number, payload?: { reason?: string }) {
-    return apiFetch<{ status: string }>(`/admin/hitl/tasks/${taskId}/reject`, {
+    return apiFetch<HitlTask>(`/admin/hitl/tasks/${taskId}/reject`, {
       method: 'POST',
       body: JSON.stringify(payload ?? {}),
     });
@@ -87,7 +83,7 @@ export const hitlApi = {
 
   /** Resume the pipeline for a completed task. */
   resumeTask(taskId: number) {
-    return apiFetch<{ status: string; message?: string }>(`/admin/hitl/tasks/${taskId}/resume`, {
+    return apiFetch<Record<string, unknown>>(`/admin/hitl/tasks/${taskId}/resume`, {
       method: 'POST',
     });
   },

@@ -159,7 +159,13 @@ def build_vision_messages(
             "- Use proper markdown: headings (#), lists (-/1.), tables (|), etc.\n"
             "- Do NOT add commentary, preamble, or postamble.\n"
             "- Do NOT include content from other pages.\n"
-            "- Output ONLY the corrected markdown, no code fences."
+            "- Output ONLY the corrected markdown, no code fences.\n\n"
+            "Heading formatting:\n"
+            "- Reproduce the document's heading hierarchy using markdown heading levels.\n"
+            "- Numbered sections: # 1  Title, ## 1.1  Subtitle, ### 1.1.1  Sub-subtitle, etc.\n"
+            "- Appendix sections: # A  Title, ## A.1  Subtitle, ### A.1.1  Sub-subtitle, etc.\n"
+            "- Always include the section number/letter as part of the heading text.\n"
+            "- Match the depth of `#` marks to the nesting level visible in the document."
         )
 
     messages = [

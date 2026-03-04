@@ -381,6 +381,49 @@ field with backend, OCR confidence, layout confidence, OCR coverage, and
 scanned-document detection. The UI displays these metrics in the ingest result
 card.
 
+### `pdf_parser.vlm` — Vision-Language Model Parsing
+
+When `backend: vision` is selected, pages are rendered as images and processed
+individually by a VLM (configured via the `vision_model` role in `models.yaml`).
+No traditional OCR or layout detection is used — the VLM extracts markdown
+directly from the page screenshot.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `backend` | `str` | `"auto"` | Set to `"vision"` to enable VLM-first parsing. |
+| `vlm.dpi` | `int` | `200` | Rendering DPI for page screenshots sent to the VLM. |
+| `vlm.crop_top` | `float` | `0.04` | Fraction of page height to crop from the top (header removal). |
+| `vlm.crop_bottom` | `float` | `0.04` | Fraction of page height to crop from the bottom (footer removal). |
+| `vlm.crop_left` | `float` | `0.0` | Fraction of page width to crop from the left. |
+| `vlm.crop_right` | `float` | `0.0` | Fraction of page width to crop from the right. |
+| `vlm.system_prompt` | `str` | *(built-in)* | Custom system prompt for the VLM. When omitted, uses the built-in prompt with heading hierarchy rules. |
+
+```yaml
+pdf_parser:
+  backend: vision
+  vlm:
+    dpi: 200
+    crop_top: 0.04
+    crop_bottom: 0.04
+    system_prompt: null  # uses default prompt with heading formatting rules
+```
+
+**Heading formatting** — the default system prompt instructs the VLM to
+reproduce the document's heading hierarchy faithfully:
+- Numbered sections: `# 1  Title`, `## 1.1  Subtitle`, `### 1.1.1  Sub-subtitle`
+- Appendix sections: `# A  Title`, `## A.1  Subtitle`, `### A.1.1  Sub-subtitle`
+- `#` depth matches the nesting level visible in the document.
+
+**Interactive mode** — the `/api/editor/vlm-ingest` endpoints provide a
+wizard-style workflow: start session, configure per-page settings, process
+pages one-at-a-time or in bulk (`process-all`), review/correct, stitch, commit.
+The bulk endpoint processes all pending pages sequentially server-side and
+auto-stitches the result.
+
+**Headless mode** — when triggered via pipeline config, pages are processed
+sequentially with no cross-page context and stitched deterministically.
+Export a config JSON from an interactive session for headless reuse.
+
 ---
 
 ## Cleanup Rules — Full Reference

@@ -51,6 +51,7 @@ from atlas.workflow_ledger import (
     list_artifact_refs,
     WorkflowRunCreateRequest,
 )
+from atlas.pipeline.runner import ingest_text_via_pipeline
 
 log = logging.getLogger(__name__)
 diag_log = logging.getLogger("uvicorn.error")
@@ -129,16 +130,29 @@ class StitchResponse(BaseModel):
     headings_merged: int
 
 
+class ProcessAllResponse(BaseModel):
+    """Result of bulk (server-side) page processing."""
+    pages_processed: int
+    pages_skipped: int
+    pages_failed: int
+    errors: dict[int, str] = {}  # page_num → error message
+    stitch: StitchResponse | None = None  # auto-stitched result
+
+
 class CommitRequest(BaseModel):
-    """Commit stitched markdown — save as artifact and optionally feed into pipeline."""
+    """Commit stitched markdown — save as artifact and feed into pipeline."""
     markdown: str | None = None  # None = use stitched result
-    feed_pipeline: bool = False  # future: trigger cleanup → judge → etc.
+    feed_pipeline: bool = True   # chunk, embed, upsert to Qdrant after saving
+    tenant_id: str | None = None
+    project_id: str | None = None
+    corpus_id: str | None = None
 
 
 class CommitResponse(BaseModel):
     run_id: int | None
     path: str
     chars: int
+    chunks_upserted: int = 0
     message: str
 
 
@@ -622,6 +636,117 @@ def make_vlm_ingest_router(
             )
 
     # ------------------------------------------------------------------
+    # Bulk process all pages (server-side sequential)
+    # ------------------------------------------------------------------
+
+    @r.post("/{session_id}/process-all", response_model=ProcessAllResponse)
+    async def process_all_pages(session_id: str) -> ProcessAllResponse:
+        """Process ALL pending enabled pages sequentially, then auto-stitch.
+
+        Pages are processed one at a time to prevent VLM hallucination.
+        When all pages are done the result is automatically stitched.
+        Poll ``GET /{session_id}`` for progress during processing.
+        """
+        s = _get_session(session_id)
+        s.status = SessionStatus.PROCESSING
+
+        resolved, provider = _resolve_vision_model()
+
+        processed = 0
+        skipped = 0
+        failed = 0
+        errors: dict[int, str] = {}
+
+        for p in s.enabled_pages():
+            if s.page_statuses.get(p) in (PageStatus.DONE, PageStatus.SKIPPED):
+                continue  # already finished
+
+            settings = s.config.settings_for_page(p)
+            if not settings.enabled:
+                s.skip_page(p)
+                skipped += 1
+                continue
+
+            s.page_statuses[p] = PageStatus.PROCESSING
+
+            try:
+                crop = CropMargins(
+                    top=settings.crop_top,
+                    bottom=settings.crop_bottom,
+                    left=settings.crop_left,
+                    right=settings.crop_right,
+                )
+                page_uri = await run_in_threadpool(
+                    render_page_base64, s.pdf_bytes, p, dpi=settings.dpi, crop=crop,
+                )
+
+                raw_messages = build_vision_messages(
+                    page_image_uri=page_uri,
+                    current_markdown="",
+                    system_prompt=s.config.system_prompt,
+                )
+                messages = [
+                    ChatMessage(role=m["role"], content=m["content"])
+                    for m in raw_messages
+                ]
+
+                log.info(
+                    "VLM bulk page: sid=%s page=%d/%d model=%s",
+                    session_id, p, s.page_count, resolved.model_name,
+                )
+
+                corrected = await provider.chat(
+                    model=resolved.model_name,
+                    messages=messages,
+                    params=resolved.params,
+                )
+
+                result = PageResult(
+                    page_num=p,
+                    markdown=corrected,
+                    model=resolved.model_name,
+                    dpi=settings.dpi,
+                    crop_top=settings.crop_top,
+                    crop_bottom=settings.crop_bottom,
+                )
+                s.set_page_result(p, result)
+                processed += 1
+
+            except Exception as exc:
+                error_msg = str(exc)
+                log.error("VLM bulk page %d failed: %s", p, error_msg, exc_info=True)
+                s.set_page_error(p, error_msg)
+                errors[p] = error_msg
+                failed += 1
+
+        # Auto-stitch if any pages succeeded
+        stitch_resp: StitchResponse | None = None
+        if any(st == PageStatus.DONE for st in s.page_statuses.values()):
+            s.status = SessionStatus.STITCHING
+            sr = s.stitch()
+            stitch_resp = StitchResponse(
+                markdown=sr.markdown,
+                page_count=sr.page_count,
+                pages_processed=sr.pages_processed,
+                duplicate_lines_removed=sr.duplicate_lines_removed,
+                tables_merged=sr.tables_merged,
+                headings_merged=sr.headings_merged,
+            )
+
+        log.info(
+            "VLM bulk complete: sid=%s processed=%d skipped=%d failed=%d",
+            session_id, processed, skipped, failed,
+        )
+
+        return ProcessAllResponse(
+            pages_processed=processed,
+            pages_skipped=skipped,
+            pages_failed=failed,
+            errors=errors,
+            stitch=stitch_resp,
+        )
+
+    # ------------------------------------------------------------------
     # Stitch + commit
     # ------------------------------------------------------------------
 
@@ -653,9 +778,13 @@ def make_vlm_ingest_router(
 
     @r.post("/{session_id}/commit", response_model=CommitResponse)
     async def commit_session(session_id: str, req: CommitRequest) -> CommitResponse:
-        """Save the stitched markdown as an artifact.
+        """Save the stitched markdown as an artifact, then optionally feed
+        through the pipeline to chunk, embed, and upsert to Qdrant.
 
-        Optionally uses the session's stitched result or accepts explicit markdown.
+        When ``feed_pipeline`` is True (the default), the committed markdown
+        is pushed through the ingest pipeline with ``is_hitl_resume=True``
+        so cleanup/judge/refine are skipped — the human already approved
+        the content during VLM review.
         """
         import hashlib
 
@@ -669,7 +798,26 @@ def make_vlm_ingest_router(
                 )
             md = s.stitched.markdown
 
-        # Determine where to save — auto-create a run for uploaded PDFs
+        # ── Resolve scope ────────────────────────────────────────────
+        tenant_id = (req.tenant_id or settings.atlas_default_tenant_id).strip()
+        project_id = (req.project_id or settings.atlas_default_project_id).strip()
+        corpus_id = (req.corpus_id or settings.atlas_default_corpus_id).strip()
+        doc_id = s.source_filename
+        doc_version = "1"
+
+        # For run-based sessions, inherit scope from the existing run.
+        if s.run_id is not None:
+            with session_factory() as db_session:
+                existing_run = get_workflow_run(db_session, run_id=s.run_id)
+                if existing_run is not None:
+                    tenant_id = existing_run.tenant_id or tenant_id
+                    project_id = existing_run.project_id or project_id
+                    doc_id = existing_run.doc_id or doc_id
+                    doc_version = existing_run.doc_version or doc_version
+                    meta = existing_run.meta or {}
+                    corpus_id = meta.get("corpus_id", corpus_id)
+
+        # ── Ensure a WorkflowRun exists ──────────────────────────────
         run_id = s.run_id
         if run_id is None:
             # Create a workflow run so there's somewhere to save artifacts
@@ -677,16 +825,17 @@ def make_vlm_ingest_router(
                 wf_run = create_workflow_run(
                     db_session,
                     req=WorkflowRunCreateRequest(
-                        tenant_id="default",
-                        project_id="vlm-ingest",
-                        doc_id=s.source_filename,
-                        doc_version="1",
+                        tenant_id=tenant_id,
+                        project_id=project_id,
+                        doc_id=doc_id,
+                        doc_version=doc_version,
                         status="complete",
                         current_node="vlm_ingest",
                         meta={
                             "source": "vlm_ingest_upload",
                             "session_id": s.session_id,
                             "page_count": s.page_count,
+                            "corpus_id": corpus_id,
                         },
                     ),
                 )
@@ -711,6 +860,7 @@ def make_vlm_ingest_router(
             s.run_id = run_id
             log.info("Auto-created workflow run %d for upload session %s", run_id, s.session_id)
 
+        # ── Save VLM markdown artifact ───────────────────────────────
         save_dir = artifacts_dir / f"runs/{run_id}/vlm_ingest"
         save_dir.mkdir(parents=True, exist_ok=True)
         save_path = save_dir / "markdown.md"
@@ -747,11 +897,58 @@ def make_vlm_ingest_router(
         s.status = SessionStatus.COMMITTED
         log.info("VLM ingest committed: sid=%s run=%d path=%s chars=%d", s.session_id, run_id, rel_path, len(md))
 
+        # ── Feed through pipeline (chunk → embed → Qdrant) ──────────
+        chunks_upserted = 0
+        if req.feed_pipeline:
+            try:
+                pipeline_result = await ingest_text_via_pipeline(
+                    config_manager=config_manager,
+                    session_factory=session_factory,
+                    existing_run_id=run_id,
+                    doc_id=doc_id,
+                    doc_version=doc_version,
+                    tenant_id=tenant_id,
+                    project_id=project_id,
+                    corpus_id=corpus_id,
+                    text=md,
+                    source_mime_type="text/markdown",
+                    is_finalized=True,
+                    is_sensitive=False,
+                    metadata={
+                        "source": "vlm_ingest",
+                        "session_id": s.session_id,
+                        "vlm_config": s.config.to_dict(),
+                    },
+                    is_hitl_resume=True,
+                )
+                chunks_upserted = pipeline_result.get("chunks_upserted", 0)
+                log.info(
+                    "VLM ingest pipeline complete: run=%d chunks=%d",
+                    run_id, chunks_upserted,
+                )
+            except Exception:
+                log.exception("Pipeline processing failed for VLM commit run=%d", run_id)
+                # The artifact is already saved; report partial success.
+                return CommitResponse(
+                    run_id=run_id,
+                    path=rel_path,
+                    chars=len(md),
+                    chunks_upserted=0,
+                    message="Artifact saved but pipeline processing failed — see server logs.",
+                )
+
+        msg = "VLM ingest committed"
+        if chunks_upserted:
+            msg += f" — {chunks_upserted} chunks indexed"
+        else:
+            msg += " successfully"
+
         return CommitResponse(
             run_id=run_id,
             path=rel_path,
             chars=len(md),
-            message="VLM ingest committed successfully",
+            chunks_upserted=chunks_upserted,
+            message=msg,
         )
 
     # ------------------------------------------------------------------
@@ -811,4 +1008,6 @@ def make_vlm_ingest_router(
             )
         return {"page_num": page_num, "status": "updated"}
 
+    # Expose the registry for maintenance access (e.g. periodic eviction).
+    r._vlm_session_registry = registry  # type: ignore[attr-defined]
     return r

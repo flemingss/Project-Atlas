@@ -15,6 +15,7 @@ class ResolvedModel:
     provider_name: str
     model_name: str
     params: dict[str, Any]
+    think_tag: str | None = None
 
 
 class ModelRegistry:
@@ -27,11 +28,18 @@ class ModelRegistry:
         if role not in roles:
             raise KeyError(f"Unknown model role: {role}")
         entry = roles[role]
+        think_tag = entry.get("think_tag")
+        params = dict(entry.get("params", {}) or {})
+        # Inject think_tag into params so it flows through provider.chat()
+        # to _do_chat(), which pops it before sending to the LLM API.
+        if think_tag:
+            params["think_tag"] = think_tag
         return ResolvedModel(
             role=role,
             provider_name=entry["provider"],
             model_name=entry["model_name"],
-            params=entry.get("params", {}) or {},
+            params=params,
+            think_tag=think_tag,
         )
 
     def provider_for(self, provider_name: str) -> ILlmProvider:

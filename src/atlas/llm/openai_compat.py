@@ -33,23 +33,45 @@ def _is_retryable_http(exc: BaseException) -> bool:
 _THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 _THINK_TAG_UNCLOSED_RE = re.compile(r"<think>(?:(?!</think>).)*$", re.DOTALL)
 
+# Cache for dynamically compiled tag regexes (keyed by tag name).
+_TAG_RE_CACHE: dict[str, tuple[re.Pattern[str], re.Pattern[str]]] = {}
 
-def strip_reasoning_tags(text: str) -> str:
-    """Remove ``<think>…</think>`` reasoning blocks from model output.
+
+def _get_tag_patterns(tag: str) -> tuple[re.Pattern[str], re.Pattern[str]]:
+    """Return compiled (closed, unclosed) regex pair for a given tag name."""
+    if tag not in _TAG_RE_CACHE:
+        # tag is e.g. "think" or "reasoning" — inner content of angle brackets
+        closed = re.compile(rf"<{tag}>.*?</{tag}>", re.DOTALL)
+        unclosed = re.compile(rf"<{tag}>(?:(?!</{tag}>).)*$", re.DOTALL)
+        _TAG_RE_CACHE[tag] = (closed, unclosed)
+    return _TAG_RE_CACHE[tag]
+
+
+def strip_reasoning_tags(text: str, *, tag: str = "think") -> str:
+    """Remove reasoning blocks wrapped in ``<tag>…</tag>`` from model output.
 
     Reasoning models (Qwen3, DeepSeek-R1, QwQ) emit chain-of-thought
     inside ``<think>`` tags by default.  These blocks consume the
     ``max_tokens`` budget and corrupt downstream consumers that expect
     clean markdown or structured output.
 
-    Handles both properly closed ``<think>…</think>`` blocks and
-    unclosed ``<think>…`` blocks (from max_tokens truncation).
+    Parameters
+    ----------
+    text:
+        Raw model output.
+    tag:
+        The XML tag name to strip (default ``"think"``).  Pass e.g.
+        ``"reasoning"`` for models that use ``<reasoning>…</reasoning>``.
 
-    Returns the text with all ``<think>`` blocks removed and leading
+    Handles both properly closed ``<tag>…</tag>`` blocks and
+    unclosed ``<tag>…`` blocks (from max_tokens truncation).
+
+    Returns the text with all reasoning blocks removed and leading
     whitespace stripped.
     """
-    cleaned = _THINK_TAG_RE.sub("", text)
-    cleaned = _THINK_TAG_UNCLOSED_RE.sub("", cleaned)
+    closed_re, unclosed_re = _get_tag_patterns(tag)
+    cleaned = closed_re.sub("", text)
+    cleaned = unclosed_re.sub("", cleaned)
     return cleaned.strip()
 
 
@@ -71,6 +93,14 @@ class OpenAICompatibleProvider(ILlmProvider):
     # ------------------------------------------------------------------
 
     async def _do_chat(self, *, model: str, payload: dict[str, Any]) -> str:
+        # Extract think_tag before sending — it's an Atlas-level param,
+        # not part of the OpenAI API spec.
+        think_tag: str | None = payload.pop("think_tag", None)
+        # Derive the inner tag name (e.g. "think" from "<think>")
+        tag_name: str = "think"  # default fallback for safety-net stripping
+        if think_tag:
+            tag_name = think_tag.strip("<>/ ")
+
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 resp = await client.post(f"{self._v1}/chat/completions", json=payload)
@@ -108,13 +138,24 @@ class OpenAICompatibleProvider(ILlmProvider):
                 payload.get("model", "unknown"),
             )
 
-        # Strip <think> reasoning blocks from models like Qwen3 / DeepSeek-R1
-        cleaned = strip_reasoning_tags(raw_content)
+        # Strip reasoning blocks using the configured tag (or default <think>).
+        cleaned = strip_reasoning_tags(raw_content, tag=tag_name)
         if len(cleaned) != len(raw_content):
             stripped_chars = len(raw_content) - len(cleaned)
+            # Log the thinking content at DEBUG for diagnostics
+            if log.isEnabledFor(logging.DEBUG):
+                thinking_content = raw_content[:len(raw_content) - len(cleaned)]
+                log.debug(
+                    "Thinking content (%d chars) from %s: %.500s%s",
+                    stripped_chars,
+                    payload.get("model", "unknown"),
+                    thinking_content,
+                    "..." if len(thinking_content) > 500 else "",
+                )
             log.info(
-                "Stripped %d chars of <think> reasoning from %s response",
+                "Stripped %d chars of <%s> reasoning from %s response",
                 stripped_chars,
+                tag_name,
                 payload.get("model", "unknown"),
             )
         return cleaned

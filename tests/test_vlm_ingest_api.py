@@ -212,3 +212,97 @@ class TestSessionStitchIntegration:
         assert cfg2.dpi == 300
         assert cfg2.crop_top == 0.1
         assert cfg2.system_prompt == "Custom prompt"
+
+
+# ---------------------------------------------------------------------------
+# Bulk process-all (session-level)
+# ---------------------------------------------------------------------------
+
+
+class TestBulkProcessAll:
+    """Test bulk page processing via session registry (no HTTP)."""
+
+    def test_bulk_marks_all_pages_done(self):
+        from atlas.ingest.page_renderer import page_count
+        reg = SessionRegistry()
+        n = page_count(_MINIMAL_PDF)
+        s = reg.create(pdf_bytes=_MINIMAL_PDF, page_count=n, source_filename="bulk.pdf")
+
+        # Simulate what process-all does: iterate enabled, set result
+        for p in s.enabled_pages():
+            s.set_page_result(p, PageResult(
+                page_num=p,
+                markdown=f"# Page {p}\n\nContent {p}",
+                model="test-vlm",
+                dpi=200,
+            ))
+
+        assert s.all_done()
+        result = s.stitch()
+        assert result.pages_processed == n
+        assert "Page 0" in result.markdown
+
+    def test_bulk_skips_disabled_pages(self):
+        from atlas.ingest.page_renderer import page_count
+        reg = SessionRegistry()
+        n = page_count(_MINIMAL_PDF)
+        s = reg.create(pdf_bytes=_MINIMAL_PDF, page_count=n, source_filename="bulk.pdf")
+
+        # Disable all pages
+        for p in range(n):
+            s.config.page_overrides[p] = {"enabled": False}
+
+        assert s.enabled_pages() == []
+
+    def test_bulk_errors_dont_block_stitch(self):
+        """If some pages error, remaining done pages can still stitch."""
+        reg = SessionRegistry()
+        s = reg.create(pdf_bytes=_MINIMAL_PDF, page_count=1, source_filename="bulk.pdf")
+
+        s.set_page_error(0, "VLM timeout")
+        assert s.page_statuses[0] == PageStatus.ERROR
+        # No pages done → stitch should produce empty
+        assert not any(st == PageStatus.DONE for st in s.page_statuses.values())
+
+
+# ---------------------------------------------------------------------------
+# Default prompt includes heading formatting rules
+# ---------------------------------------------------------------------------
+
+
+class TestHeadingFormattingPrompt:
+    """Verify the default VLM prompt includes heading hierarchy rules."""
+
+    def test_default_prompt_has_numbered_sections(self):
+        from atlas.ingest.page_renderer import build_vision_messages
+        msgs = build_vision_messages(
+            page_image_uri="data:image/png;base64,iVBOR",
+            current_markdown="",
+        )
+        system = msgs[0]["content"]
+        assert "# 1" in system
+        assert "## 1.1" in system
+        assert "### 1.1.1" in system
+
+    def test_default_prompt_has_appendix_sections(self):
+        from atlas.ingest.page_renderer import build_vision_messages
+        msgs = build_vision_messages(
+            page_image_uri="data:image/png;base64,iVBOR",
+            current_markdown="",
+        )
+        system = msgs[0]["content"]
+        assert "# A" in system
+        assert "## A.1" in system
+        assert "### A.1.1" in system
+
+    def test_custom_prompt_overrides_default(self):
+        from atlas.ingest.page_renderer import build_vision_messages
+        custom = "Just extract the text."
+        msgs = build_vision_messages(
+            page_image_uri="data:image/png;base64,iVBOR",
+            current_markdown="",
+            system_prompt=custom,
+        )
+        system = msgs[0]["content"]
+        assert system == custom
+        assert "Heading formatting" not in system

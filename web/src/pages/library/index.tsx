@@ -165,7 +165,7 @@ export function LibraryPage() {
     if (!versionDocId) return;
     try {
       const v = await adminApi.getDocActiveVersion(versionDocId);
-      toast.info(`Active version for ${v.doc_id}: ${v.active_version}`);
+      toast.info(`Active version for ${v.doc_id}: ${v.active_doc_version}`);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Failed to get version');
     }
@@ -278,7 +278,7 @@ export function LibraryPage() {
                       <TableCell>
                         {d.is_sensitive && <Badge variant="outline" className="text-[11px]">Sensitive</Badge>}
                       </TableCell>
-                      <TableCell className="text-xs">{d.mime_type ?? '—'}</TableCell>
+                      <TableCell className="text-xs">{d.source_mime_type ?? '—'}</TableCell>
                     </TableRow>
                   ))
                 )}

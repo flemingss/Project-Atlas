@@ -23,50 +23,76 @@ export interface Corpus {
 }
 
 export interface RunSummary {
-  run_id: number;
+  id: number;
   status: string;
-  doc_id?: string;
-  doc_version?: string;
-  updated_at?: string;
-  created_at?: string;
+  tenant_id: string;
+  project_id: string;
+  doc_id: string;
+  doc_version: string;
+  current_node: string;
+  error_code: string;
+  error_message: string;
+  meta: Record<string, unknown>;
+  updated_at: string;
+  created_at: string;
 }
 export interface RunDetail extends RunSummary {
   node_runs?: NodeRun[];
   artifacts?: Artifact[];
 }
 export interface NodeRun {
-  node_run_id: number;
+  id: number;
   run_id: number;
   node_name: string;
   status: string;
-  started_at?: string;
-  finished_at?: string;
-  error?: string;
+  started_at: string;
+  completed_at: string | null;
+  duration_ms: number | null;
+  input_ref: string;
+  output_ref: string;
+  error_code: string;
+  error_message: string;
+  created_at: string;
 }
 export interface Artifact {
-  artifact_id: number;
+  id: number;
   run_id: number;
+  node_run_id: number | null;
   kind: string;
-  path?: string;
-  meta?: Record<string, unknown>;
+  path: string;
+  sha256: string;
+  mime_type: string;
+  meta: Record<string, unknown>;
+  created_at: string;
 }
 
 export interface ConfigVersionSummary {
-  config_id: number;
+  id: number;
+  name: string;
+  notes: string;
   is_active: boolean;
+  config_hash: string;
   created_at: string;
-  comment?: string;
 }
 export interface EffectiveConfig {
   [key: string]: unknown;
 }
 
 export interface CleanupFeedback {
-  feedback_id: number;
+  id: number;
+  tenant_id: string;
+  project_id: string;
+  corpus_id: string;
   doc_id: string;
+  chunk_id: string;
+  run_id: number | null;
   category: string;
-  comment?: string;
-  created_at?: string;
+  description: string;
+  source_span_start: number | null;
+  source_span_end: number | null;
+  created_by: string;
+  meta: Record<string, unknown>;
+  created_at: string;
 }
 export interface CleanupFeedbackSummary {
   categories: Record<string, number>;
@@ -80,13 +106,14 @@ export interface CleanupRuleSuggestion {
 
 export interface DocInfo {
   doc_id: string;
-  corpus_id: string;
-  doc_version: string;
-  is_finalized: boolean;
-  is_sensitive: boolean;
-  mime_type?: string;
+  tenant_id?: string;
+  project_id?: string;
+  corpus_id?: string;
+  doc_version?: string;
+  source_mime_type?: string;
+  is_finalized?: boolean;
+  is_sensitive?: boolean;
   created_at?: string;
-  meta?: Record<string, unknown>;
 }
 
 export interface LookingGlassMetrics {
@@ -124,8 +151,12 @@ export interface LookingGlassQdrant {
 }
 
 export interface DocActiveVersion {
+  tenant_id?: string;
+  project_id?: string;
+  corpus_id?: string;
   doc_id: string;
-  active_version: string;
+  active_doc_version: string;
+  latest_doc_version?: string;
 }
 
 export interface ChunkPreview {
@@ -134,6 +165,59 @@ export interface ChunkPreview {
   is_finalized: boolean;
   text: string;
   [key: string]: unknown;
+}
+
+export interface OrphanGroup {
+  tenant_id: string;
+  project_id: string;
+  doc_id: string;
+  doc_version: string;
+  points: number;
+}
+
+export interface DanglingRun {
+  run_id: number;
+  tenant_id: string;
+  project_id: string;
+  doc_id: string;
+  doc_version: string;
+  status: string;
+  current_node: string;
+  corpus_id: string;
+  created_at: string | null;
+}
+
+export interface OrphanScanResult {
+  ok: boolean;
+  dry_run: boolean;
+  scanned_points: number;
+  max_points: number;
+  orphan_groups: number;
+  orphan_points_estimated: number;
+  deleted_groups: number;
+  sample_orphans: OrphanGroup[];
+  dangling_runs: DanglingRun[];
+}
+
+export interface AdoptOrphanGroupRequest {
+  old_tenant_id: string;
+  old_project_id: string;
+  old_doc_id: string;
+  old_doc_version: string;
+  tenant_id: string;
+  project_id: string;
+  corpus_id: string;
+}
+
+export interface AdoptOrphanGroupResult {
+  ok: boolean;
+  run_id: number;
+  doc_id: string;
+  doc_version: string;
+  from: { tenant_id: string; project_id: string };
+  to: { tenant_id: string; project_id: string; corpus_id: string };
+  qdrant_payload_updated: boolean;
+  qdrant_error: string;
 }
 
 // ── Service ───────────────────────────────────────────────────────
@@ -301,9 +385,9 @@ export const adminApi = {
     return apiFetch<DocActiveVersion>(`/admin/docs/${encodeURIComponent(docId)}/active-version`);
   },
   setDocActiveVersion(docId: string, version: string) {
-    return apiFetch<{ status: string }>(`/admin/docs/${encodeURIComponent(docId)}/active-version`, {
+    return apiFetch<{ ok: boolean }>(`/admin/docs/${encodeURIComponent(docId)}/active-version`, {
       method: 'POST',
-      body: JSON.stringify({ version }),
+      body: JSON.stringify({ doc_version: version }),
     });
   },
   deleteDoc(docId: string) {
@@ -371,5 +455,49 @@ export const adminApi = {
   // ── Self-test ──
   selfTest() {
     return apiFetch<Record<string, unknown>>('/admin/self-test', { method: 'POST' });
+  },
+
+  // ── Orphan maintenance ──
+  scanOrphans(params?: { tenant_id?: string; project_id?: string; corpus_id?: string; max_points?: number }) {
+    return apiFetch<OrphanScanResult>('/admin/maintenance/cleanup-orphan-chunks', {
+      method: 'POST',
+      body: JSON.stringify({
+        dry_run: true,
+        max_points: params?.max_points ?? 10000,
+        tenant_id: params?.tenant_id || null,
+        project_id: params?.project_id || null,
+        corpus_id: params?.corpus_id || null,
+      }),
+    });
+  },
+  deleteOrphans(params?: { tenant_id?: string; project_id?: string; corpus_id?: string; max_points?: number }) {
+    return apiFetch<OrphanScanResult>('/admin/maintenance/cleanup-orphan-chunks', {
+      method: 'POST',
+      body: JSON.stringify({
+        dry_run: false,
+        max_points: params?.max_points ?? 10000,
+        tenant_id: params?.tenant_id || null,
+        project_id: params?.project_id || null,
+        corpus_id: params?.corpus_id || null,
+      }),
+    });
+  },
+  adoptOrphanGroup(payload: AdoptOrphanGroupRequest) {
+    return apiFetch<AdoptOrphanGroupResult>('/admin/maintenance/adopt-orphan-group', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+  reassociateRunScope(runId: number, payload: { tenant_id: string; project_id: string; corpus_id: string }) {
+    return apiFetch<Record<string, unknown>>(`/admin/runs/${runId}/reassociate-scope`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+  deleteDanglingRun(runId: number) {
+    return apiFetch<{ ok: boolean; deleted_run_id: number; doc_id: string }>(
+      `/admin/maintenance/dangling-run/${runId}`,
+      { method: 'DELETE' },
+    );
   },
 };
