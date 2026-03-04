@@ -1,6 +1,8 @@
-import { FileText, Home, Zap } from 'lucide-react';
+import { FileText, Home, Moon, Sun, Zap } from 'lucide-react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
+import { useThemeContext } from '@/components/theme-provider';
 
 const NAV_ITEMS = [
   { to: '/', label: 'Home', icon: Home },
@@ -8,6 +10,8 @@ const NAV_ITEMS = [
 ] as const;
 
 export function AppLayout() {
+  const { isDark, toggleTheme } = useThemeContext();
+
   return (
     <div className="flex h-full flex-col">
       {/* ── Top bar ── */}
@@ -41,7 +45,16 @@ export function AppLayout() {
 
         <div className="flex-1" />
 
-        {/* Placeholder for future controls (theme toggle, auth, etc.) */}
+        {/* Theme toggle */}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={toggleTheme}
+          title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+          className="h-8 w-8 p-0"
+        >
+          {isDark ? <Sun className="size-4" /> : <Moon className="size-4" />}
+        </Button>
       </header>
 
       {/* ── Page content ── */}

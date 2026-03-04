@@ -3,6 +3,7 @@ import { useEffect } from 'react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { Toaster } from 'sonner';
 
+import { ThemeProvider } from './components/theme-provider';
 import { AppLayout } from './layouts/app-layout';
 import { EditorPage } from './pages/editor';
 import { HomePage } from './pages/home';
@@ -35,25 +36,27 @@ function TokenBootstrap() {
 
 export function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <BrowserRouter basename="/editor">
-        <TokenBootstrap />
-        <Routes>
-          <Route element={<AppLayout />}>
-            <Route index element={<HomePage />} />
-            <Route path="doc/:docId" element={<EditorPage />} />
-            <Route path="run/:runId" element={<EditorPage />} />
-            <Route path="vlm-ingest" element={<VlmIngestPage />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
-      <Toaster
-        position="bottom-right"
-        richColors
-        closeButton
-        toastOptions={{ className: 'font-sans text-sm' }}
-      />
-    </QueryClientProvider>
+    <ThemeProvider>
+      <QueryClientProvider client={queryClient}>
+        <BrowserRouter basename="/editor">
+          <TokenBootstrap />
+          <Routes>
+            <Route element={<AppLayout />}>
+              <Route index element={<HomePage />} />
+              <Route path="doc/:docId" element={<EditorPage />} />
+              <Route path="run/:runId" element={<EditorPage />} />
+              <Route path="vlm-ingest" element={<VlmIngestPage />} />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Route>
+          </Routes>
+        </BrowserRouter>
+        <Toaster
+          position="bottom-right"
+          richColors
+          closeButton
+          toastOptions={{ className: 'font-sans text-sm' }}
+        />
+      </QueryClientProvider>
+    </ThemeProvider>
   );
 }
