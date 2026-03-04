@@ -232,13 +232,6 @@ export const vlmIngestApi = {
     });
   },
 
-  /** Get preview image URL for a page. */
-  previewUrl(sid: string, pageNum: number): string {
-    const token = getAdminToken();
-    const qs = token ? `?token=${encodeURIComponent(token)}` : '';
-    return `${BASE}/${sid}/preview/${pageNum}${qs}`;
-  },
-
   /** Get preview image bytes for a page, with optional temporary rendering overrides. */
   async previewImage(
     sid: string,
@@ -287,13 +280,6 @@ export const vlmIngestApi = {
       method: 'POST',
       headers: jsonHeaders(),
       body: JSON.stringify(req),
-    });
-  },
-
-  /** Get page result. */
-  getPageResult(sid: string, pageNum: number) {
-    return apiFetch<PageResultResponse>(`${BASE}/${sid}/page-result/${pageNum}`, {
-      headers: jsonHeaders(),
     });
   },
 

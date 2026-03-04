@@ -100,13 +100,12 @@ export interface VlmIngestState {
   setFinalMarkdown: (md: string) => void;
   setStatus: (status: VlmIngestState['status'], text: string) => void;
   markSessionExpired: (reason: string) => void;
-  clearSessionExpired: () => void;
   reset: () => void;
 }
 
 // ── Defaults ──────────────────────────────────────────────────────
 
-const INITIAL_STATE: Omit<VlmIngestState, 'setSession' | 'setStep' | 'setGlobalConfig' | 'setThumbnails' | 'setPageEnabled' | 'setPageOverride' | 'setPageResult' | 'setPageError' | 'setPageMarkdown' | 'setProcessing' | 'setAutoProcess' | 'setStitchResult' | 'setFinalMarkdown' | 'setStatus' | 'markSessionExpired' | 'clearSessionExpired' | 'reset'> = {
+const INITIAL_STATE: Omit<VlmIngestState, 'setSession' | 'setStep' | 'setGlobalConfig' | 'setThumbnails' | 'setPageEnabled' | 'setPageOverride' | 'setPageResult' | 'setPageError' | 'setPageMarkdown' | 'setProcessing' | 'setAutoProcess' | 'setStitchResult' | 'setFinalMarkdown' | 'setStatus' | 'markSessionExpired' | 'reset'> = {
   sessionId: null,
   runId: null,
   filename: '',
@@ -240,12 +239,6 @@ export const useVlmIngestStore = create<VlmIngestState>((set) => ({
       sessionExpiredReason: reason,
       isProcessing: false,
       currentProcessingPage: null,
-    }),
-
-  clearSessionExpired: () =>
-    set({
-      sessionExpired: false,
-      sessionExpiredReason: '',
     }),
 
   reset: () => set({ ...INITIAL_STATE }),
