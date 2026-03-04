@@ -82,6 +82,13 @@ export interface SessionSummary {
   headless: boolean;
   progress: Record<string, number>;
   config: Record<string, unknown>;
+  pages?: Array<{
+    page_num: number;
+    status: string;
+    enabled: boolean;
+    markdown: string;
+    model: string;
+  }>;
 }
 
 export interface ExportConfigResponse {
