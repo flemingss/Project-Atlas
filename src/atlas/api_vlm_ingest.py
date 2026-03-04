@@ -142,6 +142,14 @@ class CommitResponse(BaseModel):
     message: str
 
 
+class PageSummary(BaseModel):
+    page_num: int
+    status: str
+    enabled: bool
+    markdown: str
+    model: str
+
+
 class SessionSummary(BaseModel):
     session_id: str
     status: str
@@ -151,6 +159,7 @@ class SessionSummary(BaseModel):
     headless: bool
     progress: dict[str, int]
     config: dict[str, Any]
+    pages: list[PageSummary] = []
 
 
 class ExportConfigResponse(BaseModel):

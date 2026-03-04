@@ -229,6 +229,17 @@ class VlmIngestSession:
 
     def summary(self) -> dict[str, Any]:
         """Return a JSON-serialisable summary of the session."""
+        pages = []
+        for p in range(self.page_count):
+            settings = self.config.settings_for_page(p)
+            result = self.page_results.get(p)
+            pages.append({
+                "page_num": p,
+                "status": self.page_statuses.get(p, PageStatus.PENDING).value,
+                "enabled": settings.enabled,
+                "markdown": result.markdown if result else "",
+                "model": result.model if result else "",
+            })
         return {
             "session_id": self.session_id,
             "status": self.status.value,
@@ -239,6 +250,7 @@ class VlmIngestSession:
             "progress": self.progress(),
             "config": self.config.to_dict(),
             "created_at": self.created_at,
+            "pages": pages,
         }
 
 

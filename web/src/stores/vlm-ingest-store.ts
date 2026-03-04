@@ -140,7 +140,23 @@ const INITIAL_STATE: Omit<VlmIngestState, 'setSession' | 'setStep' | 'setGlobalC
 export const useVlmIngestStore = create<VlmIngestState>((set) => ({
   ...INITIAL_STATE,
 
-  setSession: (session) =>
+  setSession: (session) => {
+    const pages = Array.from({ length: session.page_count }, (_, i) => {
+      const backendPage = session.pages?.[i];
+      return {
+        pageNum: i,
+        enabled: backendPage?.enabled ?? true,
+        status: backendPage?.status ?? 'pending',
+        markdown: backendPage?.markdown ?? '',
+        model: backendPage?.model ?? '',
+        error: undefined,
+        dpiOverride: null,
+        cropTopOverride: null,
+        cropBottomOverride: null,
+        cropLeftOverride: null,
+        cropRightOverride: null,
+      };
+    });
     set({
       sessionId: session.session_id,
       runId: session.run_id,
@@ -148,23 +164,13 @@ export const useVlmIngestStore = create<VlmIngestState>((set) => ({
       pageCount: session.page_count,
       sessionStatus: session.status,
       headless: session.headless,
-      pages: Array.from({ length: session.page_count }, (_, i) => ({
-        pageNum: i,
-        enabled: true,
-        status: 'pending',
-        markdown: '',
-        model: '',
-        dpiOverride: null,
-        cropTopOverride: null,
-        cropBottomOverride: null,
-        cropLeftOverride: null,
-        cropRightOverride: null,
-      })),
-      totalEnabled: session.page_count,
+      pages,
+      totalEnabled: pages.filter((p) => p.enabled).length,
       step: 'configure',
       sessionExpired: false,
       sessionExpiredReason: '',
-    }),
+    });
+  },
 
   setStep: (step) => set({ step }),
 
