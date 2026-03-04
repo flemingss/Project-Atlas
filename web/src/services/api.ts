@@ -83,35 +83,10 @@ export interface PageMarkdownResponse {
   markdown: string;
 }
 
-// ── Helpers ───────────────────────────────────────────────────────
+// ── Helpers (re-exported from shared) ─────────────────────────────
 
-function getAdminToken(): string | null {
-  const stored = localStorage.getItem('atlas_admin_token');
-  if (stored && stored.trim()) return stored;
-
-  const token = (new URLSearchParams(window.location.search).get('token') || '').trim();
-  if (token) {
-    localStorage.setItem('atlas_admin_token', token);
-    return token;
-  }
-  return null;
-}
-
-function headers(): HeadersInit {
-  const h: Record<string, string> = { 'Content-Type': 'application/json' };
-  const token = getAdminToken();
-  if (token) h['X-Atlas-Admin-Token'] = token;
-  return h;
-}
-
-async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(path, { headers: headers(), ...init });
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`API ${resp.status}: ${text}`);
-  }
-  return resp.json() as Promise<T>;
-}
+import { apiFetch, getAdminToken } from './shared';
+export { apiFetch, getAdminToken };
 
 // ── Public API ────────────────────────────────────────────────────
 

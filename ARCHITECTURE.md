@@ -231,9 +231,9 @@ LLM-assisted cleanup rule suggestion (Phase 7D):
 - **Deterministic provider branch** — `DeterministicProvider._suggest_rule_json()` returns stable suggestion JSON for CI/test
 - **Endpoint**: `POST /admin/cleanup-rules/suggest` (resolves `chat_model` → `refine_model` fallback)
 
-### Cleanup & Tuning UI Card
+### Cleanup & Tuning Admin Page
 
-Streamlit Admin tab card (Phase 7E) for operator self-service:
+React SPA admin page (Phase 7E) for operator self-service:
 
 - **Active rules display** — fetches effective config and lists all cleanup rules with expandable JSON
 - **Feedback submission** — form for document ID, category, and comment → `POST /admin/cleanup-feedback`
@@ -362,7 +362,7 @@ All Phase 7–9 items are complete. Phase 10 (layout parser) complete. Phase 11 
 - ✅ Runner consolidation (5 shared helpers, 37% line reduction)
 - 🔄 Prompt/rubric tuning as real-world usage data accumulates
 - 🔄 Retrieval upgrades (hybrid/rerank) deferred unless a measured failure mode requires them
-- ✅ **Document Editor (Phase 12A+12B+12C)** — React SPA (`web/`, 30 source files) replacing the original HTML/JS editor. Vite 6 + React 18 + TypeScript + shadcn/ui + Tailwind CSS. PDF.js viewer, CodeMirror 6 markdown editor, VLM tool palette, 9 API endpoints via `api_editor.py`. Builds to `static/editor/`, served by FastAPI at `/editor`.
+- ✅ **React SPA Control Center (Phase 12→13)** — Full operator console (`web/`, ~60+ source files). Vite 6 + React 18 + TypeScript + shadcn/ui + Tailwind CSS. Dashboard, Upload, Library, Search, Review, Document Editor (PDF.js + CodeMirror 6), VLM Ingest Wizard, Admin sub-pages. Builds to `static/app/`, served by FastAPI at `/app`.
 - ✅ **Vision Language Model (VLM) integration** — multimodal `ChatMessage`, `page_renderer.py` (PyMuPDF), `vision_model` role in `models.yaml`, unclosed `<think>` tag handling
 - ✅ **VLM-first parser backend (Phase 12E)** — `backend: vision` parser mode. `vlm_ingest` package (deterministic stitcher + session manager), 14-endpoint API router (`api_vlm_ingest.py`), React wizard page (`/editor/vlm-ingest`), headless mode via `IngestNode._vlm_parse()`. Interactive wizard + config export/import for headless reuse across documents.
-- 🔄 Full React Control Center (absorb remaining Streamlit operator console surfaces into `web/`)
+- 🔄 Prompt/rubric tuning as real-world usage data accumulates

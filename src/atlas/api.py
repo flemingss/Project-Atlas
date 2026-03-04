@@ -52,38 +52,27 @@ def create_app() -> FastAPI:
     app.include_router(make_editor_router(config_manager=config_manager, session_factory=session_factory))
     app.include_router(make_vlm_ingest_router(config_manager=config_manager, session_factory=session_factory))
 
-    # Serve the React SPA (built from web/ → static/editor/) at /editor
-    editor_static = Path(__file__).resolve().parent.parent.parent / "static" / "editor"
-    if editor_static.is_dir():
-        # Compatibility for pre-base builds that reference root-level /assets and /atlas-icon.svg.
-        assets_dir = editor_static / "assets"
-        if assets_dir.is_dir():
-            app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="editor-assets-compat")
+    # Serve the React SPA (built from web/ → static/app/) at /app
+    app_static = Path(__file__).resolve().parent.parent.parent / "static" / "app"
+    if app_static.is_dir():
+        app_assets = app_static / "assets"
+        if app_assets.is_dir():
+            app.mount("/app/assets", StaticFiles(directory=str(app_assets)), name="app-assets")
 
-        @app.get("/atlas-icon.svg")
-        async def editor_icon() -> FileResponse:
-            icon = editor_static / "atlas-icon.svg"
-            if not icon.is_file():
-                raise HTTPException(status_code=404, detail="Not Found")
-            return FileResponse(icon)
-
-        @app.get("/editor")
-        @app.get("/editor/")
-        @app.get("/editor/{full_path:path}")
-        async def editor_spa(full_path: str = "") -> FileResponse:
-            # Serve real static files when present; otherwise fall back to index.html for SPA routes.
-            target = (editor_static / full_path).resolve()
+        @app.get("/app")
+        @app.get("/app/")
+        @app.get("/app/{full_path:path}")
+        async def app_spa(full_path: str = "") -> FileResponse:
+            target = (app_static / full_path).resolve()
             try:
-                target.relative_to(editor_static.resolve())
+                target.relative_to(app_static.resolve())
             except ValueError:
                 raise HTTPException(status_code=404, detail="Not Found")
-
             if full_path and target.is_file():
                 return FileResponse(target)
-
-            index_file = editor_static / "index.html"
+            index_file = app_static / "index.html"
             if not index_file.is_file():
-                raise HTTPException(status_code=404, detail="Editor build not found")
+                raise HTTPException(status_code=404, detail="App build not found")
             return FileResponse(index_file)
 
     return app

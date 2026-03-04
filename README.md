@@ -132,45 +132,27 @@ RAG MVP endpoints (Qdrant-backed):
 - `POST /rag/ingest/file`
 - `POST /rag/search`
 
-## UI (Operator Console)
+## UI (React SPA)
 
-Atlas includes a small optional Streamlit UI that overlays the existing API (no backend changes required).
+Atlas includes a full-featured React SPA served at `/app` that replaces the previous Streamlit operator console.
 
-```powershell
-# Install UI extras
-pip install -e .[ui]
-
-# Run the console
-streamlit run ui\app.py
-```
-
-The UI uses:
-- API: `ATLAS_API_URL` (default `http://127.0.0.1:18080`)
-- Admin auth: `ATLAS_ADMIN_TOKEN` (sent as header `X-Atlas-Admin-Token` for `/admin/*`)
-
-Notes:
-- The repo disables Streamlit usage stats by default via `.streamlit/config.toml` (reduces noisy browser console errors in restricted/offline networks).
-- If something goes wrong, use the UI sidebar **Diagnostics → Download logs (json)**.
-
-## Document Editor (React SPA)
-
-A purpose-built editor for surgical document refinement, served at `/editor`.
-
-**Features:** PDF.js viewer (left) + CodeMirror 6 markdown editor (right) + VLM tool palette (VLM Fix, LLM Refine, Strip Artifacts, Re-Judge, Save, Undo).
+**Pages:** Dashboard, Upload, Library, Search, Review, Document Editor, VLM Ingest Wizard, Admin (Health, Config, Cleanup, DB Reset).
 
 **Stack:** Vite 6, React 18, TypeScript, shadcn/ui, Tailwind CSS, Zustand, TanStack React Query.
 
 ```powershell
-# Development (live reload, proxies API to :18080)
+# Development (live reload, proxies API to :28080)
 cd web
 npm install
 npm run dev        # http://localhost:5173
 
-# Production build (outputs to static/editor/)
+# Production build (outputs to static/app/)
 npm run build
 ```
 
 The Docker image builds the React app automatically (Node.js multi-stage).
+
+Admin auth: if `ATLAS_ADMIN_TOKEN` is set, open `/app?token=<token>` once — the SPA stores it in `localStorage`.
 
 See [`web/README.md`](web/README.md) for the full developer guide (directory structure, design tokens, adding components/pages).
 

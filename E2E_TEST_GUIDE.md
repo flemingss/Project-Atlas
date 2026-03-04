@@ -338,7 +338,7 @@ Potential areas for additional test coverage:
 2. **Chaos Tests**: Random failures, network issues, partial outages
 3. **Upgrade Tests**: Data migration and backward compatibility
 4. **Security Tests**: Penetration testing, fuzzing, auth bypass attempts
-5. **UI E2E Tests**: Streamlit console automation (Selenium/Playwright)
+5. **UI E2E Tests**: React SPA automation (Playwright)
 
 ## Conclusion
 

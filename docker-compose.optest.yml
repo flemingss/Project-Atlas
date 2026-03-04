@@ -73,22 +73,6 @@ services:
       ATLAS_ADMIN_TOKEN: ${ATLAS_ADMIN_TOKEN:-}
     command: ["python", "scripts/e2e_scenarios.py", "--api-url", "http://atlas:8080", "--qdrant-url", "http://qdrant:6333", "--timeout", "60"]
 
-  # Optional: Streamlit operator console.
-  atlas-ui:
-    build:
-      context: .
-      dockerfile: Dockerfile.ui
-    container_name: atlas-ui
-    profiles: ["ui"]
-    depends_on:
-      atlas:
-        condition: service_healthy
-    environment:
-      ATLAS_API_URL: http://atlas:8080
-      ATLAS_UI_UPLOAD_TIMEOUT_S: ${ATLAS_UI_UPLOAD_TIMEOUT_S:-600}
-    ports:
-      - "18501:8501"
-
   # Optional: local OpenAI-compatible server for end-to-end validation.
   # Uses Ollama's OpenAI compatibility layer.
   ollama:

@@ -57,35 +57,9 @@ services:
       ATLAS_DB_URL: postgresql+psycopg://atlas:atlas@postgres:5432/atlas
       ATLAS_QDRANT_URL: http://qdrant:6333
     ports:
-      - "18080:8080"
+      - "28080:8080"
     volumes:
       - ./artifacts:/app/artifacts
-
-  ui:
-    build:
-      context: .
-      dockerfile: Dockerfile.ui
-    container_name: atlas-ui
-    depends_on:
-      atlas:
-        condition: service_started
-    environment:
-      ATLAS_API_URL: http://atlas:8080
-      ATLAS_ADMIN_TOKEN: ${ATLAS_ADMIN_TOKEN:-}
-      ATLAS_UI_UPLOAD_TIMEOUT_S: ${ATLAS_UI_UPLOAD_TIMEOUT_S:-600}
-    ports:
-      - "18501:8501"
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=2).read()",
-        ]
-      interval: 10s
-      timeout: 3s
-      retries: 20
 
   redis:
     image: redis:7

@@ -41,7 +41,7 @@ dev = [
 ]
 
 ui = [
-  "streamlit>=1.31",
+  # React SPA — no Python dependencies; build with `npm run build` in web/
 ]
 
 # Optional: lightweight HTML -> Markdown conversion for text/html ingestion

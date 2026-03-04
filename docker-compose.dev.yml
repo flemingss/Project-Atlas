@@ -23,9 +23,3 @@ services:
         "-lc",
         "if [ \"$$ATLAS_DEV_AUTO_RELOAD\" = \"true\" ]; then uvicorn atlas.api:create_app --factory --host 0.0.0.0 --port 8080 --reload --reload-dir /app/src; else uvicorn atlas.api:create_app --factory --host 0.0.0.0 --port 8080; fi",
       ]
-
-  ui:
-    # Dev override: bind-mount UI source so Streamlit auto-reloads on file save.
-    # No rebuild needed for UI changes at all.
-    volumes:
-      - ./ui:/app/ui

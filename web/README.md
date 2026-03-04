@@ -3,10 +3,10 @@
 The React SPA that powers the Atlas Document Editor and (future) operator console.
 Built with **Vite + React 18 + TypeScript + shadcn/ui + Tailwind CSS**.
 
-> **Status (Mar 2026):** The editor page is feature-complete and replaces the
-> previous standalone HTML/JS editor. The Streamlit operator console (`ui/`)
-> remains live for non-editor workflows (Upload, Search, Review, Admin).
-> Future phases will migrate those surfaces into this React app.
+> **Status (Jul 2025):** The React SPA is the sole operator UI, fully replacing
+> the previous Streamlit console (`ui/`, now removed). All operator workflows
+> (Dashboard, Upload, Library, Search, Review, Editor, VLM Ingest, Admin) are
+> served from this app at `/app`.
 
 ---
 
@@ -32,14 +32,14 @@ python -m atlas
 
 ```bash
 cd web
-npm run build        # Outputs to ../static/editor/
+npm run build        # Outputs to ../static/app/
 ```
 
-The build output is served by FastAPI at `/editor` via `StaticFiles(html=True)`.
+The build output is served by FastAPI at `/app` via `StaticFiles(html=True)`.
 No separate web server is required.
 
 If backend admin token auth is enabled, open the editor with `?token=<ATLAS_ADMIN_TOKEN>` once
-(for example `/editor/?token=...` or `/editor/vlm-ingest?token=...`).
+(for example `/app/?token=...` or `/app/vlm-ingest?token=...`).
 The SPA stores it in `localStorage` as `atlas_admin_token` and reuses it for API requests.
 
 React page/layout conventions are documented in `web/STYLE_GUIDE.md`.
@@ -70,7 +70,7 @@ This behavior is implemented in `web/src/pages/vlm-ingest/index.tsx` and should 
 | Build | Vite 6 | Dev server, HMR, production bundler |
 | Framework | React 18 | UI framework |
 | Language | TypeScript 5 | Type safety |
-| Routing | React Router 7 | Client-side routing (basename `/editor`) |
+| Routing | React Router 7 | Client-side routing (basename `/app`) |
 | Styling | Tailwind CSS 3 + CSS custom properties | Utility-first CSS with semantic design tokens |
 | Components | shadcn/ui (Radix + CVA) | Accessible, composable UI primitives |
 | State | Zustand 4 | Lightweight global store for editor state |
@@ -102,26 +102,67 @@ web/
     ├── lib/
     │   └── utils.ts                   # cn() utility (clsx + tailwind-merge)
     ├── layouts/
-    │   └── app-layout.tsx             # Top bar + <Outlet> shell
+    │   ├── app-layout.tsx             # Sidebar + <Outlet> shell
+    │   └── admin-layout.tsx           # Admin sub-page layout
     ├── pages/
-    │   ├── home/
-    │   │   └── index.tsx              # Doc ID input → navigate to editor
+    │   ├── dashboard/
+    │   │   └── index.tsx              # Metrics overview + quick actions
+    │   ├── upload/
+    │   │   └── index.tsx              # File/text upload form
+    │   ├── library/
+    │   │   └── index.tsx              # Corpus document browser
+    │   ├── search/
+    │   │   └── index.tsx              # RAG search interface
+    │   ├── review/
+    │   │   └── index.tsx              # HITL task review queue
     │   ├── editor/
-    │   │   └── index.tsx              # Split-pane editor page
-    │   └── vlm-ingest/
-    │       └── index.tsx              # 7-step VLM ingest wizard
+    │   │   └── index.tsx              # Split-pane document editor
+    │   ├── vlm-ingest/
+    │   │   └── index.tsx              # 7-step VLM ingest wizard
+    │   └── admin/
+    │       ├── health.tsx             # Health & diagnostics
+    │       ├── groups.tsx             # Config management
+    │       ├── cleanup.tsx            # Cleanup rules & feedback
+    │       └── danger.tsx             # DB reset & data management
     ├── components/
-    │   ├── ui/                        # shadcn/ui primitives
+    │   ├── app-sidebar.tsx            # Collapsible sidebar navigation
+    │   ├── auth-gate.tsx              # Admin token gate
+    │   ├── confirm-dialog.tsx         # Reusable confirmation dialog
+    │   ├── empty-state.tsx            # Empty state placeholder
+    │   ├── error-boundary.tsx         # React error boundary
+    │   ├── loading-state.tsx          # Loading spinner/skeleton
+    │   ├── theme-provider.tsx         # Dark/light theme context
+    │   ├── ui/                        # shadcn/ui primitives (24 components)
+    │   │   ├── alert-dialog.tsx
     │   │   ├── badge.tsx
     │   │   ├── button.tsx
     │   │   ├── card.tsx
+    │   │   ├── checkbox.tsx
+    │   │   ├── collapsible.tsx
+    │   │   ├── dialog.tsx
+    │   │   ├── dropdown-menu.tsx
     │   │   ├── input.tsx
     │   │   ├── label.tsx
     │   │   ├── popover.tsx
+    │   │   ├── progress.tsx
+    │   │   ├── resizable.tsx
+    │   │   ├── scroll-area.tsx
+    │   │   ├── select.tsx
     │   │   ├── separator.tsx
+    │   │   ├── sheet.tsx
+    │   │   ├── skeleton.tsx
     │   │   ├── slider.tsx
     │   │   ├── switch.tsx
+    │   │   ├── table.tsx
+    │   │   ├── tabs.tsx
+    │   │   ├── textarea.tsx
     │   │   └── tooltip.tsx
+    │   ├── layout/                    # Layout primitives
+    │   │   ├── index.ts
+    │   │   ├── card-grid.tsx
+    │   │   ├── page-shell.tsx
+    │   │   ├── panel-layout.tsx
+    │   │   └── preview-surface.tsx
     │   └── editor/                    # Editor-specific components
     │       ├── index.ts               # Barrel exports
     │       ├── pdf-viewer.tsx         # PDF.js canvas viewer + nav + zoom + crop overlay
@@ -130,14 +171,23 @@ web/
     │       ├── vlm-settings.tsx       # DPI + crop margin popover
     │       └── status-bar.tsx         # Connection dot + stats + model info
     ├── services/
-    │   ├── api.ts                     # Typed fetch client for /api/editor/* endpoints
-    │   └── vlm-ingest-api.ts          # Typed fetch client for /api/editor/vlm-ingest/* endpoints
+    │   ├── shared.ts                  # Shared fetch helpers + token management
+    │   ├── admin-api.ts               # Admin API client (tenants, projects, corpora, docs, metrics, config, HITL, feedback)
+    │   ├── rag-api.ts                 # RAG API client (search, ingest)
+    │   ├── hitl-api.ts                # HITL task API client
+    │   ├── api.ts                     # Editor API client (/api/editor/*)
+    │   └── vlm-ingest-api.ts          # VLM ingest API client (/api/editor/vlm-ingest/*)
     ├── stores/
-    │   ├── editor-store.ts            # Zustand store (run, page, zoom, VLM settings)
-    │   └── vlm-ingest-store.ts        # Zustand store (VLM ingest wizard state)
+    │   ├── connection-store.ts        # API connection + admin auth state
+    │   ├── scope-store.ts             # Tenant/project/corpus scope state
+    │   ├── editor-store.ts            # Editor page state (run, page, zoom, VLM settings)
+    │   └── vlm-ingest-store.ts        # VLM ingest wizard state
     └── hooks/
         ├── use-editor-api.ts          # React Query mutations (VLM, save, refine, judge)
-        └── use-vlm-ingest.ts          # React Query hooks for VLM ingest workflow
+        ├── use-vlm-ingest.ts          # React Query hooks for VLM ingest workflow
+        ├── use-mobile.ts              # Mobile breakpoint detection
+        ├── use-preview-fit.ts         # Preview fit/zoom logic
+        └── use-theme.ts              # Theme toggle hook
 ```
 
 ---
@@ -201,7 +251,7 @@ toast notifications.
 
 The main `Dockerfile` uses a two-stage build:
 
-1. **Stage 1 (Node.js):** `npm ci` + `npm run build` → produces `static/editor/`
+1. **Stage 1 (Node.js):** `npm ci` + `npm run build` → produces `static/app/`
 2. **Stage 2 (Python):** `COPY --from=ui-build` overlays the React output
 
 ### Dev bind-mounts
@@ -215,15 +265,14 @@ server directly (port 5173).
 
 ---
 
-## Relationship to Streamlit UI (`ui/`)
+## Operator UI Architecture
 
-The Streamlit operator console (`ui/app.py`) and the React editor are
-**complementary surfaces** during the migration period:
+The React SPA is the sole operator UI, served at `/app` by FastAPI:
 
-| Surface | Technology | Scope | Access |
-|---------|-----------|-------|--------|
-| Operator Console | Streamlit | Upload, Search, Library, Review, Admin | `http://localhost:18501` |
-| Document Editor | React SPA | PDF viewer + markdown editor + VLM tools | `http://localhost:18080/editor` |
+| Surface | Access |
+|---------|---------|
+| Full Operator Console | `http://localhost:28080/app` |
+| Document Editor | `http://localhost:28080/app/editor` |
+| VLM Ingest Wizard | `http://localhost:28080/app/vlm-ingest` |
 
-The React app will eventually absorb all operator console functionality.
-The Streamlit UI will be retired once feature parity is reached.
+The previous Streamlit console (`ui/`) has been fully retired.

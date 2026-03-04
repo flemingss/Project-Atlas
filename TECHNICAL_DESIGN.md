@@ -29,7 +29,7 @@ Atlas is a **local-first “RAG package preparation appliance”**:
 - Provide a **HITL checkpoint** when automation cannot meet quality thresholds
 - Export a repeatable "RAG package" (manifest + enriched markdown) for downstream systems
 
-The intended operator is a **non-technical domain expert** who can run the appliance via a **Streamlit-based operator UI**, ingest documents, and resolve HITL tasks without touching code.
+The intended operator is a **non-technical domain expert** who can run the appliance via the **React SPA operator UI** (served at `/app`), ingest documents, and resolve HITL tasks without touching code.
 
 ---
 
@@ -176,27 +176,15 @@ Notes:
 
 ### 3.10 Operator UI
 
-- ✅ Streamlit-based operator UI (`ui/app.py`, `Dockerfile.ui`) for non-technical users
-  - file upload (text, PDF/Office), corpus navigation, HITL task review
-  - Looking Glass views (inventory, docs, chunk preview, run history)
-  - doc export (full + lean), corpus export/import
-  - admin controls (config management, DB reset, self-test trigger)
-  - wired into `docker-compose.yml` (port 18501)
-- ✅ Three-round UI polish completed (Round 3: locked page skeleton)
-  - 4-file design system: `theme.py` (tokens), `styles.py` (CSS), `components.py` (primitives), `app.py` (logic)
-  - locked skeleton: every tab renders header + scope strip + max 3 cards
-  - operator vs admin surface separation (admin controls visually gated)
-  - 7 tabs + Admin (token-gated): Home, Upload, Library, Search, Review, Versions & Export, History, Admin
-  - Admin tab includes: Diagnostics, Data Management, Group Management, **Cleanup & Tuning** (active rules, feedback submission, feedback categories, pipeline metrics, AI rule suggestion)
-  - one-primary-action-per-tab pattern; calm, workspace-centric microcopy
-- ✅ **React Document Editor** (`web/`, served at `/editor`)
-  - 30-file Vite + React 18 + TypeScript SPA replacing the standalone HTML/JS editor
-  - PDF.js viewer (left) + CodeMirror 6 markdown editor (right) with resizable panels
+- ✅ **React SPA Control Center** (`web/`, served at `/app`)
+  - Full operator console: Dashboard, Upload, Library, Search, Review, Document Editor, VLM Ingest Wizard
+  - Admin sub-pages: Health/Diagnostics, Config Management, Cleanup & Tuning, DB Reset
+  - Stack: Vite 6 + React 18 + TypeScript + shadcn/ui + Tailwind CSS + Zustand + TanStack React Query
+  - Builds to `static/app/` via `npm run build`; Dockerfile multi-stage build
+  - PDF.js viewer + CodeMirror 6 markdown editor with resizable panels
   - Tool palette: VLM Fix, LLM Refine, Strip Artifacts, Re-Judge, Save, Undo
-  - Stack: shadcn/ui, Tailwind CSS, Zustand, TanStack React Query, Sonner toasts
-  - Builds to `static/editor/` via `npm run build`; Dockerfile multi-stage build
   - See `web/README.md` for developer guide
-- ✅ **VLM Ingest Wizard** (`web/src/pages/vlm-ingest/`, served at `/editor/vlm-ingest`)
+- ✅ **VLM Ingest Wizard** (`web/src/pages/vlm-ingest/`, served at `/app/vlm-ingest`)
   - 7-step interactive workflow: start → configure → pages → process → review → stitch → commit
   - PDF preview with red crop guide overlays, Fit Page/Width/Actual zoom modes (ResizeObserver auto-fit)
   - Auto-advance page processing, per-page markdown correction, config export/import
@@ -236,7 +224,7 @@ These are the directional changes discussed, reflected as **Planned** unless imp
 
 - ✅ Pivot: **Dify is not the default RC UI/HITL hub**.
 - ✅ Dify is behind a Docker Compose profile (`--profile dify`); the default compose boots without it.
-- ✅ Atlas owns workflow state and HITL tasks; a Streamlit-based operator UI provides monitoring and HITL interaction.
+- ✅ Atlas owns workflow state and HITL tasks; the React SPA operator UI provides monitoring and HITL interaction.
 
 Rationale:
 
@@ -251,7 +239,7 @@ Rationale:
 ### 4.3 “Black box” operation
 
 - ✅ Target: keep the system black-box from the UI perspective.
-- ✅ Minimal monitoring + HITL pane for operators is delivered via the Streamlit UI.
+- ✅ Minimal monitoring + HITL pane for operators is delivered via the React SPA UI.
 
 ---
 
@@ -311,7 +299,7 @@ Rationale:
   - ✅ Goal: operators can assess corpus health/state **without exporting packages**
   - ✅ Scope: read-only inspection of documents/chunks/runs/HITL + storage/Qdrant health
   - ✅ Non-goals: not a general-purpose UI platform; not a full labeling system; no “mysterious state”
-  - ✅ Minimum query surface (API-first; Streamlit UI is a thin layer over these):
+  - ✅ Minimum query surface (API-first; React SPA surfaces these):
     - corpus inventory: document counts, chunk counts, finalized/non-finalized, by tenant/project
     - document view: doc metadata, available doc_versions, version activation/finalization state
     - chunk preview: show stored chunk text + key metadata (doc_id, doc_version, source spans)
@@ -324,15 +312,11 @@ Rationale:
    - ✅ CRUD API under `/admin/cleanup-feedback` for operators to report cleanup quality issues
    - ✅ Category-based aggregation for identifying systematic cleanup problems
    - ✅ LLM-assisted rule suggestion (on-demand endpoint to propose new cleanup rules from feedback patterns)
-   - ✅ Admin UI "Cleanup & Tuning" card in Streamlit
+   - ✅ Admin UI "Cleanup & Tuning" page in React SPA
 9) **Operator UI**
-   - ✅ Streamlit-based operator console (`ui/app.py`, containerized via `Dockerfile.ui`)
-   - ✅ Covers: upload, corpus browsing, HITL review, export, admin controls, Looking Glass views
-   - ✅ 4-file design system (theme / styles / components / app) with locked page skeleton
-   - ✅ Operator vs admin separation; 6 tabs (Home, Upload, My Collection, Search, Review, Admin); one-primary-action-per-tab; calm workspace-centric tone
-   - ✅ **Document Editor** — React SPA (`web/`) with PDF.js + CodeMirror 6 + VLM tools, served at `/editor`. Replaces the original standalone HTML/JS editor and primitive Streamlit text area. See `web/README.md`.
-   - ✅ **VLM Ingest Wizard** — 7-step interactive VLM ingestion at `/editor/vlm-ingest`. PDF preview with crop overlays, session-expired recovery, auto-create workflow run on commit for uploads. Headless mode via `IngestNode._vlm_parse()`.
-   - 💭 Full React Control Center (absorb remaining Streamlit operator console surfaces into `web/`)
+   - ✅ **React SPA Control Center** (`web/`, served at `/app`) — full operator console (Dashboard, Upload, Library, Search, Review, Editor, Admin) with Vite 6 + React 18 + TypeScript + shadcn/ui + Tailwind CSS. Builds to `static/app/`.
+   - ✅ **Document Editor** — PDF.js + CodeMirror 6 + VLM tools at `/app/editor`. See `web/README.md`.
+   - ✅ **VLM Ingest Wizard** — 7-step interactive VLM ingestion at `/app/vlm-ingest`. PDF preview with crop overlays, session-expired recovery, auto-create workflow run on commit for uploads. Headless mode via `IngestNode._vlm_parse()`.
 
 ---
 
@@ -405,7 +389,7 @@ This is sequenced to maximize repeatability and minimize fantasy risk.
 - ✅ **Phase 7B — Feedback capture**: `CleanupFeedback` model + `feedback_ledger.py` CRUD + 5 admin endpoints. 7 new tests.
 - ✅ **Phase 7C — Metrics aggregation**: `GET /admin/looking-glass/metrics` with workflow/node/HITL/feedback aggregation, scoped by tenant/project/corpus. 3 new tests.
 - ✅ **Phase 7D — LLM-assisted rule suggestion**: on-demand endpoint (`POST /admin/cleanup-rules/suggest`) that accepts sample markdown + observed issues, calls LLM to suggest cleanup rule YAML. Heuristic fallback when LLM unavailable. Deterministic provider branch for CI. 13 new tests in `test_rule_suggestion.py`.
-- ✅ **Phase 7E — Admin UI "Cleanup & Tuning" card**: Streamlit Admin tab card for viewing active rules, submitting feedback, browsing categories, viewing pipeline metrics, and invoking AI-assisted rule suggestion with inline YAML preview.
+- ✅ **Phase 7E — Admin UI "Cleanup & Tuning" page**: Cleanup & Tuning admin page for viewing active rules, submitting feedback, browsing categories, viewing pipeline metrics, and invoking AI-assisted rule suggestion with inline YAML preview.
 
 **Definition of done (7A-7E):** All items implemented and tested.
 
@@ -474,7 +458,7 @@ This phase adds operator tooling for surgical document refinement and a vision-l
 - ✅ Right panel: CodeMirror 6 editor (markdown syntax highlighting).
 - ✅ Tool palette: VLM Fix, LLM Refine, Strip Artifacts, Re-Judge, Save, Undo.
 - ✅ State management: Zustand store + TanStack React Query mutations + Sonner toasts.
-- ✅ `npm run build` → `static/editor/` (served by FastAPI at `/editor`).
+- ✅ `npm run build` → `static/app/` (served by FastAPI at `/app`).
 - ✅ Dockerfile multi-stage: Node.js build stage + Python runtime stage.
 - ✅ Developer guide: `web/README.md`.
 
@@ -485,7 +469,7 @@ This phase adds operator tooling for surgical document refinement and a vision-l
 - ✅ `backend: vision` mode in `pdf_parser.backend`: render all pages → VLM → stitch markdown.
 - ✅ `vlm_ingest` package: deterministic page stitcher (dedup, table merge, heading merge) + session manager (in-memory registry, TTL, config serialization).
 - ✅ 14-endpoint API router (`/api/editor/vlm-ingest/*`): start session (run ID or upload), configure, thumbnails, preview (with crop overlay params), process page, stitch, commit, export config.
-- ✅ Interactive wizard React SPA page (`/editor/vlm-ingest`): 7-step workflow (start → configure → pages → process → review → stitch → commit). PDF preview with crop guide overlays, Fit Page/Width/Actual zoom modes, auto-advance processing, per-page markdown correction.
+- ✅ Interactive wizard React SPA page (`/app/vlm-ingest`): 7-step workflow (start → configure → pages → process → review → stitch → commit). PDF preview with crop guide overlays, Fit Page/Width/Actual zoom modes, auto-advance processing, per-page markdown correction.
 - ✅ Headless VLM parse in `IngestNode._vlm_parse()` — per-page isolation, deterministic stitch, config from `pipeline.yaml`.
 - ✅ Config export/import for headless reuse across documents.
 - ✅ 55+ new tests (stitcher, session, API-level) — all passing.
@@ -575,7 +559,7 @@ The minimum “human shakedown ready” bar:
 - The system deterministically produces committed chunks and a package export
 - When automation fails, operators have a HITL queue to resolve issues
 - Every decision is traceable (which model/provider/config, which run, why it paused)
-- Operators have a Streamlit-based UI for upload, corpus browsing, HITL review, and Looking Glass views
+- Operators have a React SPA UI for upload, corpus browsing, HITL review, and Looking Glass views
 
 ---
 
@@ -585,7 +569,7 @@ Project documentation was consolidated in v0.7.3 to reduce maintenance burden:
 
 - **Removed**: `HLD.md` (superseded by this doc + ARCHITECTURE.md), `PDF_OVERHAUL_PLAN.md` (completed — absorbed into Phases 10-11), `VALIDATION_REPORT.md` (frozen v0.7.0 snapshot), `CAPABILITIES_AUDIT.md` (extreme maintenance burden — capability status tracked here and in CHANGELOG).
 - **Authoritative docs**: This file (build-continuity/roadmap), `ARCHITECTURE.md` (current system state), `README.md` (quickstart), `config/PIPELINE_REFERENCE.md` (config reference).
-- **Supplementary**: `E2E_TEST_GUIDE.md`, `OPTEST.md`, `PIPELINE_QUALITY_IMPROVEMENTS.md`, `ui/` docs.
+- **Supplementary**: `E2E_TEST_GUIDE.md`, `OPTEST.md`, `PIPELINE_QUALITY_IMPROVEMENTS.md`, `web/README.md`.
 
 ---
 

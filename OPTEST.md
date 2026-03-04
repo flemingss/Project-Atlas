@@ -50,12 +50,7 @@ Then run:
 
 - `./scripts/optest.ps1 -Mode lmstudio`
 
-## Optional UI
-
-To boot the Streamlit operator console too:
-
-- `docker compose -f docker-compose.optest.yml --profile ui up -d --build`
-- Open `http://localhost:18501`
+## UI\n\nThe React SPA is built into the Docker image and served at `/app` (port 18080).\nNo separate UI service is needed.
 
 ## PDF ingest (Docling)
 

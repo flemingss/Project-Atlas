@@ -5,7 +5,7 @@ COPY web/package.json web/package-lock.json* ./
 RUN npm ci
 COPY web/ .
 RUN npm run build
-# Output lands in /ui/../static/editor → /static/editor
+# Output lands in /ui/../static/app → /static/app
 
 # ── Stage 2: Python runtime ──
 FROM python:3.11-slim
@@ -53,8 +53,8 @@ RUN cp -n config/pipeline.yaml.example config/pipeline.yaml 2>/dev/null || true 
  && cp -n config/models.yaml.example config/models.yaml 2>/dev/null || true
 COPY scripts ./scripts
 COPY static ./static
-# Overlay the React build output (overrides the HTML editor placeholder)
-COPY --from=ui-build /static/editor ./static/editor
+# Overlay the React SPA build output
+COPY --from=ui-build /static/app ./static/app
 
 EXPOSE 8080
 

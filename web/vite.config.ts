@@ -4,7 +4,7 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   plugins: [react()],
-  base: '/editor/',
+  base: '/app/',
   resolve: {
     alias: {
       '@': path.resolve(__dirname, 'src'),
@@ -22,11 +22,19 @@ export default defineConfig({
         target: 'http://127.0.0.1:18080',
         changeOrigin: true,
       },
+      '/rag': {
+        target: 'http://127.0.0.1:18080',
+        changeOrigin: true,
+      },
+      '/admin': {
+        target: 'http://127.0.0.1:18080',
+        changeOrigin: true,
+      },
     },
   },
   build: {
-    // Output to static/editor so FastAPI can serve it unchanged
-    outDir: path.resolve(__dirname, '..', 'static', 'editor'),
+    // Output to static/app so FastAPI can serve it unchanged
+    outDir: path.resolve(__dirname, '..', 'static', 'app'),
     emptyOutDir: true,
     sourcemap: true,
   },
