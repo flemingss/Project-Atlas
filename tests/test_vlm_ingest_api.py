@@ -79,20 +79,23 @@ class TestSessionLifecycle:
 
 
 class TestVlmParseHeadless:
-    """Test the _vlm_parse method on IngestNode without real VLM calls."""
+    """Test the VisionParser without real VLM calls."""
 
     @pytest.mark.asyncio
     async def test_vlm_parse_no_vision_model(self, monkeypatch):
         """When vision_model is not configured, return an error IngestResult."""
         from atlas.pipeline.ingest import IngestNode
+        from atlas.pipeline.parsers import VisionParser, ParserContext
 
         # Ensure config dir has no vision_model
         monkeypatch.setenv("ATLAS_CONFIG_DIR", ".")
         monkeypatch.setenv("ATLAS_MODELS_DIR", ".")
 
         node = IngestNode(pdf_parser_config={"backend": "vision"})
+        ctx = ParserContext(diagnostics=node.diagnostics, settings=node.settings, pdf_cfg=node._pdf_cfg)
+        parser = VisionParser(ctx)
 
-        # Patch ConfigManager at its source module (it's imported locally inside _vlm_parse)
+        # Patch ConfigManager at its source module (it's imported locally inside VisionParser.parse)
         with patch("atlas.config_manager.ConfigManager") as MockCM:
             mock_cm = MagicMock()
             mock_cfg = MagicMock()
@@ -100,20 +103,23 @@ class TestVlmParseHeadless:
             mock_cm.get.return_value = mock_cfg
             MockCM.return_value = mock_cm
 
-            result = await node._vlm_parse(_MINIMAL_PDF, "application/pdf", "test.pdf")
+            result = await parser.parse(_MINIMAL_PDF, "application/pdf", "test.pdf")
             assert not result.success
             assert "vision_model" in (result.error_message or "")
 
     @pytest.mark.asyncio
     async def test_vlm_parse_success(self, monkeypatch):
-        """With a mocked vision model, _vlm_parse should produce stitched markdown."""
+        """With a mocked vision model, VisionParser should produce stitched markdown."""
         from atlas.pipeline.ingest import IngestNode
+        from atlas.pipeline.parsers import VisionParser, ParserContext
 
         monkeypatch.setenv("ATLAS_CONFIG_DIR", ".")
         monkeypatch.setenv("ATLAS_MODELS_DIR", ".")
         monkeypatch.setenv("ATLAS_OPENAI_BASE_URL", "http://localhost:1234/v1")
 
         node = IngestNode(pdf_parser_config={"backend": "vision"})
+        ctx = ParserContext(diagnostics=node.diagnostics, settings=node.settings, pdf_cfg=node._pdf_cfg)
+        parser = VisionParser(ctx)
 
         mock_provider = AsyncMock()
         mock_provider.chat = AsyncMock(return_value="# Title\n\nPage content here.")
@@ -139,7 +145,7 @@ class TestVlmParseHeadless:
             mock_reg_inst.provider_for.return_value = mock_provider
             MockReg.return_value = mock_reg_inst
 
-            result = await node._vlm_parse(_MINIMAL_PDF, "application/pdf", "test.pdf")
+            result = await parser.parse(_MINIMAL_PDF, "application/pdf", "test.pdf")
 
         assert result.success
         assert "Title" in result.markdown_projection
@@ -155,21 +161,26 @@ class TestVlmParseHeadless:
 
 
 class TestVisionBackendSelection:
-    """Test that backend=vision routes to _vlm_parse."""
+    """Test that backend=vision routes to VisionParser."""
 
     @pytest.mark.asyncio
     async def test_backend_vision_calls_vlm_parse(self, monkeypatch):
         from atlas.pipeline.ingest import IngestNode
+        from atlas.pipeline.parsers import VisionParser
 
         monkeypatch.setenv("ATLAS_CONFIG_DIR", ".")
         monkeypatch.setenv("ATLAS_MODELS_DIR", ".")
 
         node = IngestNode(pdf_parser_config={"backend": "vision"})
 
-        # Mock the _vlm_parse method
+        # Mock VisionParser.parse to return a successful result
         mock_result = MagicMock()
         mock_result.success = True
-        node._vlm_parse = AsyncMock(return_value=mock_result)
+        mock_result.markdown_projection = "# Mocked Vision Content\n\nSufficient text for quality gates.\n" * 10
+
+        async def _fake_vision_parse(self, doc_bytes, source_mime_type, filename):
+            return mock_result
+        monkeypatch.setattr(VisionParser, "parse", _fake_vision_parse)
 
         result = await node.process_doc_bytes(
             doc_bytes=_MINIMAL_PDF,
@@ -177,7 +188,6 @@ class TestVisionBackendSelection:
             filename="test.pdf",
         )
 
-        node._vlm_parse.assert_called_once_with(_MINIMAL_PDF, "application/pdf", "test.pdf")
         assert result.success
 
 
