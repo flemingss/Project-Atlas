@@ -8,17 +8,24 @@ However, there are specific areas of technical debt and hidden dangers that shou
 
 ## 1. Technical Debt & Refactoring Targets
 
-### A. The "God Object" Controller (`src/atlas/api_admin.py`) — ✅ Remediated
+### A. The "God Object" Controller (`src/atlas/api_admin.py`) — ✅ Fully Remediated
 
 ~~This file is ~2,530 lines and violates the Single Responsibility Principle.~~
 
-**Remediation:** Extracted into `src/atlas/admin/` sub-package:
+**Remediation (Phase 1):** Extracted into `src/atlas/admin/` sub-package:
 - `_helpers.py` — Shared utilities (`group_count`, `ledger_summary`, `qdrant_*`, `parse_cursor`, `clean_scope_id`)
 - `scope.py` — Tenant/Project/Corpus CRUD (9 endpoints)
 - `looking_glass.py` — Monitoring & debugging (10+ endpoints, `_build_metrics`)
 - `cleanup_rules.py` — Cleanup feedback + rule management (suggest, apply, dry-run, export, import, delete)
 
-`api_admin.py` reduced from ~2,530 to ~1,310 lines. Remaining endpoints (config, workflow runs, HITL, doc versions, maintenance, exports) stay in the coordinator.
+**Remediation (Phase 2):** Complete decomposition:
+- `config.py` — Config effective, reload, restore-stock, validate-rules, config-versions CRUD
+- `hitl.py` — HITL task lifecycle (list/create/complete/resume/skip/reject)
+- `workflow.py` — Workflow runs, node-runs, artifacts CRUD
+- `maintenance.py` — Orphan cleanup, adopt, dangling-run, doc active-version, reassociate-scope, doc delete
+- `exports.py` — Doc/corpus/project/tenant export, scoped export, corpus import
+
+`api_admin.py` reduced from **~2,530 to ~170 lines** — now a thin coordinator with only `db/reset` and `self-test` inline.
 
 ### B. Ingest Backend Complexity (`src/atlas/pipeline/ingest.py`) — ✅ Remediated
 
@@ -100,7 +107,7 @@ The `strip_llm_artifacts` function uses a set of organized regex pattern groups 
 
 | Priority | Action | Status |
 | :--- | :--- | :--- |
-| **High** | Split `api_admin.py` into domain sub-modules | ✅ Done — `src/atlas/admin/` package (2,530 → 1,310 lines) |
+| **High** | Split `api_admin.py` into domain sub-modules | ✅ Done — `src/atlas/admin/` package (2,530 → 170 lines, 10 sub-modules) |
 | **High** | Add tests for `judge.py`, `metadata.py`, `orchestrator.py`, `tokens.py` | ✅ Done — 57 new tests |
 | **High** | Enforce coverage thresholds in CI | ✅ Done — 80% threshold, currently 88% |
 | **Medium** | Refactor `IngestNode` to Strategy Pattern | ✅ Done — `parsers.py` |
