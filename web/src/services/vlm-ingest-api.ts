@@ -50,6 +50,8 @@ export interface ProcessPageResponse {
   model: string;
   status: string;
   finish_reason?: string | null;
+  /** Set when status="error"; mirrors the per-page error in ProcessAllResponse.errors. */
+  error?: string | null;
 }
 
 export interface ProcessAllResponse {
@@ -83,6 +85,9 @@ export interface CommitResponse {
   chars: number;
   chunks_upserted: number;
   message: string;
+  /** Non-empty when feed_pipeline=true and the pipeline upsert step fails.
+   *  The artifact is still saved; this surfaces the failure to the caller. */
+  warnings?: string[] | null;
 }
 
 export interface SessionSummary {

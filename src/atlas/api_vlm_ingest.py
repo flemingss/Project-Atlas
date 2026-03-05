@@ -118,7 +118,10 @@ class ProcessPageResponse(BaseModel):
     markdown: str
     model: str
     status: str
+    # Reserved for providers that surface a stop reason (e.g. "stop", "length").
+    # Not populated by the current implementation but kept for forward compatibility.
     finish_reason: str | None = None
+    error: str | None = None  # set when status="error"
 
 
 class StitchResponse(BaseModel):
@@ -154,6 +157,7 @@ class CommitResponse(BaseModel):
     chars: int
     chunks_upserted: int = 0
     message: str
+    warnings: list[str] | None = None  # non-empty when pipeline upsert fails
 
 
 class PageSummary(BaseModel):
@@ -541,6 +545,9 @@ def make_vlm_ingest_router(
 
         If ``page_num`` is omitted, auto-picks the next pending page.
         Only one page is processed per call to prevent model overload.
+        Returns HTTP 409 if the requested page is already being processed by
+        a concurrent request.  Returns HTTP 200 with ``status="error"`` and
+        an ``error`` field when the VLM provider or render step fails.
         """
         s = _get_session(session_id)
 
@@ -555,6 +562,15 @@ def make_vlm_ingest_router(
                 )
         if p < 0 or p >= s.page_count:
             raise HTTPException(status_code=400, detail=f"Page {p} out of range")
+
+        # CAS guard: reject duplicate concurrent requests for the same page.
+        # No await occurs between the check and the assignment, so this is
+        # atomic within asyncio's single-threaded event loop.
+        if s.page_statuses.get(p) == PageStatus.PROCESSING:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Page {p} is already being processed. Try again when it completes.",
+            )
 
         # Mark processing
         s.page_statuses[p] = PageStatus.PROCESSING
@@ -632,7 +648,7 @@ def make_vlm_ingest_router(
                 markdown="",
                 model="",
                 status="error",
-                finish_reason=error_msg,
+                error=error_msg,
             )
 
     # ------------------------------------------------------------------
@@ -785,6 +801,11 @@ def make_vlm_ingest_router(
         is pushed through the ingest pipeline with ``is_hitl_resume=True``
         so cleanup/judge/refine are skipped — the human already approved
         the content during VLM review.
+
+        If the pipeline step fails the commit itself is still considered
+        successful (the artifact is saved).  The response will include a
+        non-empty ``warnings`` list describing the failure so the caller can
+        surface it to the operator rather than silently discarding it.
         """
         import hashlib
 
@@ -899,6 +920,7 @@ def make_vlm_ingest_router(
 
         # ── Feed through pipeline (chunk → embed → Qdrant) ──────────
         chunks_upserted = 0
+        pipeline_warnings: list[str] = []
         if req.feed_pipeline:
             try:
                 pipeline_result = await ingest_text_via_pipeline(
@@ -926,20 +948,16 @@ def make_vlm_ingest_router(
                     "VLM ingest pipeline complete: run=%d chunks=%d",
                     run_id, chunks_upserted,
                 )
-            except Exception:
+            except Exception as exc:
+                warn = f"Pipeline processing failed: {exc}"
                 log.exception("Pipeline processing failed for VLM commit run=%d", run_id)
-                # The artifact is already saved; report partial success.
-                return CommitResponse(
-                    run_id=run_id,
-                    path=rel_path,
-                    chars=len(md),
-                    chunks_upserted=0,
-                    message="Artifact saved but pipeline processing failed — see server logs.",
-                )
+                pipeline_warnings.append(warn)
 
         msg = "VLM ingest committed"
         if chunks_upserted:
             msg += f" — {chunks_upserted} chunks indexed"
+        elif pipeline_warnings:
+            msg += " — artifact saved but pipeline processing failed (see warnings)"
         else:
             msg += " successfully"
 
@@ -949,6 +967,7 @@ def make_vlm_ingest_router(
             chars=len(md),
             chunks_upserted=chunks_upserted,
             message=msg,
+            warnings=pipeline_warnings if pipeline_warnings else None,
         )
 
     # ------------------------------------------------------------------
