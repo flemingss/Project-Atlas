@@ -7,14 +7,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
-from tempfile import NamedTemporaryFile
 from typing import Any
 
 import re
 
 from atlas.diagnostics import ErrorCode, get_diagnostics
-from atlas.ingest.docling_adapter import DoclingIngestError, parse_document_path, parse_html_string
+from atlas.ingest.docling_adapter import parse_html_string
+from atlas.pipeline.parsers import ParserContext, build_parser
 from atlas.schemas import ParseProfile
 from atlas.settings import Settings
 
@@ -86,7 +85,7 @@ class IngestNode:
         source_mime_type: str,
         filename: str | None = None,
     ) -> IngestResult:
-        """Process document bytes via Docling or layout parser (PDF/Office).
+        """Process document bytes via the configured parser strategy.
 
         For PDFs, the backend is selected by ``pdf_parser.backend`` in
         pipeline.yaml (or the ``ATLAS_PDF_PARSER_BACKEND`` env-var fallback):
@@ -94,6 +93,7 @@ class IngestNode:
         - ``auto`` (default): try Docling first, fall back to layout parser.
         - ``auto_layout``: try layout parser first, fall back to Docling.
         - ``layout``: layout parser only (error on failure).
+        - ``vision``: VLM-first (render → VLM per page → stitch).
         - ``docling``: Docling only (skip layout parser).
         """
         backend = (
@@ -102,155 +102,19 @@ class IngestNode:
         ).lower()
         is_pdf = source_mime_type == "application/pdf"
 
-        # ------ auto: Docling first, layout fallback --------------------------
-        if is_pdf and backend == "auto":
-            docling_result = await self._docling_parse(doc_bytes, source_mime_type, filename)
-            if docling_result.success:
-                return docling_result
-            _logger.info(
-                "Docling failed for %s — falling back to layout parser",
-                filename or "unnamed",
-            )
-            layout_result = self._try_layout_parser(doc_bytes, filename)
-            if layout_result is not None:
-                return self._apply_pdf_quality_gates(layout_result, source_mime_type, filename)
-            # Both failed — return the Docling error (more informative)
-            return docling_result
+        if not is_pdf:
+            # Non-PDF binary documents always use Docling
+            backend = "docling"
 
-        # ------ auto_layout: layout first, Docling fallback -------------------
-        if is_pdf and backend == "auto_layout":
-            layout_result = self._try_layout_parser(doc_bytes, filename)
-            if layout_result is not None:
-                return self._apply_pdf_quality_gates(layout_result, source_mime_type, filename)
-            _logger.info(
-                "Layout parser unavailable/failed for %s — falling back to Docling",
-                filename or "unnamed",
-            )
-            return await self._docling_parse(doc_bytes, source_mime_type, filename)
-
-        # ------ vision: VLM-first (render → VLM per page → stitch) -----------
-        if is_pdf and backend == "vision":
-            return await self._vlm_parse(doc_bytes, source_mime_type, filename)
-
-        # ------ layout: layout parser only (no fallback) ----------------------
-        if is_pdf and backend == "layout":
-            result = self._try_layout_parser(doc_bytes, filename)
-            if result is not None:
-                return self._apply_pdf_quality_gates(result, source_mime_type, filename)
-            return IngestResult(
-                success=False,
-                markdown_projection="",
-                docling_json={},
-                parse_profile=ParseProfile.PDF_LAYOUT,
-                docling_schema_version="unknown",
-                error_code=ErrorCode.DOC_PARSE_FAILED,
-                error_message="Layout parser failed and backend=layout (no fallback).",
-            )
-
-        # ------ docling / default: Docling only -------------------------------
-        return await self._docling_parse(doc_bytes, source_mime_type, filename)
-
-    # ------------------------------------------------------------------
-    # Layout parser helper
-    # ------------------------------------------------------------------
-
-    def _try_layout_parser(
-        self, doc_bytes: bytes, filename: str | None,
-    ) -> IngestResult | None:
-        """Attempt layout-aware PDF parsing. Returns *None* on failure."""
-        try:
-            from atlas.ingest.pdf_parser import LayoutPdfParser  # lazy import
-        except Exception:
-            _logger.debug("Layout parser import failed", exc_info=True)
-            return None
-
-        try:
-            from atlas.ingest.model_manager import ModelManager
-            mgr = ModelManager.get_instance(models_dir=self.settings.atlas_models_dir)
-            if not all(mgr.models_available().values()):
-                _logger.info("ONNX models not yet downloaded — downloading now …")
-                mgr.ensure_models()
-
-            zoom = float(self._pdf_cfg.get("zoom", 0) or self.settings.atlas_layout_pdf_zoom)
-            parser = LayoutPdfParser(models_dir=self.settings.atlas_models_dir)
-            result = parser(doc_bytes, zoom=zoom)
-
-            # Confidence gate
-            min_conf = float(
-                self._pdf_cfg.get("ocr_confidence_min", 0)
-                or self.settings.atlas_layout_ocr_confidence_min
-            )
-            if result.mean_ocr_confidence < min_conf:
-                self.diagnostics.log_warning(
-                    component="ingest",
-                    message=f"Layout parser OCR confidence {result.mean_ocr_confidence:.2f} < {min_conf}",
-                    context={"filename": filename or ""},
-                )
-                return None  # falls back to Docling if backend=auto
-
-            markdown = result.markdown
-            meta: dict[str, Any] = {
-                "extraction_backend": "layout",
-                "mean_ocr_confidence": result.mean_ocr_confidence,
-                "layout_confidence": result.layout_confidence,
-                "ocr_coverage": result.ocr_coverage,
-                "estimated_is_scanned": result.estimated_is_scanned,
-                "page_count": result.page_count,
-            }
-            docling_json = {
-                "content": markdown,
-                "mime_type": "application/pdf",
-                "parsed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                "parser": "layout",
-                "metadata": result.metadata,
-            }
-
-            return IngestResult(
-                success=True,
-                markdown_projection=markdown,
-                docling_json=docling_json,
-                parse_profile=ParseProfile.PDF_LAYOUT,
-                docling_schema_version="1.0",
-                meta=meta,
-            )
-        except Exception as exc:
-            self.diagnostics.log_warning(
-                component="ingest",
-                message=f"Layout parser failed: {exc}",
-                context={"filename": filename or ""},
-            )
-            _logger.debug("Layout parser traceback", exc_info=True)
-            return None
-
-    # ------------------------------------------------------------------
-    # VLM-first parser (headless mode)
-    # ------------------------------------------------------------------
-
-    async def _vlm_parse(
-        self,
-        doc_bytes: bytes,
-        source_mime_type: str,
-        filename: str | None,
-    ) -> IngestResult:
-        """Parse PDF via VLM — render each page and send to vision model.
-
-        This is the headless/automated path for ``backend: vision``.
-        Uses the same per-page VLM logic as the interactive wizard but
-        with default settings (no operator preview).
-        """
-        from atlas.ingest.page_renderer import (
-            CropMargins,
-            build_vision_messages,
-            page_count as pdf_page_count,
-            render_page_base64,
+        ctx = ParserContext(
+            diagnostics=self.diagnostics,
+            settings=self.settings,
+            pdf_cfg=self._pdf_cfg,
         )
-        from atlas.llm.provider import ChatMessage
-        from atlas.llm.registry import ModelRegistry
-        from atlas.vlm_ingest.stitcher import PageResult, stitch_pages
+        parser = build_parser(backend, ctx)
+        result = await parser.parse(doc_bytes, source_mime_type, filename)
 
-        try:
-            n_pages = pdf_page_count(doc_bytes)
-        except Exception as exc:
+        if result is None:
             return IngestResult(
                 success=False,
                 markdown_projection="",
@@ -258,205 +122,11 @@ class IngestNode:
                 parse_profile=ParseProfile.PDF_LAYOUT,
                 docling_schema_version="unknown",
                 error_code=ErrorCode.DOC_PARSE_FAILED,
-                error_message=f"Failed to read PDF pages: {exc}",
+                error_message=f"Parser backend={backend} failed and returned no result.",
             )
 
-        # Resolve vision model
-        try:
-            from atlas.config_manager import ConfigManager
-            config_dir = Path(self.settings.atlas_config_dir).resolve()
-            config_manager = ConfigManager(config_dir=config_dir)
-            models_cfg = config_manager.get().models
-            model_registry = ModelRegistry(settings=self.settings, models_cfg=models_cfg)
-            resolved = model_registry.resolve("vision_model")
-            provider = model_registry.provider_for(resolved.provider_name)
-        except KeyError:
-            return IngestResult(
-                success=False,
-                markdown_projection="",
-                docling_json={},
-                parse_profile=ParseProfile.PDF_LAYOUT,
-                docling_schema_version="unknown",
-                error_code=ErrorCode.DOC_PARSE_FAILED,
-                error_message="No vision_model configured in models.yaml for backend=vision.",
-            )
-
-        # Get crop settings from pipeline config
-        vlm_cfg = self._pdf_cfg.get("vlm", {}) or {}
-        dpi = int(vlm_cfg.get("dpi", 200))
-        crop = CropMargins(
-            top=float(vlm_cfg.get("crop_top", 0.04)),
-            bottom=float(vlm_cfg.get("crop_bottom", 0.04)),
-        )
-        system_prompt = vlm_cfg.get("system_prompt")
-
-        # Process pages sequentially — one at a time to avoid hallucination
-        page_results: list[PageResult] = []
-        for p in range(n_pages):
-            try:
-                page_uri = render_page_base64(doc_bytes, p, dpi=dpi, crop=crop)
-                raw_messages = build_vision_messages(
-                    page_image_uri=page_uri,
-                    current_markdown="",
-                    system_prompt=system_prompt,
-                )
-                messages = [ChatMessage(role=m["role"], content=m["content"]) for m in raw_messages]
-
-                _logger.info(
-                    "VLM ingest (headless): page %d/%d model=%s dpi=%d file=%s",
-                    p + 1, n_pages, resolved.model_name, dpi, filename or "unnamed",
-                )
-
-                corrected = await provider.chat(
-                    model=resolved.model_name,
-                    messages=messages,
-                    params=resolved.params,
-                )
-
-                page_results.append(PageResult(
-                    page_num=p,
-                    markdown=corrected,
-                    model=resolved.model_name,
-                    dpi=dpi,
-                    crop_top=crop.top,
-                    crop_bottom=crop.bottom,
-                ))
-            except Exception as exc:
-                _logger.warning(
-                    "VLM page %d failed: %s — skipping", p, exc,
-                )
-
-        if not page_results:
-            return IngestResult(
-                success=False,
-                markdown_projection="",
-                docling_json={},
-                parse_profile=ParseProfile.PDF_LAYOUT,
-                docling_schema_version="unknown",
-                error_code=ErrorCode.DOC_PARSE_FAILED,
-                error_message="VLM failed on all pages.",
-            )
-
-        # Stitch deterministically
-        stitched = stitch_pages(page_results)
-
-        meta: dict[str, Any] = {
-            "extraction_backend": "vision",
-            "vlm_model": resolved.model_name,
-            "dpi": dpi,
-            "page_count": n_pages,
-            "pages_processed": stitched.pages_processed,
-            "tables_merged": stitched.tables_merged,
-            "headings_merged": stitched.headings_merged,
-        }
-        docling_json = {
-            "content": stitched.markdown,
-            "mime_type": "application/pdf",
-            "parsed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            "parser": "vision",
-            "metadata": meta,
-        }
-
-        return IngestResult(
-            success=True,
-            markdown_projection=stitched.markdown,
-            docling_json=docling_json,
-            parse_profile=ParseProfile.PDF_LAYOUT,
-            docling_schema_version="1.0",
-            meta=meta,
-        )
-
-    # ------------------------------------------------------------------
-    # Docling path (original logic)
-    # ------------------------------------------------------------------
-
-    async def _docling_parse(
-        self,
-        doc_bytes: bytes,
-        source_mime_type: str,
-        filename: str | None,
-    ) -> IngestResult:
-        """Parse via Docling (PDF/Office) — original ingest path."""
-        try:
-            suffix = ".pdf"
-            if filename and "." in filename:
-                suffix = "." + filename.rsplit(".", 1)[-1]
-            else:
-                suffix = {
-                    "application/pdf": ".pdf",
-                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
-                    "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
-                    "application/msword": ".doc",
-                    "application/vnd.ms-powerpoint": ".ppt",
-                    "application/vnd.ms-excel": ".xls",
-                }.get(source_mime_type, ".pdf")
-
-            with NamedTemporaryFile(delete=True, suffix=suffix) as tmp:
-                tmp.write(doc_bytes)
-                tmp.flush()
-                parsed = parse_document_path(doc_path=Path(tmp.name), source_mime_type=source_mime_type)
-
-            if not (parsed.markdown_projection or "").strip():
-                self.diagnostics.log_warning(
-                    component="ingest",
-                    message="Docling produced an empty markdown projection (OCR/text extraction returned no content)",
-                    context={
-                        "source_mime_type": source_mime_type,
-                        "filename": filename or "",
-                    },
-                )
-                return IngestResult(
-                    success=False,
-                    markdown_projection="",
-                    docling_json=parsed.docling_json,
-                    parse_profile=parsed.parse_profile,
-                    docling_schema_version=parsed.docling_schema_version,
-                    error_code=ErrorCode.DOC_OCR_EMPTY,
-                    error_message=(
-                        "OCR/text extraction returned no content. The document may contain no selectable text "
-                        "or the scan quality is too low for OCR."
-                    ),
-                    meta=parsed.meta,
-                )
-        except DoclingIngestError as e:
-            return IngestResult(
-                success=False,
-                markdown_projection="",
-                docling_json={},
-                parse_profile=ParseProfile.PDF_TEXT,
-                docling_schema_version="unknown",
-                error_code=e.error_code,
-                error_message=str(e),
-            )
-        except Exception as e:  # noqa: BLE001
-            self.diagnostics.log_error(
-                component="ingest",
-                error_code=ErrorCode.DOC_PARSE_FAILED,
-                message="PDF processing failed",
-                context={"filename": filename or ""},
-                exception=e,
-            )
-            return IngestResult(
-                success=False,
-                markdown_projection="",
-                docling_json={},
-                parse_profile=ParseProfile.PDF_TEXT,
-                docling_schema_version="unknown",
-                error_code=ErrorCode.DOC_PARSE_FAILED,
-                error_message=str(e),
-            )
-
-        # Quality gates for PDF outputs to avoid indexing junk.
-        result = IngestResult(
-            success=True,
-            markdown_projection=parsed.markdown_projection,
-            docling_json=parsed.docling_json,
-            parse_profile=parsed.parse_profile,
-            docling_schema_version=parsed.docling_schema_version,
-            meta={**(parsed.meta or {}), "extraction_backend": "docling"},
-        )
-        if source_mime_type == "application/pdf":
+        # Apply PDF quality gates for successful PDF results
+        if is_pdf and result.success:
             return self._apply_pdf_quality_gates(result, source_mime_type, filename)
         return result
 

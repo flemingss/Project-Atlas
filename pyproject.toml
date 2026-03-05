@@ -37,6 +37,7 @@ dependencies = [
 dev = [
   "pytest>=8.0",
   "pytest-asyncio>=0.23",
+  "pytest-cov>=5.0",
   "ruff>=0.6",
 ]
 
@@ -61,6 +62,7 @@ line-length = 100
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+addopts = "--cov=atlas.pipeline --cov-report=term-missing --cov-fail-under=80"
 markers = [
   "integration: integration tests that hit external services (e.g., Docker Qdrant); skipped unless explicitly selected",
 ]

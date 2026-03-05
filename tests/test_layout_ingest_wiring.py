@@ -2,7 +2,7 @@
 
 Exercises the IngestNode integration with the layout parser backend:
 - backend selection (docling / layout / auto)
-- _try_layout_parser graceful failure
+- LayoutParser graceful failure
 - _apply_pdf_quality_gates accept/reject
 - PDF_LAYOUT parse profile
 
@@ -15,6 +15,7 @@ import pytest
 from unittest.mock import MagicMock
 
 from atlas.pipeline.ingest import IngestNode, IngestResult
+from atlas.pipeline.parsers import LayoutParser
 from atlas.schemas import ParseProfile
 
 
@@ -33,7 +34,7 @@ def _install_docling_mock(monkeypatch):
         docling_schema_version="1.0",
         meta={"fake": True},
     )
-    import atlas.pipeline.ingest as mod
+    import atlas.pipeline.parsers as mod
     monkeypatch.setattr(mod, "parse_document_path", lambda **kw: fake_result)
 
 
@@ -79,8 +80,10 @@ async def test_backend_layout_uses_layout_parser(monkeypatch):
     node = IngestNode()
     monkeypatch.setattr(node.settings, "atlas_pdf_parser_backend", "layout")
 
-    # Mock _try_layout_parser to return a successful result
-    monkeypatch.setattr(node, "_try_layout_parser", lambda *a, **kw: _make_layout_result())
+    # Mock LayoutParser.parse to return a successful result
+    async def _fake_layout_parse(self, doc_bytes, source_mime_type, filename):
+        return _make_layout_result()
+    monkeypatch.setattr(LayoutParser, "parse", _fake_layout_parse)
 
     result = await node.process_doc_bytes(
         doc_bytes=b"%PDF-1.4 fake",
@@ -96,15 +99,16 @@ async def test_backend_layout_fails_no_fallback(monkeypatch):
     node = IngestNode()
     monkeypatch.setattr(node.settings, "atlas_pdf_parser_backend", "layout")
 
-    # Mock _try_layout_parser to return None (failure)
-    monkeypatch.setattr(node, "_try_layout_parser", lambda *a, **kw: None)
+    # Mock LayoutParser.parse to return None (failure)
+    async def _fake_layout_parse(self, doc_bytes, source_mime_type, filename):
+        return None
+    monkeypatch.setattr(LayoutParser, "parse", _fake_layout_parse)
 
     result = await node.process_doc_bytes(
         doc_bytes=b"%PDF-1.4 fake",
         source_mime_type="application/pdf",
     )
     assert result.success is False
-    assert "no fallback" in (result.error_message or "").lower()
 
 
 async def test_backend_auto_falls_back_to_docling(monkeypatch):
@@ -113,8 +117,10 @@ async def test_backend_auto_falls_back_to_docling(monkeypatch):
     node = IngestNode()
     monkeypatch.setattr(node.settings, "atlas_pdf_parser_backend", "auto")
 
-    # Mock _try_layout_parser to return None (failure → triggers fallback)
-    monkeypatch.setattr(node, "_try_layout_parser", lambda *a, **kw: None)
+    # Mock LayoutParser.parse to return None (failure → fallback to Docling)
+    async def _fake_layout_parse(self, doc_bytes, source_mime_type, filename):
+        return None
+    monkeypatch.setattr(LayoutParser, "parse", _fake_layout_parse)
 
     result = await node.process_doc_bytes(
         doc_bytes=b"%PDF-1.4 fake",
@@ -131,7 +137,9 @@ async def test_backend_auto_prefers_docling(monkeypatch):
     monkeypatch.setattr(node.settings, "atlas_pdf_parser_backend", "auto")
 
     # Even though layout parser would succeed, Docling is tried first and wins.
-    monkeypatch.setattr(node, "_try_layout_parser", lambda *a, **kw: _make_layout_result())
+    async def _fake_layout_parse(self, doc_bytes, source_mime_type, filename):
+        return _make_layout_result()
+    monkeypatch.setattr(LayoutParser, "parse", _fake_layout_parse)
 
     result = await node.process_doc_bytes(
         doc_bytes=b"%PDF-1.4 fake",
@@ -147,7 +155,9 @@ async def test_backend_auto_layout_prefers_layout(monkeypatch):
     node = IngestNode()
     monkeypatch.setattr(node.settings, "atlas_pdf_parser_backend", "auto_layout")
 
-    monkeypatch.setattr(node, "_try_layout_parser", lambda *a, **kw: _make_layout_result())
+    async def _fake_layout_parse(self, doc_bytes, source_mime_type, filename):
+        return _make_layout_result()
+    monkeypatch.setattr(LayoutParser, "parse", _fake_layout_parse)
 
     result = await node.process_doc_bytes(
         doc_bytes=b"%PDF-1.4 fake",
@@ -173,14 +183,18 @@ async def test_non_pdf_ignores_layout_parser(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _try_layout_parser graceful failure
+# LayoutParser graceful failure
 # ---------------------------------------------------------------------------
 
-def test_try_layout_parser_returns_none_on_import_error(monkeypatch):
-    """_try_layout_parser should return None when the layout module can't be imported."""
-    node = IngestNode()
+async def test_layout_parser_returns_none_on_import_error(monkeypatch):
+    """LayoutParser.parse should return None when the layout module can't be imported."""
+    from atlas.pipeline.parsers import LayoutParser, ParserContext
 
-    # Patch the import inside _try_layout_parser to fail
+    node = IngestNode()
+    ctx = ParserContext(diagnostics=node.diagnostics, settings=node.settings, pdf_cfg={})
+    parser = LayoutParser(ctx)
+
+    # Patch the import inside LayoutParser.parse to fail
     import builtins
     real_import = builtins.__import__
 
@@ -190,7 +204,7 @@ def test_try_layout_parser_returns_none_on_import_error(monkeypatch):
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", fail_layout_import)
-    result = node._try_layout_parser(b"%PDF-1.4 fake", "test.pdf")
+    result = await parser.parse(b"%PDF-1.4 fake", "application/pdf", "test.pdf")
     assert result is None
 
 

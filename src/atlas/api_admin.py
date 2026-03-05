@@ -3,17 +3,19 @@ from __future__ import annotations
 import io
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
-from fastapi import Query, Request
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from qdrant_client.http import models as qm
 from sqlalchemy.engine import Engine
-from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.concurrency import run_in_threadpool
 
+from atlas.admin._helpers import clean_scope_id, qdrant_collection, qdrant_post_json
+from atlas.admin.cleanup_rules import register_cleanup_routes
+from atlas.admin.looking_glass import register_looking_glass_routes
+from atlas.admin.scope import register_scope_routes
 from atlas.auth import require_admin_token, require_admin_token_strict
 from atlas.config_manager import ConfigManager
 from atlas.config_versions import (
@@ -59,18 +61,7 @@ from atlas.hitl_ledger import (
     skip_task,
     to_hitl_response,
 )
-from atlas.feedback_ledger import (
-    FeedbackCreateRequest,
-    FeedbackResponse,
-    create_feedback,
-    delete_feedback,
-    feedback_category_counts,
-    get_feedback,
-    list_feedback,
-    to_feedback_response,
-)
-from atlas.rule_suggester import suggest_cleanup_rule
-from atlas.models import ActiveDocVersion, CleanupFeedback, Corpus, HitlTaskRow, NodeRun, Project, Tenant, WorkflowRun
+from atlas.models import ActiveDocVersion, HitlTaskRow, NodeRun, WorkflowRun
 from atlas.pipeline.runner import resume_completed_hitl_task
 from atlas.vectorstore.qdrant_store import QdrantStore
 
@@ -114,58 +105,6 @@ class AdoptOrphanGroupRequest(BaseModel):
     corpus_id: str
 
 
-class TenantCreateRequest(BaseModel):
-    tenant_id: str
-    display_name: str = ""
-    description: str = ""
-
-
-class ProjectCreateRequest(BaseModel):
-    tenant_id: str
-    project_id: str
-    display_name: str = ""
-    description: str = ""
-
-
-class CorpusCreateRequest(BaseModel):
-    tenant_id: str
-    project_id: str
-    corpus_id: str
-    display_name: str = ""
-    description: str = ""
-
-
-class RuleSuggestionRequest(BaseModel):
-    markdown_sample: str = ""
-    issues: str = ""
-    context: dict[str, str] = {}
-
-
-class ApplyCleanupRuleRequest(BaseModel):
-    """Push a cleanup rule into the active DB config version."""
-    rule_yaml: str  # YAML string containing one rule entry
-    name: str = ""  # Config-version name (optional)
-    notes: str = "" # Config-version notes (optional)
-
-
-class ImportCleanupRulesRequest(BaseModel):
-    """Import cleanup rules from a YAML string."""
-    rules_yaml: str  # YAML string containing a list of rule entries
-    mode: str = "replace"  # 'replace' (overwrite all) or 'merge' (add/update by name)
-    name: str = ""  # Config-version name (optional)
-    notes: str = ""  # Config-version notes (optional)
-
-
-class CleanupDryRunRequest(BaseModel):
-    """Test cleanup rules against a markdown sample without ingesting."""
-    markdown_sample: str
-    tenant_id: str = "local"
-    project_id: str = "default"
-    corpus_id: str = "default"
-    mime_type: str = "application/pdf"
-    filename: str = ""
-
-
 def make_admin_router(*, config_manager: ConfigManager, session_factory: sessionmaker[Session]) -> APIRouter:
     r = APIRouter(prefix="/admin", dependencies=[Depends(require_admin_token)])
     settings = Settings()
@@ -184,132 +123,18 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
 
         engine = make_engine(settings.atlas_db_url)
 
-    def _group_count(
-        session: Session,
-        *,
-        label_col: Any,
-        from_table: Any,
-        where: Any | None = None,
-    ) -> dict[str, int]:
-        stmt = select(label_col, func.count()).select_from(from_table)
-        if where is not None:
-            stmt = stmt.where(where)
-        stmt = stmt.group_by(label_col)
-        res = session.execute(stmt).all()
-        out: dict[str, int] = {}
-        for k, v in res:
-            if k is None:
-                continue
-            out[str(k)] = int(v)
-        return out
-
-    def _ledger_summary(session: Session) -> dict[str, Any]:
-        import datetime as _dt
-
-        # Compute 24h cutoff once as a timezone-aware datetime so all sub-queries use a
-        # consistent value and comparisons work correctly with DateTime(timezone=True) columns.
-        cutoff_24h: _dt.datetime = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=24)
-
-        run_status = _group_count(session, label_col=WorkflowRun.status, from_table=WorkflowRun)
-        run_node = _group_count(session, label_col=WorkflowRun.current_node, from_table=WorkflowRun)
-        run_failed_codes = _group_count(
-            session,
-            label_col=WorkflowRun.error_code,
-            from_table=WorkflowRun,
-            where=(WorkflowRun.error_code != ""),
-        )
-
-        node_status = _group_count(session, label_col=NodeRun.status, from_table=NodeRun)
-        node_name = _group_count(session, label_col=NodeRun.node_name, from_table=NodeRun)
-        node_failed_codes = _group_count(
-            session,
-            label_col=NodeRun.error_code,
-            from_table=NodeRun,
-            where=(NodeRun.error_code != ""),
-        )
-
-        hitl_status = _group_count(session, label_col=HitlTaskRow.status, from_table=HitlTaskRow)
-        hitl_unassigned_pending = session.execute(
-            select(func.count())
-            .select_from(HitlTaskRow)
-            .where(HitlTaskRow.status == "pending")
-            .where(HitlTaskRow.assigned_to == "")
-        ).scalar_one()
-
-        run_total = session.execute(select(func.count()).select_from(WorkflowRun)).scalar_one()
-        node_total = session.execute(select(func.count()).select_from(NodeRun)).scalar_one()
-        hitl_total = session.execute(select(func.count()).select_from(HitlTaskRow)).scalar_one()
-
-        # Unique docs (distinct doc_id values across all runs)
-        docs_unique = session.execute(
-            select(func.count(func.distinct(WorkflowRun.doc_id))).select_from(WorkflowRun)
-        ).scalar_one()
-
-        # Runs created in the last 24 hours (uses cutoff_24h computed at function start)
-        runs_last_24h = session.execute(
-            select(func.count())
-            .select_from(WorkflowRun)
-            .where(WorkflowRun.created_at >= cutoff_24h)
-        ).scalar_one()
-
-        return {
-            "workflow_runs": {
-                "total": int(run_total),
-                "docs_unique": int(docs_unique),
-                "runs_last_24h": int(runs_last_24h),
-                "by_status": run_status,
-                "by_current_node": run_node,
-                "failed_by_error_code": run_failed_codes,
-            },
-            "node_runs": {
-                "total": int(node_total),
-                "by_status": node_status,
-                "by_node_name": node_name,
-                "failed_by_error_code": node_failed_codes,
-            },
-            "hitl_tasks": {
-                "total": int(hitl_total),
-                "by_status": hitl_status,
-                "pending_unassigned": int(hitl_unassigned_pending),
-            },
-        }
-
-    def _qdrant_url() -> str:
-        return settings.atlas_qdrant_url.rstrip("/")
-
-    def _qdrant_collection() -> str:
-        # Keep consistent with current RAG MVP behavior.
-        return "atlas_chunks"
-
-    async def _qdrant_get_json(path: str) -> dict[str, Any]:
-        import httpx
-
-        url = f"{_qdrant_url()}{path}"
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            return resp.json()
-
-    async def _qdrant_post_json(path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        import httpx
-
-        url = f"{_qdrant_url()}{path}"
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.post(url, json=payload)
-            resp.raise_for_status()
-            return resp.json()
+    # ── Qdrant / filesystem helpers (used only by remaining routes) ──
 
     async def _qdrant_clear_collection_points(*, collection: str) -> dict[str, Any]:
         import httpx
 
         try:
-            # Delete all points but keep the collection (no vector-size knowledge required).
-            return await _qdrant_post_json(
+            return await qdrant_post_json(
+                settings,
                 f"/collections/{collection}/points/delete",
                 {"filter": {}, "wait": True},
             )
         except httpx.HTTPStatusError as e:
-            # If the collection doesn't exist, treat as already cleared.
             if e.response is not None and int(e.response.status_code) == 404:
                 return {"ok": True, "detail": "collection not found"}
             raise
@@ -378,7 +203,7 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
             out["postgres"] = {"ok": True, "skipped": True}
 
         if bool(req.qdrant):
-            collection = _qdrant_collection()
+            collection = qdrant_collection()
             res = await _qdrant_clear_collection_points(collection=collection)
             out["qdrant"] = {"ok": True, "collection": collection, "result": res.get("result"), "detail": res.get("detail")}
         else:
@@ -392,20 +217,10 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
 
         return out
 
-    def _parse_cursor(cursor: str | None) -> str | int | None:
-        if cursor is None or cursor == "":
-            return None
-        if cursor.isdigit():
-            return int(cursor)
-        return cursor
-
-    def _clean_scope_id(label: str, value: str) -> str:
-        v = (value or "").strip()
-        if not v:
-            from fastapi import HTTPException
-
-            raise HTTPException(status_code=400, detail=f"{label} must be non-empty")
-        return v
+    # ── Register sub-module routes ───────────────────────────────────
+    register_scope_routes(r, session_factory=session_factory, settings=settings)
+    register_looking_glass_routes(r, session_factory=session_factory, settings=settings)
+    register_cleanup_routes(r, session_factory=session_factory, config_manager=config_manager, settings=settings)
 
     @r.get("/config/effective")
     def effective_config() -> dict:
@@ -531,231 +346,6 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
         with session_factory() as session:
             activate_config_version(session, config_id=config_id)
         return {"ok": True, "active_id": config_id}
-
-    @r.get("/tenants")
-    def list_tenants(active_only: bool = Query(default=True)) -> dict[str, Any]:
-        with session_factory() as session:
-            stmt = select(Tenant).order_by(Tenant.tenant_id.asc())
-            if active_only:
-                stmt = stmt.where(Tenant.is_active.is_(True))
-            rows = list(session.execute(stmt).scalars().all())
-        return {
-            "tenants": [
-                {
-                    "tenant_id": t.tenant_id,
-                    "display_name": t.display_name,
-                    "description": t.description,
-                    "is_active": bool(t.is_active),
-                }
-                for t in rows
-            ]
-        }
-
-    @r.post("/tenants")
-    def create_tenant(req: TenantCreateRequest) -> dict[str, Any]:
-        t_id = _clean_scope_id("tenant_id", req.tenant_id)
-        row = Tenant(
-            tenant_id=t_id,
-            display_name=(req.display_name or "").strip(),
-            description=(req.description or "").strip(),
-            is_active=True,
-        )
-        with session_factory() as session:
-            try:
-                session.add(row)
-                session.commit()
-            except IntegrityError as e:
-                session.rollback()
-                from fastapi import HTTPException
-
-                raise HTTPException(status_code=409, detail="tenant already exists") from e
-        return {"ok": True, "tenant_id": t_id}
-
-    @r.delete("/tenants/{tenant_id}")
-    def delete_tenant(tenant_id: str) -> dict[str, Any]:
-        t_id = _clean_scope_id("tenant_id", tenant_id)
-        with session_factory() as session:
-            proj_count = int(
-                session.execute(
-                    select(func.count()).select_from(Project).where(Project.tenant_id == t_id)
-                ).scalar_one()
-            )
-            corp_count = int(
-                session.execute(
-                    select(func.count()).select_from(Corpus).where(Corpus.tenant_id == t_id)
-                ).scalar_one()
-            )
-            if proj_count > 0 or corp_count > 0:
-                from fastapi import HTTPException
-
-                raise HTTPException(status_code=409, detail="tenant has projects/corpora; delete children first")
-
-            row = session.execute(select(Tenant).where(Tenant.tenant_id == t_id)).scalars().first()
-            if row is None:
-                from fastapi import HTTPException
-
-                raise HTTPException(status_code=404, detail="tenant not found")
-            session.delete(row)
-            session.commit()
-        return {"ok": True, "tenant_id": t_id}
-
-    @r.get("/projects")
-    def list_projects(tenant_id: str | None = Query(default=None), active_only: bool = Query(default=True)) -> dict[str, Any]:
-        with session_factory() as session:
-            stmt = select(Project).order_by(Project.tenant_id.asc(), Project.project_id.asc())
-            if tenant_id:
-                stmt = stmt.where(Project.tenant_id == tenant_id)
-            if active_only:
-                stmt = stmt.where(Project.is_active.is_(True))
-            rows = list(session.execute(stmt).scalars().all())
-        return {
-            "projects": [
-                {
-                    "tenant_id": p.tenant_id,
-                    "project_id": p.project_id,
-                    "display_name": p.display_name,
-                    "description": p.description,
-                    "is_active": bool(p.is_active),
-                }
-                for p in rows
-            ]
-        }
-
-    @r.post("/projects")
-    def create_project(req: ProjectCreateRequest) -> dict[str, Any]:
-        t_id = _clean_scope_id("tenant_id", req.tenant_id)
-        p_id = _clean_scope_id("project_id", req.project_id)
-        row = Project(
-            tenant_id=t_id,
-            project_id=p_id,
-            display_name=(req.display_name or "").strip(),
-            description=(req.description or "").strip(),
-            is_active=True,
-        )
-        with session_factory() as session:
-            tenant = session.execute(select(Tenant).where(Tenant.tenant_id == t_id)).scalars().first()
-            if tenant is None:
-                from fastapi import HTTPException
-
-                raise HTTPException(status_code=404, detail="tenant not found")
-            try:
-                session.add(row)
-                session.commit()
-            except IntegrityError as e:
-                session.rollback()
-                from fastapi import HTTPException
-
-                raise HTTPException(status_code=409, detail="project already exists in tenant") from e
-        return {"ok": True, "tenant_id": t_id, "project_id": p_id}
-
-    @r.delete("/projects/{project_id}")
-    def delete_project(project_id: str, tenant_id: str = Query(...)) -> dict[str, Any]:
-        t_id = _clean_scope_id("tenant_id", tenant_id)
-        p_id = _clean_scope_id("project_id", project_id)
-        with session_factory() as session:
-            corp_count = int(
-                session.execute(
-                    select(func.count())
-                    .select_from(Corpus)
-                    .where(Corpus.tenant_id == t_id, Corpus.project_id == p_id)
-                ).scalar_one()
-            )
-            if corp_count > 0:
-                from fastapi import HTTPException
-
-                raise HTTPException(status_code=409, detail="project has corpora; delete children first")
-
-            row = session.execute(
-                select(Project).where(Project.tenant_id == t_id, Project.project_id == p_id)
-            ).scalars().first()
-            if row is None:
-                from fastapi import HTTPException
-
-                raise HTTPException(status_code=404, detail="project not found")
-            session.delete(row)
-            session.commit()
-        return {"ok": True, "tenant_id": t_id, "project_id": p_id}
-
-    @r.get("/corpora")
-    def list_corpora(
-        tenant_id: str | None = Query(default=None),
-        project_id: str | None = Query(default=None),
-        active_only: bool = Query(default=True),
-    ) -> dict[str, Any]:
-        with session_factory() as session:
-            stmt = select(Corpus).order_by(Corpus.tenant_id.asc(), Corpus.project_id.asc(), Corpus.corpus_id.asc())
-            if tenant_id:
-                stmt = stmt.where(Corpus.tenant_id == tenant_id)
-            if project_id:
-                stmt = stmt.where(Corpus.project_id == project_id)
-            if active_only:
-                stmt = stmt.where(Corpus.is_active.is_(True))
-            rows = list(session.execute(stmt).scalars().all())
-        return {
-            "corpora": [
-                {
-                    "tenant_id": c.tenant_id,
-                    "project_id": c.project_id,
-                    "corpus_id": c.corpus_id,
-                    "display_name": c.display_name,
-                    "description": c.description,
-                    "is_active": bool(c.is_active),
-                }
-                for c in rows
-            ]
-        }
-
-    @r.post("/corpora")
-    def create_corpus(req: CorpusCreateRequest) -> dict[str, Any]:
-        t_id = _clean_scope_id("tenant_id", req.tenant_id)
-        p_id = _clean_scope_id("project_id", req.project_id)
-        c_id = _clean_scope_id("corpus_id", req.corpus_id)
-        row = Corpus(
-            tenant_id=t_id,
-            project_id=p_id,
-            corpus_id=c_id,
-            display_name=(req.display_name or "").strip(),
-            description=(req.description or "").strip(),
-            is_active=True,
-        )
-        with session_factory() as session:
-            project = session.execute(
-                select(Project).where(Project.tenant_id == t_id, Project.project_id == p_id)
-            ).scalars().first()
-            if project is None:
-                from fastapi import HTTPException
-
-                raise HTTPException(status_code=404, detail="project not found")
-            try:
-                session.add(row)
-                session.commit()
-            except IntegrityError as e:
-                session.rollback()
-                from fastapi import HTTPException
-
-                raise HTTPException(status_code=409, detail="corpus already exists in project") from e
-        return {"ok": True, "tenant_id": t_id, "project_id": p_id, "corpus_id": c_id}
-
-    @r.delete("/corpora/{corpus_id}")
-    def delete_corpus(corpus_id: str, tenant_id: str = Query(...), project_id: str = Query(...)) -> dict[str, Any]:
-        t_id = _clean_scope_id("tenant_id", tenant_id)
-        p_id = _clean_scope_id("project_id", project_id)
-        c_id = _clean_scope_id("corpus_id", corpus_id)
-        with session_factory() as session:
-            row = session.execute(
-                select(Corpus).where(
-                    Corpus.tenant_id == t_id,
-                    Corpus.project_id == p_id,
-                    Corpus.corpus_id == c_id,
-                )
-            ).scalars().first()
-            if row is None:
-                from fastapi import HTTPException
-
-                raise HTTPException(status_code=404, detail="corpus not found")
-            session.delete(row)
-            session.commit()
-        return {"ok": True, "tenant_id": t_id, "project_id": p_id, "corpus_id": c_id}
 
     @r.get("/runs", response_model=list[WorkflowRunResponse])
     def runs(
@@ -928,373 +518,6 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
                 raise HTTPException(status_code=409, detail=str(e)) from e
         return to_hitl_response(row)
 
-    # ------------------------------------------------------------------
-    # Cleanup feedback endpoints (Phase 7B)
-    # ------------------------------------------------------------------
-
-    @r.post("/cleanup-feedback", response_model=FeedbackResponse, status_code=201)
-    def feedback_create(req: FeedbackCreateRequest) -> FeedbackResponse:
-        with session_factory() as session:
-            row = create_feedback(session, req=req)
-        return to_feedback_response(row)
-
-    @r.get("/cleanup-feedback", response_model=list[FeedbackResponse])
-    def feedback_list(
-        tenant_id: str | None = Query(default=None),
-        project_id: str | None = Query(default=None),
-        corpus_id: str | None = Query(default=None),
-        doc_id: str | None = Query(default=None),
-        category: str | None = Query(default=None),
-        limit: int = Query(default=100, ge=1, le=1000),
-    ) -> list[FeedbackResponse]:
-        with session_factory() as session:
-            rows = list_feedback(
-                session,
-                tenant_id=tenant_id,
-                project_id=project_id,
-                corpus_id=corpus_id,
-                doc_id=doc_id,
-                category=category,
-                limit=int(limit),
-            )
-        return [to_feedback_response(r) for r in rows]
-
-    @r.get("/cleanup-feedback/categories")
-    def feedback_categories(
-        tenant_id: str | None = Query(default=None),
-        project_id: str | None = Query(default=None),
-        corpus_id: str | None = Query(default=None),
-    ) -> dict[str, int]:
-        with session_factory() as session:
-            return feedback_category_counts(
-                session,
-                tenant_id=tenant_id,
-                project_id=project_id,
-                corpus_id=corpus_id,
-            )
-
-    @r.get("/cleanup-feedback/{feedback_id}", response_model=FeedbackResponse)
-    def feedback_get(feedback_id: int) -> FeedbackResponse:
-        with session_factory() as session:
-            row = get_feedback(session, feedback_id=feedback_id)
-        if row is None:
-            from fastapi import HTTPException
-            raise HTTPException(status_code=404, detail="feedback not found")
-        return to_feedback_response(row)
-
-    @r.delete("/cleanup-feedback/{feedback_id}")
-    def feedback_delete(feedback_id: int) -> dict[str, bool]:
-        with session_factory() as session:
-            deleted = delete_feedback(session, feedback_id=feedback_id)
-        if not deleted:
-            from fastapi import HTTPException
-            raise HTTPException(status_code=404, detail="feedback not found")
-        return {"deleted": True}
-
-    # ------------------------------------------------------------------
-    # Cleanup rule suggestion endpoint (Phase 7D)
-    # ------------------------------------------------------------------
-
-    @r.post("/cleanup-rules/suggest")
-    async def cleanup_rule_suggest(req: RuleSuggestionRequest) -> dict[str, Any]:
-        """Ask the LLM to suggest a cleanup rule for the given markdown sample."""
-        from atlas.llm.registry import ModelRegistry
-
-        eff = config_manager.get()
-        registry = ModelRegistry(settings=settings, models_cfg=eff.models)
-        # Prefer a dedicated chat_model role; fall back to refine_model.
-        for role in ("chat_model", "refine_model"):
-            try:
-                resolved = registry.resolve(role)
-                break
-            except KeyError:
-                continue
-        else:
-            from fastapi import HTTPException
-            raise HTTPException(status_code=503, detail="No chat or refine model configured")
-        provider = registry.provider_for(resolved.provider_name)
-        result = await suggest_cleanup_rule(
-            provider=provider,
-            model=resolved.model_name,
-            markdown_sample=req.markdown_sample,
-            issues=req.issues,
-            context=req.context,
-            params=resolved.params,
-        )
-        return result
-
-    @r.post("/cleanup-rules/apply")
-    def apply_cleanup_rule(req: ApplyCleanupRuleRequest) -> dict[str, Any]:
-        """Validate and apply a cleanup rule by creating a new DB config version.
-
-        The rule YAML is parsed, validated, and appended to the effective
-        ``cleanup_rules`` list.  A new config version is created and activated
-        so the pipeline picks it up without a container restart.
-        """
-        import yaml as _yaml
-        from fastapi import HTTPException
-        from atlas.startup_validation import validate_cleanup_rules
-
-        # 1. Parse the YAML
-        try:
-            parsed = _yaml.safe_load(req.rule_yaml)
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid YAML: {exc}")
-
-        # Normalize: single dict → list
-        if isinstance(parsed, dict):
-            parsed = [parsed]
-        if not isinstance(parsed, list) or not parsed:
-            raise HTTPException(status_code=400, detail="Expected a YAML list of rule entries")
-
-        # 2. Validate the rule(s) against the schema
-        errors = validate_cleanup_rules(parsed)
-        if errors:
-            raise HTTPException(status_code=422, detail={"validation_errors": errors})
-
-        # 3. Get the current effective cleanup_rules list
-        yaml_defaults = config_manager.get()
-        with session_factory() as session:
-            active = get_active_config_version(session)
-
-        if active is not None:
-            current_pipeline = active.payload.get("pipeline", {})
-        else:
-            current_pipeline = yaml_defaults.pipeline
-
-        existing_rules: list[dict[str, Any]] = list(current_pipeline.get("cleanup_rules", []) or [])
-
-        # Deduplicate by name — replace existing rule with same name, append otherwise
-        new_names = {r["name"] for r in parsed if "name" in r}
-        merged_rules = [r for r in existing_rules if r.get("name") not in new_names]
-        merged_rules.extend(parsed)
-
-        # 4. Create a new config version with the patched cleanup_rules
-        from atlas.config_versions import ConfigVersionCreateRequest, create_config_version
-
-        cv_req = ConfigVersionCreateRequest(
-            name=req.name or f"apply-rule-{parsed[0].get('name', 'unknown')}",
-            notes=req.notes or f"Applied cleanup rule(s): {', '.join(new_names)}",
-            base="current",
-            patch={"pipeline": {"cleanup_rules": merged_rules}},
-            activate=True,
-        )
-        row = create_config_version(session_factory(), req=cv_req, yaml_defaults=yaml_defaults)
-
-        return {
-            "ok": True,
-            "config_version_id": row.id,
-            "config_hash": row.config_hash,
-            "rules_count": len(merged_rules),
-            "applied": [r.get("name") for r in parsed],
-        }
-
-    @r.post("/cleanup-rules/dry-run")
-    async def cleanup_rules_dry_run(req: CleanupDryRunRequest) -> dict[str, Any]:
-        """Test the active cleanup rules against a markdown sample.
-
-        Returns the cleaned markdown, the matched rule name, per-step diffs,
-        and the doc-context used for matching — useful for diagnosing why a
-        rule does or doesn't fire.
-        """
-        from atlas.pipeline.cleanup import CleanupNode
-        from atlas.pipeline.cleanup_rules import DocContext, find_matching_rule, parse_rules
-
-        # Load effective config
-        yaml_defaults = config_manager.get()
-        with session_factory() as session:
-            active = get_active_config_version(session)
-
-        if active is not None:
-            pipeline_cfg = active.payload.get("pipeline", {})
-            source = f"db:config_version#{active.id}"
-        else:
-            pipeline_cfg = yaml_defaults.pipeline
-            source = "yaml-defaults"
-
-        raw_rules = list((pipeline_cfg.get("cleanup_rules", []) or []))
-        parsed_rules = parse_rules(raw_rules)
-
-        doc_ctx = DocContext(
-            tenant_id=req.tenant_id,
-            project_id=req.project_id,
-            corpus_id=req.corpus_id,
-            mime_type=req.mime_type,
-            filename=req.filename,
-        )
-
-        matched = find_matching_rule(parsed_rules, doc_ctx)
-
-        # Run the full cleanup node to get the result
-        node = CleanupNode()
-        result = await node.clean(
-            markdown=req.markdown_sample,
-            doc_context={
-                "tenant_id": req.tenant_id,
-                "project_id": req.project_id,
-                "corpus_id": req.corpus_id,
-                "mime_type": req.mime_type,
-                "filename": req.filename,
-            },
-            config=pipeline_cfg,
-        )
-
-        return {
-            "config_source": source,
-            "rules_available": len(parsed_rules),
-            "rules_names": [r.name for r in parsed_rules],
-            "doc_context": {
-                "tenant_id": req.tenant_id,
-                "project_id": req.project_id,
-                "corpus_id": req.corpus_id,
-                "mime_type": req.mime_type,
-                "filename": req.filename,
-            },
-            "matched_rule": matched.name if matched else None,
-            "matched_rule_steps": len(matched.steps) if matched else 0,
-            "rules_applied": result.rules_applied,
-            "rule_tags": result.rule_tags,
-            "fix_counts": result.fix_counts,
-            "input_length": len(req.markdown_sample),
-            "output_length": len(result.cleaned_markdown),
-            "changed": req.markdown_sample != result.cleaned_markdown,
-            "cleaned_markdown": result.cleaned_markdown,
-        }
-
-    @r.get("/cleanup-rules/export")
-    def export_cleanup_rules() -> StreamingResponse:
-        """Export the active cleanup rules as a downloadable YAML file."""
-        import yaml as _yaml
-
-        yaml_defaults = config_manager.get()
-        with session_factory() as session:
-            active = get_active_config_version(session)
-
-        if active is not None:
-            current_pipeline = active.payload.get("pipeline", {})
-        else:
-            current_pipeline = yaml_defaults.pipeline
-
-        rules: list[dict[str, Any]] = list(current_pipeline.get("cleanup_rules", []) or [])
-        yaml_str = _yaml.dump(rules, default_flow_style=False, sort_keys=False, allow_unicode=True)
-        buf = io.BytesIO(yaml_str.encode("utf-8"))
-        return StreamingResponse(
-            buf,
-            media_type="application/x-yaml",
-            headers={"Content-Disposition": "attachment; filename=cleanup_rules.yaml"},
-        )
-
-    @r.post("/cleanup-rules/import")
-    def import_cleanup_rules(req: ImportCleanupRulesRequest) -> dict[str, Any]:
-        """Import cleanup rules from YAML.
-
-        Modes:
-        - ``replace`` (default): overwrites the entire cleanup_rules list.
-        - ``merge``: adds new rules by name, replaces existing rules with the same name.
-        """
-        import yaml as _yaml
-        from fastapi import HTTPException
-        from atlas.startup_validation import validate_cleanup_rules
-
-        if req.mode not in ("replace", "merge"):
-            raise HTTPException(status_code=400, detail="mode must be 'replace' or 'merge'")
-
-        # 1. Parse
-        try:
-            parsed = _yaml.safe_load(req.rules_yaml)
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid YAML: {exc}")
-
-        if isinstance(parsed, dict):
-            parsed = [parsed]
-        if not isinstance(parsed, list):
-            raise HTTPException(status_code=400, detail="Expected a YAML list of rule entries")
-
-        # 2. Validate
-        errors = validate_cleanup_rules(parsed)
-        if errors:
-            raise HTTPException(status_code=422, detail={"validation_errors": errors})
-
-        # 3. Build final rule list
-        yaml_defaults = config_manager.get()
-        with session_factory() as session:
-            active = get_active_config_version(session)
-
-        if req.mode == "merge":
-            if active is not None:
-                current_pipeline = active.payload.get("pipeline", {})
-            else:
-                current_pipeline = yaml_defaults.pipeline
-            existing: list[dict[str, Any]] = list(current_pipeline.get("cleanup_rules", []) or [])
-            new_names = {r["name"] for r in parsed if "name" in r}
-            merged = [r for r in existing if r.get("name") not in new_names]
-            merged.extend(parsed)
-            final_rules = merged
-        else:
-            final_rules = parsed
-
-        imported_names = [r.get("name", "unnamed") for r in parsed]
-
-        # 4. Create config version
-        cv_req = ConfigVersionCreateRequest(
-            name=req.name or f"import-rules-{req.mode}",
-            notes=req.notes or f"Imported {len(parsed)} rule(s) ({req.mode}): {', '.join(imported_names)}",
-            base="current",
-            patch={"pipeline": {"cleanup_rules": final_rules}},
-            activate=True,
-        )
-        row = create_config_version(session_factory(), req=cv_req, yaml_defaults=yaml_defaults)
-
-        return {
-            "ok": True,
-            "mode": req.mode,
-            "config_version_id": row.id,
-            "config_hash": row.config_hash,
-            "rules_count": len(final_rules),
-            "imported": imported_names,
-        }
-
-    @r.delete("/cleanup-rules/{rule_name}")
-    def remove_cleanup_rule(rule_name: str) -> dict[str, Any]:
-        """Remove a cleanup rule by name.
-
-        Creates a new config version with the rule removed from the list.
-        """
-        from fastapi import HTTPException
-        from atlas.config_versions import ConfigVersionCreateRequest, create_config_version
-
-        yaml_defaults = config_manager.get()
-        with session_factory() as session:
-            active = get_active_config_version(session)
-
-        if active is not None:
-            current_pipeline = active.payload.get("pipeline", {})
-        else:
-            current_pipeline = yaml_defaults.pipeline
-
-        existing_rules: list[dict[str, Any]] = list(current_pipeline.get("cleanup_rules", []) or [])
-        filtered = [r for r in existing_rules if r.get("name") != rule_name]
-
-        if len(filtered) == len(existing_rules):
-            raise HTTPException(status_code=404, detail=f"No rule named '{rule_name}' found")
-
-        cv_req = ConfigVersionCreateRequest(
-            name=f"remove-rule-{rule_name}",
-            notes=f"Removed cleanup rule: {rule_name}",
-            base="current",
-            patch={"pipeline": {"cleanup_rules": filtered}},
-            activate=True,
-        )
-        row = create_config_version(session_factory(), req=cv_req, yaml_defaults=yaml_defaults)
-
-        return {
-            "ok": True,
-            "config_version_id": row.id,
-            "config_hash": row.config_hash,
-            "rules_count": len(filtered),
-            "removed": rule_name,
-        }
-
     @r.post("/self-test")
     def self_test(request: Request, timeout_s: float = Query(default=20.0, ge=1.0, le=120.0)) -> dict[str, Any]:
         api_url = str(request.base_url).rstrip("/")
@@ -1303,456 +526,13 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
         summary = run_scenarios(
             api_url=api_url,
             qdrant_url=settings.atlas_qdrant_url,
-            collection=_qdrant_collection(),
+            collection=qdrant_collection(),
             timeout_s=float(timeout_s),
             admin_token=incoming_token or settings.atlas_admin_token or None,
         )
         return {
             "ok": bool(summary.ok),
             "results": [{"name": r.name, "ok": bool(r.ok), "detail": r.detail} for r in summary.results],
-        }
-
-    @r.get("/looking-glass/qdrant")
-    async def looking_glass_qdrant() -> dict[str, Any]:
-        collection = _qdrant_collection()
-        info = await _qdrant_get_json(f"/collections/{collection}")
-        # best-effort: count points
-        count = await _qdrant_post_json(
-            f"/collections/{collection}/points/count",
-            {"exact": True, "filter": {}},
-        )
-        return {
-            "collection": collection,
-            "collection_info": info.get("result"),
-            "points_count": (count.get("result") or {}).get("count"),
-        }
-
-    @r.get("/looking-glass/ledger/summary")
-    def looking_glass_ledger_summary() -> dict[str, Any]:
-        with session_factory() as session:
-            return _ledger_summary(session)
-
-    @r.get("/looking-glass/ledger/in-flight", response_model=list[WorkflowRunResponse])
-    def looking_glass_in_flight(
-        limit: int = Query(default=50, ge=1, le=500),
-        tenant_id: str | None = Query(default=None),
-        project_id: str | None = Query(default=None),
-    ) -> list[WorkflowRunResponse]:
-        with session_factory() as session:
-            stmt = (
-                select(WorkflowRun)
-                .where(WorkflowRun.status.not_in(["completed", "failed"]))
-                .order_by(WorkflowRun.updated_at.desc(), WorkflowRun.id.desc())
-                .limit(int(limit))
-            )
-            if tenant_id:
-                stmt = stmt.where(WorkflowRun.tenant_id == tenant_id)
-            if project_id:
-                stmt = stmt.where(WorkflowRun.project_id == project_id)
-            rows = list(session.execute(stmt).scalars().all())
-            return [to_run_response(r) for r in rows]
-
-    @r.get("/looking-glass/ledger/failures")
-    def looking_glass_failures(
-        limit: int = Query(default=50, ge=1, le=500),
-        tenant_id: str | None = Query(default=None),
-        project_id: str | None = Query(default=None),
-    ) -> dict[str, Any]:
-        with session_factory() as session:
-            run_stmt = (
-                select(WorkflowRun)
-                .where(WorkflowRun.status == "failed")
-                .order_by(WorkflowRun.updated_at.desc(), WorkflowRun.id.desc())
-                .limit(int(limit))
-            )
-            if tenant_id:
-                run_stmt = run_stmt.where(WorkflowRun.tenant_id == tenant_id)
-            if project_id:
-                run_stmt = run_stmt.where(WorkflowRun.project_id == project_id)
-            runs = list(session.execute(run_stmt).scalars().all())
-
-            failures: list[dict[str, Any]] = []
-            for run in runs:
-                node_stmt = (
-                    select(NodeRun)
-                    .where(NodeRun.run_id == run.id)
-                    .where((NodeRun.status == "failed") | (NodeRun.error_code != "") | (NodeRun.error_message != ""))
-                    .order_by(NodeRun.id.desc())
-                    .limit(25)
-                )
-                nodes = list(session.execute(node_stmt).scalars().all())
-                failures.append(
-                    {
-                        "run": to_run_response(run).model_dump(),
-                        "node_errors": [to_node_run_response(n).model_dump() for n in nodes],
-                    }
-                )
-
-            return {"failures": failures}
-
-    @r.get("/looking-glass/ledger/hitl", response_model=list[HitlTaskResponse])
-    def looking_glass_hitl(
-        status: str | None = Query(default="pending"),
-        limit: int = Query(default=50, ge=1, le=500),
-    ) -> list[HitlTaskResponse]:
-        with session_factory() as session:
-            rows = list_hitl_tasks(session, status=status or None, limit=int(limit))
-            return [to_hitl_response(r) for r in rows]
-
-    @r.get("/looking-glass/inventory")
-    async def looking_glass_inventory(
-        max_points: int = Query(default=5000, ge=1, le=200000),
-        page_size: int = Query(default=500, ge=50, le=2000),
-    ) -> dict[str, Any]:
-        with session_factory() as session:
-            ledger = _ledger_summary(session)
-
-        collection = _qdrant_collection()
-        offset: str | int | None = None
-        scanned = 0
-        truncated = False
-
-        unique_docs: set[str] = set()
-        unique_tenants: set[str] = set()
-        unique_projects: set[str] = set()
-
-        points_by_tenant: dict[str, int] = {}
-        points_by_project: dict[str, int] = {}
-        points_by_tenant_project: dict[str, int] = {}
-        points_finalized: int = 0
-        points_nonfinalized: int = 0
-
-        while scanned < max_points:
-            body: dict[str, Any] = {
-                "limit": int(min(page_size, max_points - scanned)),
-                "with_payload": True,
-                "with_vector": False,
-            }
-            if offset is not None:
-                body["offset"] = offset
-
-            res = await _qdrant_post_json(f"/collections/{collection}/points/scroll", body)
-            result = res.get("result") or {}
-            points = result.get("points") or []
-            offset = result.get("next_page_offset")
-
-            if not points:
-                break
-
-            for p in points:
-                scanned += 1
-                payload = p.get("payload") or {}
-                doc_id = payload.get("doc_id")
-                tenant_id = payload.get("tenant_id")
-                project_id = payload.get("project_id")
-                is_finalized = payload.get("is_finalized")
-
-                if doc_id:
-                    unique_docs.add(str(doc_id))
-                if tenant_id:
-                    unique_tenants.add(str(tenant_id))
-                    points_by_tenant[str(tenant_id)] = points_by_tenant.get(str(tenant_id), 0) + 1
-                if project_id:
-                    unique_projects.add(str(project_id))
-                    points_by_project[str(project_id)] = points_by_project.get(str(project_id), 0) + 1
-
-                if tenant_id and project_id:
-                    key = f"{tenant_id}/{project_id}"
-                    points_by_tenant_project[key] = points_by_tenant_project.get(key, 0) + 1
-
-                if is_finalized is True:
-                    points_finalized += 1
-                elif is_finalized is False:
-                    points_nonfinalized += 1
-
-                if scanned >= max_points:
-                    break
-
-            if scanned >= max_points and offset is not None:
-                truncated = True
-                break
-            if offset is None:
-                break
-
-        return {
-            "collection": collection,
-            "ledger": ledger,
-            "scanned_points": scanned,
-            "truncated": truncated,
-            "unique_docs": len(unique_docs),
-            "unique_tenants": len(unique_tenants),
-            "unique_projects": len(unique_projects),
-            "points_finalized": points_finalized,
-            "points_nonfinalized": points_nonfinalized,
-            "points_by_tenant": points_by_tenant,
-            "points_by_project": points_by_project,
-            "points_by_tenant_project": points_by_tenant_project,
-        }
-
-    @r.get("/looking-glass/docs")
-    async def looking_glass_docs(
-        limit: int = Query(default=50, ge=1, le=200),
-        cursor: str | None = Query(default=None),
-        scan_page_size: int = Query(default=200, ge=50, le=1000),
-        tenant_id: str | None = Query(default=None),
-        project_id: str | None = Query(default=None),
-        corpus_id: str | None = Query(default=None),
-    ) -> dict[str, Any]:
-        collection = _qdrant_collection()
-        next_offset = _parse_cursor(cursor)
-
-        docs: dict[str, dict[str, Any]] = {}
-        scanned_pages = 0
-
-        # Build optional Qdrant filter from scope params.
-        scope_must: list[dict[str, Any]] = []
-        if tenant_id:
-            scope_must.append({"key": "tenant_id", "match": {"value": tenant_id}})
-        if project_id:
-            scope_must.append({"key": "project_id", "match": {"value": project_id}})
-        if corpus_id:
-            scope_must.append({"key": "corpus_id", "match": {"value": corpus_id}})
-
-        while len(docs) < limit and scanned_pages < 10:
-            scanned_pages += 1
-            body: dict[str, Any] = {
-                "limit": int(scan_page_size),
-                "with_payload": True,
-                "with_vector": False,
-            }
-            if next_offset is not None:
-                body["offset"] = next_offset
-            if scope_must:
-                body["filter"] = {"must": scope_must}
-
-            res = await _qdrant_post_json(f"/collections/{collection}/points/scroll", body)
-            result = res.get("result") or {}
-            points = result.get("points") or []
-            next_offset = result.get("next_page_offset")
-
-            for p in points:
-                payload = p.get("payload") or {}
-                doc_id = payload.get("doc_id")
-                if not doc_id or doc_id in docs:
-                    continue
-                docs[str(doc_id)] = {
-                    "doc_id": str(doc_id),
-                    "tenant_id": payload.get("tenant_id"),
-                    "project_id": payload.get("project_id"),
-                    "corpus_id": payload.get("corpus_id"),
-                    "doc_version": payload.get("doc_version"),
-                    "source_mime_type": payload.get("source_mime_type"),
-                    "is_finalized": payload.get("is_finalized"),
-                    "is_sensitive": payload.get("is_sensitive"),
-                    "created_at": payload.get("created_at"),
-                }
-                if len(docs) >= limit:
-                    break
-
-            if not points or next_offset is None:
-                break
-
-        return {
-            "collection": collection,
-            "docs": list(docs.values()),
-            "next_cursor": None if next_offset is None else str(next_offset),
-        }
-
-    @r.get("/looking-glass/docs/{doc_id}")
-    async def looking_glass_doc_detail(
-        doc_id: str,
-        limit: int = Query(default=100, ge=1, le=500),
-        cursor: str | None = Query(default=None),
-    ) -> dict[str, Any]:
-        collection = _qdrant_collection()
-        next_offset = _parse_cursor(cursor)
-
-        body: dict[str, Any] = {
-            "limit": int(limit),
-            "with_payload": True,
-            "with_vector": False,
-            "filter": {"must": [{"key": "doc_id", "match": {"value": doc_id}}]},
-        }
-        if next_offset is not None:
-            body["offset"] = next_offset
-
-        res = await _qdrant_post_json(f"/collections/{collection}/points/scroll", body)
-        result = res.get("result") or {}
-        points = result.get("points") or []
-        next_offset = result.get("next_page_offset")
-
-        chunks: list[dict[str, Any]] = []
-        for p in points:
-            payload = p.get("payload") or {}
-            chunks.append(
-                {
-                    "id": str(p.get("id")),
-                    "chunk_index": payload.get("chunk_index"),
-                    "text": payload.get("text"),
-                    "content_hash": payload.get("content_hash"),
-                    "created_at": payload.get("created_at"),
-                    "tenant_id": payload.get("tenant_id"),
-                    "project_id": payload.get("project_id"),
-                    "doc_version": payload.get("doc_version"),
-                    "is_finalized": payload.get("is_finalized"),
-                    "is_sensitive": payload.get("is_sensitive"),
-                }
-            )
-
-        return {
-            "collection": collection,
-            "doc_id": doc_id,
-            "chunks": chunks,
-            "next_cursor": None if next_offset is None else str(next_offset),
-        }
-
-    @r.get("/looking-glass/docs/{doc_id}/chunks/{chunk_index}")
-    async def looking_glass_chunk_preview(doc_id: str, chunk_index: int) -> dict[str, Any]:
-        collection = _qdrant_collection()
-        body: dict[str, Any] = {
-            "limit": 1,
-            "with_payload": True,
-            "with_vector": False,
-            "filter": {
-                "must": [
-                    {"key": "doc_id", "match": {"value": doc_id}},
-                    {"key": "chunk_index", "match": {"value": int(chunk_index)}},
-                ]
-            },
-        }
-        res = await _qdrant_post_json(f"/collections/{collection}/points/scroll", body)
-        result = res.get("result") or {}
-        points = result.get("points") or []
-        if not points:
-            return {"ok": False, "detail": "not found"}
-        p = points[0]
-        return {
-            "ok": True,
-            "collection": collection,
-            "doc_id": doc_id,
-            "chunk_index": int(chunk_index),
-            "id": str(p.get("id")),
-            "payload": p.get("payload") or {},
-        }
-
-    # ------------------------------------------------------------------
-    # Metrics aggregation endpoint (Phase 7C)
-    # ------------------------------------------------------------------
-
-    @r.get("/looking-glass/metrics")
-    def looking_glass_metrics(
-        tenant_id: str | None = Query(default=None),
-        project_id: str | None = Query(default=None),
-        corpus_id: str | None = Query(default=None),
-    ) -> dict[str, Any]:
-        """Aggregated pipeline quality metrics — optionally scoped.
-
-        Returns workflow status distribution, node failure rates, HITL
-        escalation rates, and cleanup-feedback category counts.
-        """
-        with session_factory() as session:
-            return _build_metrics(session, tenant_id=tenant_id, project_id=project_id, corpus_id=corpus_id)
-
-    def _build_metrics(
-        session: Session,
-        *,
-        tenant_id: str | None,
-        project_id: str | None,
-        corpus_id: str | None,
-    ) -> dict[str, Any]:
-        """Assemble the metrics payload."""
-
-        # --- Workflow run status distribution ---
-        run_stmt = select(WorkflowRun.status, func.count()).select_from(WorkflowRun)
-        if tenant_id:
-            run_stmt = run_stmt.where(WorkflowRun.tenant_id == tenant_id)
-        if project_id:
-            run_stmt = run_stmt.where(WorkflowRun.project_id == project_id)
-        run_stmt = run_stmt.group_by(WorkflowRun.status)
-        run_dist = {str(k): int(v) for k, v in session.execute(run_stmt).all() if k is not None}
-        run_total = sum(run_dist.values()) or 0
-
-        # --- Node failure rates ---
-        node_base = select(NodeRun).join(WorkflowRun, NodeRun.run_id == WorkflowRun.id)
-        if tenant_id:
-            node_base = node_base.where(WorkflowRun.tenant_id == tenant_id)
-        if project_id:
-            node_base = node_base.where(WorkflowRun.project_id == project_id)
-
-        node_total_q = select(func.count()).select_from(node_base.subquery())
-        node_total = session.execute(node_total_q).scalar_one()
-
-        node_fail_base = node_base.where((NodeRun.status == "failed") | (NodeRun.error_code != ""))
-        node_fail_count = session.execute(
-            select(func.count()).select_from(node_fail_base.subquery())
-        ).scalar_one()
-
-        node_by_name = select(
-            NodeRun.node_name, func.count()
-        ).join(WorkflowRun, NodeRun.run_id == WorkflowRun.id).where(
-            (NodeRun.status == "failed") | (NodeRun.error_code != "")
-        )
-        if tenant_id:
-            node_by_name = node_by_name.where(WorkflowRun.tenant_id == tenant_id)
-        if project_id:
-            node_by_name = node_by_name.where(WorkflowRun.project_id == project_id)
-        node_by_name = node_by_name.group_by(NodeRun.node_name)
-        node_fail_by_name = {str(k): int(v) for k, v in session.execute(node_by_name).all() if k is not None}
-
-        # --- HITL escalation ---
-        hitl_stmt = select(HitlTaskRow.status, func.count()).select_from(HitlTaskRow)
-        if tenant_id:
-            hitl_stmt = hitl_stmt.where(HitlTaskRow.tenant_id == tenant_id)
-        if project_id:
-            hitl_stmt = hitl_stmt.where(HitlTaskRow.project_id == project_id)
-        hitl_stmt = hitl_stmt.group_by(HitlTaskRow.status)
-        hitl_dist = {str(k): int(v) for k, v in session.execute(hitl_stmt).all() if k is not None}
-        hitl_total = sum(hitl_dist.values()) or 0
-
-        # --- Cleanup feedback categories ---
-        fb_counts = feedback_category_counts(
-            session,
-            tenant_id=tenant_id,
-            project_id=project_id,
-            corpus_id=corpus_id,
-        )
-
-        # --- Computed rates ---
-        completed = run_dist.get("completed", 0)
-        failed = run_dist.get("failed", 0)
-        auto_accepted = max(0, completed - hitl_total) if completed else 0
-
-        return {
-            "scope": {
-                "tenant_id": tenant_id,
-                "project_id": project_id,
-                "corpus_id": corpus_id,
-            },
-            "workflow_runs": {
-                "total": run_total,
-                "by_status": run_dist,
-                "completion_rate": round(completed / run_total, 4) if run_total else 0,
-                "failure_rate": round(failed / run_total, 4) if run_total else 0,
-            },
-            "node_runs": {
-                "total": int(node_total),
-                "failed": int(node_fail_count),
-                "failure_rate": round(int(node_fail_count) / int(node_total), 4) if node_total else 0,
-                "failures_by_node": node_fail_by_name,
-            },
-            "hitl": {
-                "total": hitl_total,
-                "by_status": hitl_dist,
-                "escalation_rate": round(hitl_total / run_total, 4) if run_total else 0,
-            },
-            "auto_accepted": {
-                "count": auto_accepted,
-                "rate": round(auto_accepted / run_total, 4) if run_total else 0,
-            },
-            "cleanup_feedback": {
-                "total": sum(fb_counts.values()),
-                "by_category": fb_counts,
-            },
         }
 
     @r.get("/docs/{doc_id}/active-version")
@@ -1807,7 +587,7 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
             )
 
         # Best-effort: update Qdrant payload flags for global search filtering.
-        store = QdrantStore(url=settings.atlas_qdrant_url, api_key=None, collection=_qdrant_collection())
+        store = QdrantStore(url=settings.atlas_qdrant_url, api_key=None, collection=qdrant_collection())
         base_must = [
             qm.FieldCondition(key="tenant_id", match=qm.MatchValue(value=t_id)),
             qm.FieldCondition(key="project_id", match=qm.MatchValue(value=p_id)),
@@ -1843,9 +623,9 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
         - active_doc_versions row for this doc scope (best-effort move)
         - Qdrant payload scope fields for matching chunks
         """
-        target_tenant = _clean_scope_id("tenant_id", req.tenant_id)
-        target_project = _clean_scope_id("project_id", req.project_id)
-        target_corpus = _clean_scope_id("corpus_id", req.corpus_id)
+        target_tenant = clean_scope_id("tenant_id", req.tenant_id)
+        target_project = clean_scope_id("project_id", req.project_id)
+        target_corpus = clean_scope_id("corpus_id", req.corpus_id)
 
         with session_factory() as session:
             run = get_workflow_run(session, run_id=run_id)
@@ -1911,7 +691,7 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
             session.commit()
 
         # Update Qdrant payload scope for this doc+version in old scope.
-        store = QdrantStore(url=settings.atlas_qdrant_url, api_key=None, collection=_qdrant_collection())
+        store = QdrantStore(url=settings.atlas_qdrant_url, api_key=None, collection=qdrant_collection())
         qdrant_updated = True
         qdrant_error = ""
         try:
@@ -1982,7 +762,7 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
             for t, p, d, v in run_rows
         }
 
-        collection = _qdrant_collection()
+        collection = qdrant_collection()
         scanned = 0
         orphan_groups: dict[tuple[str, str, str, str], int] = {}
 
@@ -2107,9 +887,9 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
         Creates a synthetic WorkflowRun so the chunks are no longer orphaned,
         then updates the Qdrant payload scope fields.
         """
-        target_tenant = _clean_scope_id("tenant_id", req.tenant_id)
-        target_project = _clean_scope_id("project_id", req.project_id)
-        target_corpus = _clean_scope_id("corpus_id", req.corpus_id)
+        target_tenant = clean_scope_id("tenant_id", req.tenant_id)
+        target_project = clean_scope_id("project_id", req.project_id)
+        target_corpus = clean_scope_id("corpus_id", req.corpus_id)
         old_tenant = req.old_tenant_id.strip()
         old_project = req.old_project_id.strip()
         old_doc_id = req.old_doc_id.strip()
@@ -2120,7 +900,7 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
             raise HTTPException(status_code=400, detail="All old scope fields must be non-empty")
 
         # Count existing Qdrant points in the old scope.
-        store = QdrantStore(url=settings.atlas_qdrant_url, api_key=None, collection=_qdrant_collection())
+        store = QdrantStore(url=settings.atlas_qdrant_url, api_key=None, collection=qdrant_collection())
         old_must = [
             qm.FieldCondition(key="tenant_id", match=qm.MatchValue(value=old_tenant)),
             qm.FieldCondition(key="project_id", match=qm.MatchValue(value=old_project)),
@@ -2210,7 +990,7 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
                 raise HTTPException(status_code=404, detail=f"WorkflowRun {run_id} not found")
 
             # Verify it really is dangling (no Qdrant points).
-            store = QdrantStore(url=settings.atlas_qdrant_url, api_key=None, collection=_qdrant_collection())
+            store = QdrantStore(url=settings.atlas_qdrant_url, api_key=None, collection=qdrant_collection())
             must = [
                 qm.FieldCondition(key="tenant_id", match=qm.MatchValue(value=str(run.tenant_id))),
                 qm.FieldCondition(key="project_id", match=qm.MatchValue(value=str(run.project_id))),
@@ -2244,7 +1024,7 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
         c_id = corpus_id or settings.atlas_default_corpus_id
 
         # Remove all Qdrant points for this doc in this scope.
-        collection = _qdrant_collection()
+        collection = qdrant_collection()
         delete_filter: dict[str, Any] = {
             "must": [
                 {"key": "tenant_id", "match": {"value": t_id}},
@@ -2252,7 +1032,7 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
                 {"key": "doc_id", "match": {"value": doc_id}},
             ]
         }
-        res = await _qdrant_post_json(
+        res = await qdrant_post_json(settings, 
             f"/collections/{collection}/points/delete",
             {"filter": delete_filter, "wait": True},
         )

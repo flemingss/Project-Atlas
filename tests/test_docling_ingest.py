@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-import atlas.pipeline.ingest as pipeline_ingest
+import atlas.pipeline.parsers as pipeline_parsers
 from atlas.api_rag import make_rag_router
 from atlas.config_manager import ConfigManager
 from atlas.db import make_engine, make_sessionmaker
@@ -37,7 +37,7 @@ def _fake_parse_document_path(*, doc_path: Path, source_mime_type: str) -> Docli
 
 def _make_test_app(tmp_root: Path, monkeypatch: Any) -> tuple[Any, Any]:
     app, session_factory = make_test_app(tmp_root, monkeypatch, include_admin=False)
-    monkeypatch.setattr(pipeline_ingest, "parse_document_path", _fake_parse_document_path)
+    monkeypatch.setattr(pipeline_parsers, "parse_document_path", _fake_parse_document_path)
     return app, session_factory
 
 
@@ -188,7 +188,7 @@ def test_rag_ingest_pdf_ocr_empty_returns_error_code(tmp_path: Path, monkeypatch
             meta={"fake": True, "source_mime_type": source_mime_type},
         )
 
-    monkeypatch.setattr(pipeline_ingest, "parse_document_path", _fake_parse_document_path_empty)
+    monkeypatch.setattr(pipeline_parsers, "parse_document_path", _fake_parse_document_path_empty)
 
     res = client.post(
         "/rag/ingest/file",
@@ -221,7 +221,7 @@ def test_rag_ingest_pdf_low_quality_returns_error_code(tmp_path: Path, monkeypat
             meta={"fake": True, "source_mime_type": source_mime_type, "extraction_method": "embedded_text"},
         )
 
-    monkeypatch.setattr(pipeline_ingest, "parse_document_path", _fake_parse_document_path_low_quality)
+    monkeypatch.setattr(pipeline_parsers, "parse_document_path", _fake_parse_document_path_low_quality)
 
     res = client.post(
         "/rag/ingest/file",
@@ -249,7 +249,7 @@ def test_rag_ingest_docling_unavailable_returns_error_code(tmp_path: Path, monke
     def _raise_unavailable(*, doc_path: Path, source_mime_type: str) -> None:  # noqa: ARG001
         raise DoclingUnavailableError()
 
-    monkeypatch.setattr(pipeline_ingest, "parse_document_path", _raise_unavailable)
+    monkeypatch.setattr(pipeline_parsers, "parse_document_path", _raise_unavailable)
 
     res = client.post(
         "/rag/ingest/file",
