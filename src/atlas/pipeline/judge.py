@@ -6,6 +6,7 @@ Evaluates document quality using Llama 3.2 3B with explicit few-shot rubric.
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -173,12 +174,33 @@ Your response:"""
         ]
         return await self.provider.chat(model=self.model_name, messages=messages, params=self.model_params)
 
+    @staticmethod
+    def _extract_int(raw: str) -> int | None:
+        """Extract an integer score from a value string.
+
+        Handles markdown formatting like ``**5**``, ``*4*``, ``[3]``,
+        extra whitespace, and trailing punctuation that LLMs sometimes
+        inject around numeric scores.
+        """
+        # Strip markdown bold/italic markers and brackets
+        cleaned = re.sub(r"[*_`\[\]()]", "", raw).strip().rstrip(".")
+        # Take first whitespace-delimited token (ignores trailing commentary)
+        first_token = cleaned.split()[0] if cleaned.split() else cleaned
+        try:
+            return int(first_token)
+        except ValueError:
+            return None
+
     def _parse_response(self, response: str) -> tuple[dict[str, int], str]:
         """Parse judge model response to extract per-dimension scores and rationale.
 
         Returns (sub_scores dict, rationale string).  If none of the expected
         dimension lines can be parsed the method falls back to a legacy single-
         SCORE line for backwards compatibility.
+
+        Handles common LLM formatting quirks: bold markers around scores
+        (``**5**``), parenthesised dimension names (``Score (Faithfulness): 5``),
+        and extra whitespace.
         """
         sub_scores: dict[str, int] = {}
         rationale = "Unable to parse response"
@@ -198,23 +220,23 @@ Your response:"""
                 key = key.strip().upper()
                 value = value.strip()
 
+                # Handle parenthesised key variants like "SCORE (FAITHFULNESS)"
+                paren_match = re.match(r"SCORE\s*\((\w[\w\s]*)\)", key)
+                if paren_match:
+                    key = paren_match.group(1).strip().upper()
+
                 if key == "RATIONALE":
                     rationale = value
                 elif key in dim_map:
-                    try:
-                        s = int(value)
+                    s = self._extract_int(value)
+                    if s is not None:
                         sub_scores[dim_map[key]] = max(1, min(5, s))
-                    except ValueError:
-                        pass
                 elif key == "SCORE" and not sub_scores:
                     # Legacy single-score fallback
-                    try:
-                        s = int(value)
-                        # Spread the single score across all dimensions
+                    s = self._extract_int(value)
+                    if s is not None:
                         for d in JUDGE_DIMENSIONS:
                             sub_scores[d] = max(1, min(5, s))
-                    except ValueError:
-                        pass
         except Exception as e:
             self.diagnostics.log_warning(
                 component="judge",
