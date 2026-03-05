@@ -438,8 +438,6 @@ class TestProcessPageConcurrentGuard:
         self, tmp_path: Path, monkeypatch: Any
     ) -> None:
         """Guard must only block the *specific* page that is PROCESSING."""
-        from atlas.vlm_ingest.stitcher import PageResult
-
         # Need a 2-page PDF — we create one programmatically by building a
         # minimal PDF string with two page objects.
         two_page_pdf = (
@@ -476,6 +474,30 @@ class TestProcessPageConcurrentGuard:
             json={"page_num": 0},
         )
         assert resp2.status_code == 409
+
+        # But requesting a different pending page (page 1) should be allowed.
+        # Mock the VLM so it completes successfully rather than 503-ing.
+        mock_provider = AsyncMock()
+        mock_provider.chat = AsyncMock(return_value="# Page 1\n\nContent.")
+        MockReg = _mock_model_registry(mock_provider)
+
+        with (
+            patch("atlas.api_vlm_ingest.ModelRegistry", MockReg),
+            patch(
+                "atlas.api_vlm_ingest.render_page_base64",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "atlas.api_vlm_ingest.build_vision_messages",
+                return_value=[{"role": "user", "content": "test"}],
+            ),
+        ):
+            resp3 = client.post(
+                f"/api/editor/vlm-ingest/{sid}/process-page",
+                json={"page_num": 1},
+            )
+        assert resp3.status_code == 200
+        assert resp3.json()["status"] == "done"
 
 
 # ---------------------------------------------------------------------------
@@ -609,6 +631,7 @@ class TestCommitPipelineWarning:
 
         with patch(
             "atlas.api_vlm_ingest.ingest_text_via_pipeline",
+            new_callable=AsyncMock,
             side_effect=RuntimeError("Qdrant unavailable"),
         ):
             resp = client.post(
@@ -659,6 +682,7 @@ class TestCommitPipelineWarning:
 
         with patch(
             "atlas.api_vlm_ingest.ingest_text_via_pipeline",
+            new_callable=AsyncMock,
             side_effect=RuntimeError("network error"),
         ):
             resp = client.post(
