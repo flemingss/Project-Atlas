@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from atlas.pipeline.refine import strip_llm_artifacts
+from atlas.pipeline.guardrails import strip_llm_artifacts
 
 
 # ---------------------------------------------------------------------------

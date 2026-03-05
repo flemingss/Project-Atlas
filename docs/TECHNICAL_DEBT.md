@@ -36,19 +36,15 @@ However, there are specific areas of technical debt and hidden dangers that shou
 - Factory function `build_parser(backend, ctx)` selects the right strategy
 - `IngestNode` reduced from ~656 to ~280 lines
 
-### C. Regex-Based LLM Cleaning (`src/atlas/pipeline/refine.py`)
+### C. Regex-Based LLM Cleaning — ✅ Remediated
 
-The `strip_llm_artifacts` function uses a set of organized regex pattern groups to remove conversational chatter from LLM outputs:
+~~The `strip_llm_artifacts` function and its regex constants lived inline in `refine.py`.~~
 
-| Pattern | Purpose |
-| :--- | :--- |
-| `_PREAMBLE_PATTERNS` | Removes conversational openers (e.g., "Here is", "Sure,", "As an AI") |
-| `_POSTAMBLE_PATTERNS` | Removes conversational closers (e.g., "Let me know", "Feel free") |
-| `_META_HEADING_RE` | Strips injected meta-commentary headings (e.g., "## Summary of Changes") |
-| `_CODE_FENCE_WRAPPER_RE` | Unwraps content from bare markdown code fences |
-
-*   **Tech Debt:** As models change (e.g., DeepSeek vs. Llama 3), they will invent new ways to be chatty, making this a perpetual maintenance burden.
-*   **Fix:** Move this to a dedicated "Output Guardrail" module rather than hiding it inside the Refine node, or switch to structured output (JSON schema) enforcement where the model supports it.
+**Remediation:** Extracted to dedicated `src/atlas/pipeline/guardrails.py` module:
+- `strip_llm_artifacts()` + 4 regex constants (`_PREAMBLE_PATTERNS`, `_POSTAMBLE_PATTERNS`, `_META_HEADING_RE`, `_CODE_FENCE_WRAPPER_RE`)
+- `refine.py` imports from `guardrails` — zero duplication
+- 36 existing tests updated to import from new module
+- `refine.py` reduced from ~636 to ~500 lines
 
 ---
 
@@ -86,12 +82,12 @@ The `strip_llm_artifacts` function uses a set of organized regex pattern groups 
 | `metadata.py` | 13 dedicated tests in `tests/test_metadata.py` | ✅ **Covered** |
 | `orchestrator.py` | 6 dedicated tests in `tests/test_orchestrator.py` | ✅ **Covered** |
 | `tokens.py` | 16 dedicated tests in `tests/test_tokens.py` | ✅ **Covered** |
-| `refine.py` (RefineNode) | Only `strip_llm_artifacts` tested (`test_llm_artifact_stripping.py`); no tests for `RefineNode`, guardrails, or sectional refinement | **Partial** |
+| `refine.py` (RefineNode) | 36 artifact-stripping tests (`test_llm_artifact_stripping.py`) + 22 RefineNode tests (`test_refine_node.py`): preservation guardrail, section-count guardrail, sectional refinement, error handling, prompt building | ✅ **Covered** |
 | `runner.py` | Partial coverage via `test_phase_refactors.py`, `test_pipeline_state.py` | **Partial** |
 
 ### B. Coverage Enforcement — ✅ Enabled
 
-**Remediation:** Added `pytest-cov>=5.0` to dev dependencies and configured `--cov=atlas.pipeline --cov-report=term-missing --cov-fail-under=80` in `pyproject.toml`. Current coverage: **88%**.
+**Remediation:** Added `pytest-cov>=5.0` to dev dependencies and configured `--cov=atlas.pipeline --cov-report=term-missing --cov-fail-under=80` in `pyproject.toml`. Current coverage: **89.8%**.
 
 ---
 
@@ -108,10 +104,10 @@ The `strip_llm_artifacts` function uses a set of organized regex pattern groups 
 | Priority | Action | Status |
 | :--- | :--- | :--- |
 | **High** | Split `api_admin.py` into domain sub-modules | ✅ Done — `src/atlas/admin/` package (2,530 → 170 lines, 10 sub-modules) |
-| **High** | Add tests for `judge.py`, `metadata.py`, `orchestrator.py`, `tokens.py` | ✅ Done — 57 new tests |
-| **High** | Enforce coverage thresholds in CI | ✅ Done — 80% threshold, currently 88% |
+| **High** | Add tests for `judge.py`, `metadata.py`, `orchestrator.py`, `tokens.py`, `refine.py` | ✅ Done — 79 new tests |
+| **High** | Enforce coverage thresholds in CI | ✅ Done — 80% threshold, currently 89.8% |
 | **Medium** | Refactor `IngestNode` to Strategy Pattern | ✅ Done — `parsers.py` |
 | **Medium** | Review `cleanup_rules` defaults | ✅ Verified safe — `merge_hardwrapped` is opt-in |
 | **Medium** | Pin dependencies with a lock file | ✅ Done — `requirements.lock` / `requirements-dev.lock` |
 | **Medium** | Harden Judge parsing | ✅ Done — `_extract_int()` regex parser |
-| **Low** | Extract LLM output guardrails | Deferred — low risk, no breakage observed |
+| **Low** | Extract LLM output guardrails | ✅ Done — `pipeline/guardrails.py` |
