@@ -7,10 +7,14 @@ from __future__ import annotations
 import copy
 import re
 
-import cv2
 import numpy as np
 import pyclipper
 from shapely.geometry import Polygon
+
+try:
+    import cv2
+except ImportError:
+    cv2 = None  # type: ignore[assignment]
 
 
 def build_post_process(config: dict, global_config: dict | None = None):

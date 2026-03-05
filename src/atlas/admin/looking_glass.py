@@ -24,6 +24,34 @@ from ._helpers import (
 )
 
 
+class _CollectionNotFound(Exception):
+    """Raised when the Qdrant collection does not exist yet."""
+
+
+async def _safe_qdrant_get(settings: Settings, path: str) -> dict[str, Any]:
+    """Like ``qdrant_get_json`` but raises ``_CollectionNotFound`` on 404."""
+    import httpx
+
+    try:
+        return await qdrant_get_json(settings, path)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            raise _CollectionNotFound() from exc
+        raise
+
+
+async def _safe_qdrant_post(settings: Settings, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Like ``qdrant_post_json`` but raises ``_CollectionNotFound`` on 404."""
+    import httpx
+
+    try:
+        return await qdrant_post_json(settings, path, payload)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            raise _CollectionNotFound() from exc
+        raise
+
+
 def register_looking_glass_routes(
     r: APIRouter,
     *,
@@ -35,12 +63,20 @@ def register_looking_glass_routes(
     @r.get("/looking-glass/qdrant")
     async def looking_glass_qdrant() -> dict[str, Any]:
         collection = qdrant_collection()
-        info = await qdrant_get_json(settings, f"/collections/{collection}")
-        count = await qdrant_post_json(
-            settings,
-            f"/collections/{collection}/points/count",
-            {"exact": True, "filter": {}},
-        )
+        try:
+            info = await _safe_qdrant_get(settings, f"/collections/{collection}")
+            count = await _safe_qdrant_post(
+                settings,
+                f"/collections/{collection}/points/count",
+                {"exact": True, "filter": {}},
+            )
+        except _CollectionNotFound:
+            return {
+                "collection": collection,
+                "collection_info": None,
+                "points_count": None,
+                "status": "collection_not_found",
+            }
         return {
             "collection": collection,
             "collection_info": info.get("result"),
@@ -153,7 +189,10 @@ def register_looking_glass_routes(
             if offset is not None:
                 body["offset"] = offset
 
-            res = await qdrant_post_json(settings, f"/collections/{collection}/points/scroll", body)
+            try:
+                res = await _safe_qdrant_post(settings, f"/collections/{collection}/points/scroll", body)
+            except _CollectionNotFound:
+                break
             result = res.get("result") or {}
             points = result.get("points") or []
             offset = result.get("next_page_offset")
@@ -246,7 +285,10 @@ def register_looking_glass_routes(
             if scope_must:
                 body["filter"] = {"must": scope_must}
 
-            res = await qdrant_post_json(settings, f"/collections/{collection}/points/scroll", body)
+            try:
+                res = await _safe_qdrant_post(settings, f"/collections/{collection}/points/scroll", body)
+            except _CollectionNotFound:
+                break
             result = res.get("result") or {}
             points = result.get("points") or []
             next_offset = result.get("next_page_offset")
@@ -297,7 +339,15 @@ def register_looking_glass_routes(
         if next_offset is not None:
             body["offset"] = next_offset
 
-        res = await qdrant_post_json(settings, f"/collections/{collection}/points/scroll", body)
+        try:
+            res = await _safe_qdrant_post(settings, f"/collections/{collection}/points/scroll", body)
+        except _CollectionNotFound:
+            return {
+                "collection": collection,
+                "doc_id": doc_id,
+                "chunks": [],
+                "next_cursor": None,
+            }
         result = res.get("result") or {}
         points = result.get("points") or []
         next_offset = result.get("next_page_offset")
@@ -341,7 +391,7 @@ def register_looking_glass_routes(
                 ]
             },
         }
-        res = await qdrant_post_json(settings, f"/collections/{collection}/points/scroll", body)
+        res = await _safe_qdrant_post(settings, f"/collections/{collection}/points/scroll", body)
         result = res.get("result") or {}
         points = result.get("points") or []
         if not points:

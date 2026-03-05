@@ -43,9 +43,17 @@ from functools import cmp_to_key
 from pathlib import Path
 from typing import Any, Sequence
 
-import cv2
 import numpy as np
-import onnxruntime as ort
+
+try:
+    import cv2
+    import onnxruntime as ort
+    _layout_recognizer_available = True
+except ImportError:
+    # Allow module import to succeed in VLM-only builds without cv2/ort
+    cv2 = None  # type: ignore[assignment]
+    ort = None  # type: ignore[assignment]
+    _layout_recognizer_available = False
 
 from .model_manager import ModelManager
 from .types import GARBAGE_LAYOUT_TYPES as GARBAGE_LAYOUT_TYPES  # noqa: F401 — re-export

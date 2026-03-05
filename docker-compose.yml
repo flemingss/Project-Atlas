@@ -21,15 +21,15 @@ services:
     image: qdrant/qdrant:v1.11.5
     container_name: atlas-qdrant
     ports:
-      # Host HTTP endpoint: http://localhost:16333 (container still listens on 6333)
-      - "16333:6333"
-      # gRPC port — remapped from 6334 to avoid Windows Hyper-V reserved range
-      - "16334:6334"
+      # Host HTTP endpoint: http://localhost:17333 (container still listens on 6333)
+      - "17333:6333"
+      # gRPC port — remapped to avoid Windows Hyper-V dynamic excluded-port ranges
+      - "17334:6334"
     volumes:
       - atlas_qdrant:/qdrant/storage
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:6333/readyz || exit 1"]
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333'"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -54,6 +54,7 @@ services:
       ATLAS_OPENAI_BASE_URL: ${ATLAS_OPENAI_BASE_URL:-http://host.docker.internal:1234}
       # Admin auth. Leave blank for dev; required for non-dev.
       ATLAS_ADMIN_TOKEN: ${ATLAS_ADMIN_TOKEN:-}
+      ATLAS_DEV_BYPASS_ADMIN_AUTH: ${ATLAS_DEV_BYPASS_ADMIN_AUTH:-false}
       ATLAS_HOST: 0.0.0.0
       ATLAS_PORT: 8080
       ATLAS_CONFIG_DIR: /app/config

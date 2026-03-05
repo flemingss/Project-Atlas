@@ -219,7 +219,7 @@ async def export_corpus_lean(
                 )
             except Exception:  # noqa: BLE001
                 content = ""
-            arcname = f"docs/{_safe_filename(doc_id)}.md"
+            arcname = f"{_safe_filename(doc_id)}.md"
             # Add YAML frontmatter to each MD file
             fm = build_frontmatter({
                 "exported_at": exported_at,

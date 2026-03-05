@@ -19,7 +19,12 @@ from typing import Any
 
 import numpy as np
 
-from .layout_recognizer import LayoutRecognizer
+try:
+    from .layout_recognizer import LayoutRecognizer
+except ImportError:
+    # Allow import to succeed even if cv2/onnxruntime unavailable (VLM-only deploys)
+    LayoutRecognizer = None  # type: ignore[assignment]
+
 from .model_manager import ModelManager
 from .ocr import OCR
 from .table_recognizer import TableStructureRecognizer
@@ -54,6 +59,13 @@ class LayoutPdfParser:
             Path to directory containing ONNX models.  When ``None`` the
             :class:`ModelManager` singleton resolves the path.
         """
+        if LayoutRecognizer is None:
+            raise ImportError(
+                "Docling layout analysis requires cv2 and onnxruntime, which are not available. "
+                "This typically means you're using a slim/VLM-only build. "
+                "Use the full Dockerfile and docker-compose.yml instead, or switch to VLM ingestion."
+            )
+
         if models_dir is not None:
             models_dir = str(models_dir)
 

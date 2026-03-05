@@ -12,9 +12,17 @@ import os
 import time
 from typing import Any
 
-import cv2
 import numpy as np
-import onnxruntime as ort
+
+try:
+    import cv2
+except ImportError:
+    cv2 = None  # type: ignore[assignment]
+
+try:
+    import onnxruntime as ort
+except ImportError:
+    ort = None  # type: ignore[assignment]
 
 from .model_manager import ModelManager
 from .postprocess import build_post_process
@@ -22,7 +30,8 @@ from .postprocess import build_post_process
 logger = logging.getLogger(__name__)
 
 # Module-level cache for loaded ONNX sessions (keyed by file path).
-_loaded_models: dict[str, tuple[ort.InferenceSession, ort.RunOptions]] = {}
+# Type annotation deferred since ort may not be available (VLM-only builds).
+_loaded_models: dict = {}
 
 
 # ---------------------------------------------------------------------------
@@ -33,7 +42,7 @@ _loaded_models: dict[str, tuple[ort.InferenceSession, ort.RunOptions]] = {}
 def load_model(
     model_dir: str,
     name: str,
-) -> tuple[ort.InferenceSession, ort.RunOptions]:
+) -> tuple:
     """Load (or retrieve from cache) an ONNX model.
 
     Parameters
@@ -47,6 +56,13 @@ def load_model(
     -------
     ``(session, run_options)`` tuple.
     """
+    if cv2 is None or ort is None:
+        raise ImportError(
+            "OCR module requires cv2 and onnxruntime. "
+            "These are only available in the full Docker build (not slim). "
+            "For VLM-only deployments, disable Docling-based document processing."
+        )
+    
     model_file_path = os.path.join(model_dir, name + ".onnx")
 
     cached = _loaded_models.get(model_file_path)

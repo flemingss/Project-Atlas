@@ -15,9 +15,17 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Sequence
 
-import cv2
 import numpy as np
-import onnxruntime as ort
+
+try:
+    import cv2
+except ImportError:
+    cv2 = None  # type: ignore[assignment]
+
+try:
+    import onnxruntime as ort
+except ImportError:
+    ort = None  # type: ignore[assignment]
 
 from .layout_recognizer import LayoutRecognizer
 from .model_manager import ModelManager
@@ -50,6 +58,13 @@ class TableStructureRecognizer:
     # ------------------------------------------------------------------
 
     def __init__(self, model_dir: Path | str | None = None) -> None:
+        if cv2 is None or ort is None:
+            raise ImportError(
+                "TableStructureRecognizer requires cv2 and onnxruntime. "
+                "These are only available in the full Docker build (not slim). "
+                "For VLM-only deployments, disable Docling-based document processing."
+            )
+        
         if model_dir is None:
             mgr = ModelManager.get_instance()
             mgr.ensure_models()

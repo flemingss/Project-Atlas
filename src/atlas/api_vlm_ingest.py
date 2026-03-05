@@ -27,6 +27,7 @@ from atlas.auth import require_admin_token
 from atlas.config_manager import ConfigManager
 from atlas.ingest.page_renderer import (
     CropMargins,
+    analyze_page,
     build_vision_messages,
     page_count,
     render_page,
@@ -95,6 +96,7 @@ class PageSettingsUpdate(BaseModel):
     crop_bottom: float | None = None
     crop_left: float | None = None
     crop_right: float | None = None
+    mask_regions: list[dict] | None = None
 
 
 class UpdateConfigRequest(BaseModel):
@@ -406,6 +408,8 @@ def make_vlm_ingest_router(
                     overrides["crop_left"] = po.crop_left
                 if po.crop_right is not None:
                     overrides["crop_right"] = po.crop_right
+                if po.mask_regions is not None:
+                    overrides["mask_regions"] = po.mask_regions
                 if overrides:
                     s.update_page_settings(po.page_num, **overrides)
 
@@ -431,6 +435,35 @@ def make_vlm_ingest_router(
             source_filename=s.source_filename,
             page_count=s.page_count,
         )
+
+    # ------------------------------------------------------------------
+    # Page analysis
+    # ------------------------------------------------------------------
+
+    @r.get("/{session_id}/page-analysis")
+    async def get_page_analysis(session_id: str) -> dict[str, Any]:
+        """Analyze all pages for content classification (text-native / image-heavy / image-only).
+
+        Results are cached on the session so repeated calls are fast.
+        Returns a dict of page_num -> analysis result.
+        """
+        s = _get_session(session_id)
+
+        if not s.page_analysis:
+            for p in range(s.page_count):
+                try:
+                    analysis = await run_in_threadpool(analyze_page, s.pdf_bytes, p)
+                    s.page_analysis[p] = analysis
+                except Exception as exc:
+                    s.page_analysis[p] = {
+                        "content_class": "unknown",
+                        "text_chars": 0,
+                        "image_ratio": 0.0,
+                        "image_rects": [],
+                        "error": str(exc),
+                    }
+
+        return {"pages": s.page_analysis}
 
     # ------------------------------------------------------------------
     # Thumbnails / preview
@@ -497,6 +530,7 @@ def make_vlm_ingest_router(
         crop_left: float | None = None,
         crop_right: float | None = None,
         apply_crop: bool = False,
+        apply_masks: bool = False,
     ) -> Response:
         """Render a single page preview.
 
@@ -521,6 +555,7 @@ def make_vlm_ingest_router(
             page_num,
             dpi=effective_dpi,
             crop=crop if apply_crop else None,
+            mask_regions=settings.mask_regions if apply_masks else None,
         )
         _diag(
             "VLM preview: sid=%s page=%d dpi=%d apply_crop=%s crop=(%.3f,%.3f,%.3f,%.3f)",
@@ -598,6 +633,7 @@ def make_vlm_ingest_router(
             )
             page_uri = await run_in_threadpool(
                 render_page_base64, s.pdf_bytes, p, dpi=settings.dpi, crop=crop,
+                mask_regions=settings.mask_regions or None,
             )
 
             # Build VLM prompt — page in isolation, no cross-page context
@@ -694,6 +730,7 @@ def make_vlm_ingest_router(
                 )
                 page_uri = await run_in_threadpool(
                     render_page_base64, s.pdf_bytes, p, dpi=settings.dpi, crop=crop,
+                    mask_regions=settings.mask_regions or None,
                 )
 
                 raw_messages = build_vision_messages(

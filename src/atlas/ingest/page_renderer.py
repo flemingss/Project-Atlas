@@ -52,6 +52,66 @@ class CropMargins:
 DEFAULT_CROP = CropMargins(top=0.04, bottom=0.04)
 
 
+def analyze_page(pdf_bytes: bytes, page_num: int = 0) -> dict:
+    """Classify a PDF page by content type using PyMuPDF heuristics.
+
+    Returns a dict with:
+        content_class: 'text-native' | 'image-heavy' | 'image-only'
+        text_chars: int — number of extractable text characters
+        image_ratio: float — fraction of page area covered by images (0-1)
+        image_rects: list[dict] — bounding boxes of detected images in
+                     fractional coordinates {x, y, w, h} (0-1 relative)
+    """
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+        if page_num < 0 or page_num >= len(doc):
+            raise IndexError(f"Page {page_num} out of range (PDF has {len(doc)} pages)")
+
+        page = doc[page_num]
+        rect = page.rect
+        page_area = rect.width * rect.height
+
+        # Text analysis
+        text = page.get_text("text")
+        text_chars = len(text.strip())
+
+        # Image analysis
+        image_rects: list[dict] = []
+        total_image_area = 0.0
+        try:
+            for img in page.get_images(full=True):
+                xref = img[0]
+                for inst in page.get_image_rects(xref):
+                    if inst.is_empty or inst.is_infinite:
+                        continue
+                    area = inst.width * inst.height
+                    total_image_area += area
+                    image_rects.append({
+                        "x": round((inst.x0 - rect.x0) / rect.width, 4),
+                        "y": round((inst.y0 - rect.y0) / rect.height, 4),
+                        "w": round(inst.width / rect.width, 4),
+                        "h": round(inst.height / rect.height, 4),
+                    })
+        except Exception:
+            pass  # some PDFs have malformed image xrefs
+
+        image_ratio = round(min(total_image_area / page_area, 1.0), 4) if page_area > 0 else 0.0
+
+        # Classification
+        if text_chars < 20 and image_ratio > 0.3:
+            content_class = "image-only"
+        elif image_ratio > 0.5:
+            content_class = "image-heavy"
+        else:
+            content_class = "text-native"
+
+        return {
+            "content_class": content_class,
+            "text_chars": text_chars,
+            "image_ratio": image_ratio,
+            "image_rects": image_rects,
+        }
+
+
 def page_count(pdf_bytes: bytes) -> int:
     """Return the number of pages in a PDF."""
     with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
@@ -64,6 +124,7 @@ def render_page(
     *,
     dpi: int = 200,
     crop: Optional[CropMargins] = None,
+    mask_regions: list[dict] | None = None,
 ) -> bytes:
     """Render a single PDF page to PNG bytes.
 
@@ -74,6 +135,9 @@ def render_page(
              vs payload size; 150 for speed, 300 for max quality).
         crop: Optional fractional crop margins to remove headers/footers.
               Pass ``None`` to render the full page.
+        mask_regions: Optional list of fractional rects ``{x, y, w, h}``
+              (0-1 relative to page).  Masked areas are filled white
+              before rendering so the VLM never sees that content.
 
     Returns:
         PNG image bytes.
@@ -90,6 +154,19 @@ def render_page(
             raise IndexError(f"Page {page_num} out of range (PDF has {len(doc)} pages)")
 
         page = doc[page_num]
+
+        # Apply mask regions — white-fill before rendering
+        if mask_regions:
+            rect = page.rect
+            pw, ph = rect.width, rect.height
+            for m in mask_regions:
+                mr = fitz.Rect(
+                    rect.x0 + pw * m["x"],
+                    rect.y0 + ph * m["y"],
+                    rect.x0 + pw * (m["x"] + m["w"]),
+                    rect.y0 + ph * (m["y"] + m["h"]),
+                )
+                page.draw_rect(mr, color=(1, 1, 1), fill=(1, 1, 1))
 
         if crop:
             # Compute crop rectangle in page coordinates
@@ -108,8 +185,9 @@ def render_page(
         png_bytes = pix.tobytes("png")
 
     log.debug(
-        "Rendered page %d at %d DPI → %d bytes (crop=%s)",
+        "Rendered page %d at %d DPI → %d bytes (crop=%s masks=%d)",
         page_num, dpi, len(png_bytes), crop is not None,
+        len(mask_regions) if mask_regions else 0,
     )
     return png_bytes
 
@@ -120,6 +198,7 @@ def render_page_base64(
     *,
     dpi: int = 200,
     crop: Optional[CropMargins] = None,
+    mask_regions: list[dict] | None = None,
 ) -> str:
     """Render a page and return a ``data:image/png;base64,...`` URI.
 
@@ -127,7 +206,7 @@ def render_page_base64(
 
         {"type": "image_url", "image_url": {"url": data_uri}}
     """
-    png = render_page(pdf_bytes, page_num, dpi=dpi, crop=crop)
+    png = render_page(pdf_bytes, page_num, dpi=dpi, crop=crop, mask_regions=mask_regions)
     b64 = base64.b64encode(png).decode("ascii")
     return f"data:image/png;base64,{b64}"
 
@@ -157,6 +236,8 @@ def build_vision_messages(
             "- Preserve ALL content visible in the screenshot — do not summarize or omit anything.\n"
             "- Fix formatting errors: broken tables, garbled headings, OCR mistakes.\n"
             "- Use proper markdown: headings (#), lists (-/1.), tables (|), etc.\n"
+            "- For diagrams, figures, charts, and screenshots: output only the caption/title "
+            "if present, prefixed with [Figure: ...]. Do not describe visual content.\n"
             "- Do NOT add commentary, preamble, or postamble.\n"
             "- Do NOT include content from other pages.\n"
             "- Output ONLY the corrected markdown, no code fences.\n\n"

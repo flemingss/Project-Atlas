@@ -35,7 +35,7 @@ import { toast } from 'sonner';
 
 export function LibraryPage() {
   const { isAdmin } = useConnectionStore();
-  const { collection } = useScopeStore();
+  const { workspace, project, collection } = useScopeStore();
 
   const [docs, setDocs] = useState<DocInfo[]>([]);
   const [loading, setLoading] = useState(false);
@@ -104,7 +104,11 @@ export function LibraryPage() {
   const handleDeleteSelected = async () => {
     for (const docId of selected) {
       try {
-        await adminApi.deleteDoc(docId);
+        await adminApi.deleteDoc(docId, {
+          tenant_id: workspace || undefined,
+          project_id: project || undefined,
+          corpus_id: collection || undefined,
+        });
       } catch (e) {
         toast.error(`Failed to delete ${docId}: ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -116,7 +120,12 @@ export function LibraryPage() {
   const handleExportSelected = async () => {
     for (const docId of selected) {
       try {
-        const resp = await adminApi.exportDoc(docId);
+        const resp = await adminApi.exportDoc(docId, {
+          tenant_id: workspace || undefined,
+          project_id: project || undefined,
+          corpus_id: collection || undefined,
+          format: exportFormat,
+        });
         const blob = await resp.blob();
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -416,7 +425,11 @@ export function LibraryPage() {
                 return;
               }
               try {
-                const resp = await adminApi.exportCorpus(collection);
+                const resp = await adminApi.exportCorpus(collection, {
+                  tenant_id: workspace || undefined,
+                  project_id: project || undefined,
+                  format: exportFormat,
+                });
                 const blob = await resp.blob();
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');

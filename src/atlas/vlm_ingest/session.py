@@ -61,6 +61,7 @@ class PageSettings:
     crop_bottom: float = 0.04
     crop_left: float = 0.0
     crop_right: float = 0.0
+    mask_regions: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -139,6 +140,7 @@ class VlmIngestSession:
     page_statuses: dict[int, PageStatus] = field(default_factory=dict)
     page_results: dict[int, PageResult] = field(default_factory=dict)
     page_errors: dict[int, str] = field(default_factory=dict)
+    page_analysis: dict[int, dict] = field(default_factory=dict)
 
     # Session-level state
     status: SessionStatus = SessionStatus.CONFIGURING

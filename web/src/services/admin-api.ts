@@ -390,13 +390,24 @@ export const adminApi = {
       body: JSON.stringify({ doc_version: version }),
     });
   },
-  deleteDoc(docId: string) {
-    return apiFetch<{ status: string }>(`/admin/docs/${encodeURIComponent(docId)}`, {
+  deleteDoc(docId: string, params?: { tenant_id?: string; project_id?: string; corpus_id?: string }) {
+    const q = new URLSearchParams();
+    if (params?.tenant_id) q.set('tenant_id', params.tenant_id);
+    if (params?.project_id) q.set('project_id', params.project_id);
+    if (params?.corpus_id) q.set('corpus_id', params.corpus_id);
+    const qs = q.toString();
+    return apiFetch<{ status: string }>(`/admin/docs/${encodeURIComponent(docId)}${qs ? `?${qs}` : ''}`, {
       method: 'DELETE',
     });
   },
-  exportDoc(docId: string) {
-    return apiFetchRaw(`/admin/docs/${encodeURIComponent(docId)}/export`);
+  exportDoc(docId: string, params?: { tenant_id?: string; project_id?: string; corpus_id?: string; format?: string }) {
+    const q = new URLSearchParams();
+    if (params?.tenant_id) q.set('tenant_id', params.tenant_id);
+    if (params?.project_id) q.set('project_id', params.project_id);
+    if (params?.corpus_id) q.set('corpus_id', params.corpus_id);
+    if (params?.format) q.set('format', params.format);
+    const qs = q.toString();
+    return apiFetchRaw(`/admin/docs/${encodeURIComponent(docId)}/export${qs ? `?${qs}` : ''}`);
   },
 
   // ── Looking Glass ──
@@ -434,8 +445,13 @@ export const adminApi = {
   },
 
   // ── Bulk export / import ──
-  exportCorpus(corpusId: string) {
-    return apiFetchRaw(`/admin/corpora/${encodeURIComponent(corpusId)}/export`);
+  exportCorpus(corpusId: string, params?: { tenant_id?: string; project_id?: string; format?: string }) {
+    const q = new URLSearchParams();
+    if (params?.tenant_id) q.set('tenant_id', params.tenant_id);
+    if (params?.project_id) q.set('project_id', params.project_id);
+    if (params?.format) q.set('format', params.format);
+    const qs = q.toString();
+    return apiFetchRaw(`/admin/corpora/${encodeURIComponent(corpusId)}/export${qs ? `?${qs}` : ''}`);
   },
   exportScoped(params?: { tenant_id?: string; project_id?: string; corpus_id?: string }) {
     const q = new URLSearchParams();

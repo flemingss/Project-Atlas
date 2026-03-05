@@ -28,6 +28,7 @@ export interface PageSettingsUpdate {
   crop_bottom?: number | null;
   crop_left?: number | null;
   crop_right?: number | null;
+  mask_regions?: Array<{ x: number; y: number; w: number; h: number }> | null;
 }
 
 export interface UpdateConfigRequest {
@@ -120,6 +121,18 @@ export interface ThumbnailEntry {
   enabled: boolean;
   status: string;
   error?: string;
+}
+
+export interface PageAnalysisResult {
+  content_class: string; // 'text-native' | 'image-heavy' | 'image-only'
+  text_chars: number;
+  image_ratio: number;
+  image_rects: Array<{ x: number; y: number; w: number; h: number }>;
+  error?: string;
+}
+
+export interface PageAnalysisResponse {
+  pages: Record<number, PageAnalysisResult>;
 }
 
 export interface PageResultResponse {
@@ -326,5 +339,12 @@ export const vlmIngestApi = {
         body: JSON.stringify({ markdown }),
       },
     );
+  },
+
+  /** Get page content analysis (text-native / image-heavy / image-only). */
+  getPageAnalysis(sid: string) {
+    return apiFetch<PageAnalysisResponse>(`${BASE}/${sid}/page-analysis`, {
+      headers: jsonHeaders(),
+    });
   },
 } as const;

@@ -50,6 +50,7 @@ import { useIngestDefaultsStore } from '@/stores/ingest-defaults-store';
 import { vlmIngestApi } from '@/services/vlm-ingest-api';
 import { ragApi, type IngestResponse } from '@/services/rag-api';
 import { useVlmIngestStore, type WizardStep } from '@/stores/vlm-ingest-store';
+import { MaskEditor } from '@/components/mask-editor';
 import {
   useStartSession,
   useStartSessionUpload,
@@ -1045,7 +1046,7 @@ function VlmConfigureStep() {
         </p>
       </div>
 
-      <div className="flex flex-1 min-h-0 flex-col gap-4 overflow-auto px-4 xl:flex-row xl:overflow-hidden">
+      <div className="flex flex-1 min-h-0 min-w-0 flex-col gap-4 overflow-auto px-4 xl:flex-row xl:overflow-hidden">
         <Card className="flex shrink-0 flex-col gap-4 p-4 xl:w-[360px] xl:overflow-auto">
           {/* DPI */}
           <div className="flex flex-col gap-2">
@@ -1094,7 +1095,7 @@ function VlmConfigureStep() {
         </Card>
 
         {/* PDF Preview */}
-        <Card className="flex flex-1 min-h-0 flex-col gap-3 p-4">
+        <Card className="flex flex-1 min-h-0 min-w-0 flex-col gap-3 p-4">
           <div className="flex items-center justify-between">
             <div>
               <h3 className="text-sm font-semibold text-text-primary">PDF Preview</h3>
@@ -1194,7 +1195,10 @@ function VlmPagesStep() {
   const markSessionExpired = useVlmIngestStore((s) => s.markSessionExpired);
   const { data: thumbnails, isLoading, error: thumbnailsError } = useVlmThumbnails(store.sessionId);
   const [selectedPage, setSelectedPage] = useState<number | null>(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const updateConfig = useUpdateConfig();
+  const analysisRanRef = useRef(false);
 
   useEffect(() => {
     if (thumbnails) setThumbnails(thumbnails);
@@ -1205,6 +1209,77 @@ function VlmPagesStep() {
       markSessionExpired('The backend session was lost while loading page thumbnails.');
     }
   }, [thumbnailsError, markSessionExpired]);
+
+  // Fetch page analysis once when entering this step
+  useEffect(() => {
+    const sid = store.sessionId;
+    if (!sid || analysisRanRef.current) return;
+    const hasAnalysis = store.pages.some((p) => p.contentClass != null);
+    if (hasAnalysis) { analysisRanRef.current = true; return; }
+    analysisRanRef.current = true;
+    setAnalysisLoading(true);
+    vlmIngestApi
+      .getPageAnalysis(sid)
+      .then((resp) => {
+        const currentStore = useVlmIngestStore.getState();
+        const overrides: Array<{ page_num: number; mask_regions: Array<{ x: number; y: number; w: number; h: number }> }> = [];
+
+        for (const [pageStr, analysis] of Object.entries(resp.pages)) {
+          const pageNum = parseInt(pageStr, 10);
+          currentStore.setPageAnalysis(pageNum, analysis);
+
+          // Auto-suggest masks for image-heavy / image-only pages
+          if (
+            (analysis.content_class === 'image-heavy' || analysis.content_class === 'image-only') &&
+            analysis.image_rects?.length > 0
+          ) {
+            currentStore.autoSuggestMasks(pageNum);
+            overrides.push({ page_num: pageNum, mask_regions: analysis.image_rects });
+          }
+        }
+
+        // Sync auto-masks to backend in one call
+        if (overrides.length > 0 && sid) {
+          updateConfig.mutate({
+            sid,
+            req: {
+              page_overrides: overrides.map((o) => ({
+                page_num: o.page_num,
+                mask_regions: o.mask_regions,
+              })),
+            },
+          });
+          const imageHeavy = overrides.length;
+          toast.info(`Auto-masked ${imageHeavy} image-heavy page${imageHeavy !== 1 ? 's' : ''}`);
+        }
+      })
+      .catch((err) => {
+        console.warn('Page analysis failed:', err);
+        toast.error('Page analysis unavailable — mask suggestions disabled');
+      })
+      .finally(() => setAnalysisLoading(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store.sessionId]);
+
+  // Load preview image for selected page
+  useEffect(() => {
+    if (selectedPage == null || !store.sessionId) {
+      setPreviewSrc(null);
+      return;
+    }
+    let cancelled = false;
+    vlmIngestApi
+      .previewImage(store.sessionId, selectedPage, { dpi: 150 })
+      .then((blob) => {
+        if (!cancelled) setPreviewSrc(URL.createObjectURL(blob));
+      })
+      .catch(() => {
+        if (!cancelled) setPreviewSrc(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedPage, store.sessionId]);
 
   const togglePage = useCallback(
     (pageNum: number) => {
@@ -1234,12 +1309,83 @@ function VlmPagesStep() {
     [store, updateConfig],
   );
 
+  // Sync mask regions to backend
+  const syncMasks = useCallback(
+    (pageNum: number, masks: Array<{ x: number; y: number; w: number; h: number }>) => {
+      if (!store.sessionId) return;
+      updateConfig.mutate({
+        sid: store.sessionId,
+        req: { page_overrides: [{ page_num: pageNum, mask_regions: masks }] },
+      });
+    },
+    [store.sessionId, updateConfig],
+  );
+
+  const handleAddMask = useCallback(
+    (pageNum: number, rect: { x: number; y: number; w: number; h: number }) => {
+      store.addMaskRegion(pageNum, rect);
+      const page = store.pages[pageNum];
+      const updated = [...(page?.maskRegions ?? []), rect];
+      syncMasks(pageNum, updated);
+    },
+    [store, syncMasks],
+  );
+
+  const handleRemoveMask = useCallback(
+    (pageNum: number, index: number) => {
+      store.removeMaskRegion(pageNum, index);
+      const page = store.pages[pageNum];
+      const updated = (page?.maskRegions ?? []).filter((_, i) => i !== index);
+      syncMasks(pageNum, updated);
+    },
+    [store, syncMasks],
+  );
+
+  const handleAcceptSuggestion = useCallback(
+    (pageNum: number, rect: { x: number; y: number; w: number; h: number }) => {
+      const page = store.pages[pageNum];
+      const exists = page?.maskRegions.some(
+        (m) => Math.abs(m.x - rect.x) < 0.001 && Math.abs(m.y - rect.y) < 0.001,
+      );
+      if (!exists) {
+        handleAddMask(pageNum, rect);
+      }
+    },
+    [store.pages, handleAddMask],
+  );
+
+  const handleAutoSuggest = useCallback(
+    (pageNum: number) => {
+      store.autoSuggestMasks(pageNum);
+      const page = store.pages[pageNum];
+      syncMasks(pageNum, page?.imageRects ?? []);
+    },
+    [store, syncMasks],
+  );
+
+  const contentClassBadge = (cls: string | null) => {
+    if (!cls) return null;
+    const variants: Record<string, { label: string; className: string }> = {
+      'text-native': { label: 'Text', className: 'bg-green-500/15 text-green-400 border-green-500/30' },
+      'image-heavy': { label: 'Image-Heavy', className: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30' },
+      'image-only': { label: 'Image-Only', className: 'bg-red-500/15 text-red-400 border-red-500/30' },
+    };
+    const v = variants[cls];
+    if (!v) return null;
+    return <span className={cn('rounded-full border px-1.5 py-0.5 text-[9px] font-medium', v.className)}>{v.label}</span>;
+  };
+
+  const selectedPageData = selectedPage != null ? store.pages[selectedPage] : null;
+
   return (
     <div className="flex flex-col gap-4 overflow-auto">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold text-text-primary">Page Selection</h2>
-          <p className="text-sm text-text-secondary">{store.totalEnabled} of {store.pageCount} pages enabled</p>
+          <p className="text-sm text-text-secondary">
+            {store.totalEnabled} of {store.pageCount} pages enabled
+            {analysisLoading && <span className="ml-2 text-text-muted">(analyzing…)</span>}
+          </p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={() => store.pages.forEach((p) => store.setPageEnabled(p.pageNum, true))}>Enable All</Button>
@@ -1274,9 +1420,17 @@ function VlmPagesStep() {
                 )}
               </div>
               <div className="flex w-full items-center justify-between">
-                <span className="text-xs font-medium text-text-primary">Page {page.pageNum + 1}</span>
+                <div className="flex items-center gap-1">
+                  <span className="text-xs font-medium text-text-primary">Page {page.pageNum + 1}</span>
+                  {contentClassBadge(page.contentClass)}
+                </div>
                 <Switch checked={page.enabled} onCheckedChange={() => togglePage(page.pageNum)} className="scale-75" />
               </div>
+              {page.maskRegions.length > 0 && (
+                <span className="absolute left-1 top-1 rounded-full bg-red-500/20 px-1.5 py-0.5 text-[9px] font-medium text-red-400">
+                  {page.maskRegions.length} mask{page.maskRegions.length !== 1 ? 's' : ''}
+                </span>
+              )}
               {page.status !== 'pending' && (
                 <span className={cn(
                   'absolute right-1 top-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium',
@@ -1293,24 +1447,124 @@ function VlmPagesStep() {
         })}
       </div>
 
-      {selectedPage != null && store.pages[selectedPage] && (
-        <Card className="mx-auto w-full max-w-md p-4">
-          <h3 className="mb-2 text-sm font-semibold text-text-primary">Page {selectedPage + 1} Settings</h3>
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center justify-between">
-              <Label className="text-xs">DPI Override</Label>
-              <Input type="number" className="w-24 text-right" min={72} max={400}
-                value={store.pages[selectedPage].dpiOverride ?? store.dpi}
-                onChange={(e) => handleOverrideDpi(selectedPage!, parseInt(e.target.value, 10))}
-              />
+      {/* Full-screen overlay for page detail */}
+      {selectedPage != null && selectedPageData && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setSelectedPage(null)}>
+          <div
+            className="relative mx-4 flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-border bg-bg-card shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex shrink-0 items-center justify-between border-b border-border px-5 py-3">
+              <div className="flex items-center gap-3">
+                <h3 className="text-base font-semibold text-text-primary">
+                  Page {selectedPage + 1}
+                </h3>
+                {contentClassBadge(selectedPageData.contentClass)}
+                {selectedPageData.imageRatio != null && (
+                  <span className="text-xs text-text-muted">
+                    {Math.round(selectedPageData.imageRatio * 100)}% image area
+                  </span>
+                )}
+                {selectedPageData.maskRegions.length > 0 && (
+                  <span className="text-xs text-red-400">
+                    {selectedPageData.maskRegions.length} mask{selectedPageData.maskRegions.length !== 1 ? 's' : ''} applied
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                {/* Page navigation */}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={selectedPage <= 0}
+                  onClick={() => setSelectedPage(selectedPage - 1)}
+                >
+                  <ChevronLeft className="size-4" />
+                </Button>
+                <span className="text-xs text-text-muted">{selectedPage + 1} / {store.pageCount}</span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={selectedPage >= store.pageCount - 1}
+                  onClick={() => setSelectedPage(selectedPage + 1)}
+                >
+                  <ChevronRight className="size-4" />
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => setSelectedPage(null)}>
+                  <X className="size-4" />
+                </Button>
+              </div>
             </div>
-            <Button variant="outline" size="sm" onClick={() => {
-              store.setPageOverride(selectedPage!, { dpiOverride: null, cropTopOverride: null, cropBottomOverride: null, cropLeftOverride: null, cropRightOverride: null });
-            }}>
-              <RotateCcw className="mr-1 size-3" /> Reset to Global
-            </Button>
+
+            {/* Body */}
+            <div className="flex flex-1 gap-5 overflow-auto p-5">
+              {/* Left: Mask editor with preview */}
+              <div className="flex-1 min-w-0 overflow-auto">
+                {previewSrc ? (
+                  <MaskEditor
+                    imageSrc={previewSrc}
+                    suggestions={selectedPageData.imageRects.filter(
+                      (ir) => !selectedPageData.maskRegions.some(
+                        (m) => Math.abs(m.x - ir.x) < 0.001 && Math.abs(m.y - ir.y) < 0.001,
+                      ),
+                    )}
+                    masks={selectedPageData.maskRegions}
+                    onAddMask={(rect) => handleAddMask(selectedPage, rect)}
+                    onRemoveMask={(idx) => handleRemoveMask(selectedPage, idx)}
+                    onAcceptSuggestion={(rect) => handleAcceptSuggestion(selectedPage, rect)}
+                  />
+                ) : (
+                  <div className="flex h-64 items-center justify-center rounded bg-bg-base text-sm text-text-muted">
+                    <Loader2 className="mr-2 size-4 animate-spin" /> Loading preview…
+                  </div>
+                )}
+              </div>
+              {/* Right: Settings panel */}
+              <div className="flex w-52 shrink-0 flex-col gap-3">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs">Enabled</Label>
+                  <Switch checked={selectedPageData.enabled} onCheckedChange={() => togglePage(selectedPage)} />
+                </div>
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs">DPI Override</Label>
+                  <Input type="number" className="w-20 text-right" min={72} max={400}
+                    value={selectedPageData.dpiOverride ?? store.dpi}
+                    onChange={(e) => handleOverrideDpi(selectedPage!, parseInt(e.target.value, 10))}
+                  />
+                </div>
+                <hr className="border-border" />
+                {selectedPageData.imageRects.length > 0 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleAutoSuggest(selectedPage)}
+                  >
+                    <Zap className="mr-1 size-3" /> Auto-Mask Images
+                  </Button>
+                )}
+                {selectedPageData.maskRegions.length > 0 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-red-400 hover:text-red-300"
+                    onClick={() => {
+                      store.clearMaskRegions(selectedPage);
+                      syncMasks(selectedPage, []);
+                    }}
+                  >
+                    <Trash2 className="mr-1 size-3" /> Clear All Masks
+                  </Button>
+                )}
+                <Button variant="outline" size="sm" onClick={() => {
+                  store.setPageOverride(selectedPage!, { dpiOverride: null, cropTopOverride: null, cropBottomOverride: null, cropLeftOverride: null, cropRightOverride: null });
+                }}>
+                  <RotateCcw className="mr-1 size-3" /> Reset to Global
+                </Button>
+              </div>
+            </div>
           </div>
-        </Card>
+        </div>
       )}
 
       <div className="flex justify-between">

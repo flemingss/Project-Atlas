@@ -18,6 +18,14 @@ Design source of truth: `TECHNICAL_DESIGN.md` (build-continuity plan; current re
 docker compose up -d
 ```
 
+**Building?** By default, `docker compose build` uses the full `Dockerfile` (~13.8 GB). For VLM-only deployments, use the lightweight variant:
+
+```powershell
+docker compose -f docker-compose.slim.yml up -d    # VLM-only, ~1.5–2 GB
+```
+
+See [BUILD_VARIANTS.md](BUILD_VARIANTS.md) for full comparison and trade-offs.
+
 For the bind-mount dev override (`docker-compose.dev.yml`), Atlas now defaults to **no auto-reload**
 to keep in-memory VLM ingest sessions stable while using the wizard.
 If you need backend live-reload while coding, set `ATLAS_DEV_AUTO_RELOAD=true` before `docker compose up`.
@@ -26,16 +34,20 @@ If you set `ATLAS_ENV` to a non-dev value (e.g. `prod`), Atlas will refuse to st
 
 This starts:
 - Postgres on `localhost:5432`
-- Qdrant on `localhost:16333`
+- Qdrant on `localhost:17333`
 - Atlas API on `http://localhost:18080`
 
 By default, this repo’s compose stack brings up the **baseline appliance** only.
 
 ### PDF/Office ingestion (Docling)
 
-PDF/Office parsing requires Docling.
+PDF/Office parsing requires Docling (full `Dockerfile` only; not available in slim variant).
 
-If PDF ingest fails because Docling is missing, treat it as a build/deploy problem (the container should include Docling).
+If you're using `docker-compose.slim.yml`, all PDFs must be ingested via VLM method.
+
+If PDF ingest fails because Docling is missing, either:
+1. Ensure you're using the full `Dockerfile` (default)
+2. Switch to VLM-only ingestion via slim variant ([BUILD_VARIANTS.md](BUILD_VARIANTS.md))
 
 Optional / experimental (profile-gated) Dify stack:
 
@@ -170,7 +182,7 @@ Integration breadcrumbs (hit live external services like Docker Qdrant):
 
 ```powershell
 # Ensure docker compose is up and Qdrant is reachable at ATLAS_QDRANT_URL.
-# With this compose file, host Qdrant is exposed at http://localhost:16333.
+# With this compose file, host Qdrant is exposed at http://localhost:17333.
 & ".\.venv\Scripts\python.exe" -m pytest -m integration -q
 ```
 

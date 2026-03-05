@@ -302,12 +302,16 @@ def register_maintenance_routes(
             scope_must_qm.append(qm.FieldCondition(key="corpus_id", match=qm.MatchValue(value=req.corpus_id)))
 
         store = QdrantStore(url=settings.atlas_qdrant_url, api_key=None, collection=collection)
-        points = await run_in_threadpool(
-            store.scroll_points,
-            must=scope_must_qm,
-            limit=500,
-            max_points=max_points,
-        )
+        try:
+            points = await run_in_threadpool(
+                store.scroll_points,
+                must=scope_must_qm,
+                limit=500,
+                max_points=max_points,
+            )
+        except Exception:
+            # Collection doesn't exist yet — nothing to scan
+            points = []
         scanned = len(points)
 
         for point in points:

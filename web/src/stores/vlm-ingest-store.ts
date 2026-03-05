@@ -42,6 +42,12 @@ export interface PageState {
   cropBottomOverride: number | null;
   cropLeftOverride: number | null;
   cropRightOverride: number | null;
+  // Content analysis (from PyMuPDF)
+  contentClass: string | null; // 'text-native' | 'image-heavy' | 'image-only' | null
+  imageRatio: number | null;
+  imageRects: Array<{ x: number; y: number; w: number; h: number }>;
+  // Mask regions (fractional 0-1 coordinates)
+  maskRegions: Array<{ x: number; y: number; w: number; h: number }>;
 }
 
 export interface VlmIngestState {
@@ -101,12 +107,18 @@ export interface VlmIngestState {
   setFinalMarkdown: (md: string) => void;
   setStatus: (status: VlmIngestState['status'], text: string) => void;
   markSessionExpired: (reason: string) => void;
+  setPageAnalysis: (pageNum: number, analysis: { content_class: string; image_ratio: number; image_rects: Array<{ x: number; y: number; w: number; h: number }> }) => void;
+  addMaskRegion: (pageNum: number, region: { x: number; y: number; w: number; h: number }) => void;
+  removeMaskRegion: (pageNum: number, index: number) => void;
+  clearMaskRegions: (pageNum: number) => void;
+  setMaskRegions: (pageNum: number, regions: Array<{ x: number; y: number; w: number; h: number }>) => void;
+  autoSuggestMasks: (pageNum: number) => void;
   reset: () => void;
 }
 
 // ── Defaults ──────────────────────────────────────────────────────
 
-const INITIAL_STATE: Omit<VlmIngestState, 'setSession' | 'setStep' | 'setGlobalConfig' | 'setThumbnails' | 'setPageEnabled' | 'setPageOverride' | 'setPageResult' | 'setPageError' | 'setPageMarkdown' | 'setProcessing' | 'setAutoProcess' | 'setStitchResult' | 'setFinalMarkdown' | 'setStatus' | 'markSessionExpired' | 'reset'> = {
+const INITIAL_STATE: Omit<VlmIngestState, 'setSession' | 'setStep' | 'setGlobalConfig' | 'setThumbnails' | 'setPageEnabled' | 'setPageOverride' | 'setPageResult' | 'setPageError' | 'setPageMarkdown' | 'setProcessing' | 'setAutoProcess' | 'setStitchResult' | 'setFinalMarkdown' | 'setStatus' | 'markSessionExpired' | 'setPageAnalysis' | 'addMaskRegion' | 'removeMaskRegion' | 'clearMaskRegions' | 'setMaskRegions' | 'autoSuggestMasks' | 'reset'> = {
   sessionId: null,
   runId: null,
   filename: '',
@@ -155,6 +167,10 @@ export const useVlmIngestStore = create<VlmIngestState>((set) => ({
         cropBottomOverride: null,
         cropLeftOverride: null,
         cropRightOverride: null,
+        contentClass: null,
+        imageRatio: null,
+        imageRects: [],
+        maskRegions: [],
       };
     });
     set({
@@ -249,6 +265,61 @@ export const useVlmIngestStore = create<VlmIngestState>((set) => ({
       isProcessing: false,
       currentProcessingPage: null,
     }),
+
+  setPageAnalysis: (pageNum, analysis) =>
+    set((s) => ({
+      pages: s.pages.map((p) =>
+        p.pageNum === pageNum
+          ? {
+              ...p,
+              contentClass: analysis.content_class,
+              imageRatio: analysis.image_ratio,
+              imageRects: analysis.image_rects ?? [],
+            }
+          : p,
+      ),
+    })),
+
+  addMaskRegion: (pageNum, region) =>
+    set((s) => ({
+      pages: s.pages.map((p) =>
+        p.pageNum === pageNum
+          ? { ...p, maskRegions: [...p.maskRegions, region] }
+          : p,
+      ),
+    })),
+
+  removeMaskRegion: (pageNum, index) =>
+    set((s) => ({
+      pages: s.pages.map((p) =>
+        p.pageNum === pageNum
+          ? { ...p, maskRegions: p.maskRegions.filter((_, i) => i !== index) }
+          : p,
+      ),
+    })),
+
+  clearMaskRegions: (pageNum) =>
+    set((s) => ({
+      pages: s.pages.map((p) =>
+        p.pageNum === pageNum ? { ...p, maskRegions: [] } : p,
+      ),
+    })),
+
+  setMaskRegions: (pageNum, regions) =>
+    set((s) => ({
+      pages: s.pages.map((p) =>
+        p.pageNum === pageNum ? { ...p, maskRegions: regions } : p,
+      ),
+    })),
+
+  autoSuggestMasks: (pageNum) =>
+    set((s) => ({
+      pages: s.pages.map((p) =>
+        p.pageNum === pageNum
+          ? { ...p, maskRegions: [...p.imageRects] }
+          : p,
+      ),
+    })),
 
   reset: () => set({ ...INITIAL_STATE }),
 }));
