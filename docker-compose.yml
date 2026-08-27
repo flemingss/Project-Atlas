@@ -58,7 +58,11 @@ services:
   # manual (~2,300 chunks); fine for batch ingest.
   # ---------------------------------------------------------------------
   embeddings:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.5
+    # cpu-1.5 crash-loops on first boot: its bundled hf-hub 0.3.2 cannot follow
+    # the relative redirect URLs the HF CDN now returns ("relative URL without
+    # a base"), so the weights download fails before serving starts. 1.9.x
+    # bundles a fixed hf-hub. Same model, same API.
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
     container_name: atlas-embeddings
     command: ["--model-id", "nomic-ai/nomic-embed-text-v1.5", "--port", "80"]
     ports:

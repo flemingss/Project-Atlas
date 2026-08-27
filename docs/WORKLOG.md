@@ -1,5 +1,65 @@
 # Worklog
 
+## 2026-08-27 (evening) — Stack check + aborted in-container E2E; handover to operator testing
+
+Commits pushed earlier today (`363f944`…`0e25050`). Stack inspection through the
+docker proxy plus an attempted controlled ingest from inside the dev container
+surfaced real findings before the test was cut short in favour of operator-run
+dummy-doc testing.
+
+### Fixed in this pass (needs host-side `docker compose up -d` to apply)
+
+- **`atlas-embeddings` crash-loops on first boot** — TEI `cpu-1.5`'s bundled
+  hf-hub 0.3.2 cannot follow the relative redirect URLs the HF CDN now returns
+  ("relative URL without a base"), so the weights download fails forever.
+  `docker-compose.yml` now pins `cpu-1.9`. Same model, same API.
+- **Docker proxy widened to a lifecycle surface**
+  (`.devcontainer/docker-compose.devcontainer.yml`): POST/EXEC/start/stop/
+  restart enabled so the dev shell can bounce and debug containers. Builds and
+  `compose up` still belong on the host (daemon resolves bind-mount paths
+  host-side). Recreate `docker-proxy` for this to take effect.
+
+### Found, NOT yet fixed (bug-fix push candidates)
+
+1. **A busy ingest blocks the entire API.** While a PDF parse was running,
+   `GET /health` timed out (>8s). The parse path (Docling/layout, incl. their
+   model downloads) executes synchronously inside async endpoints, freezing the
+   event loop — readiness probes, the SPA, and concurrent ingests all stall.
+   Needs `run_in_executor`/thread offload around parser work.
+2. **First PDF ingest on a fresh deployment downloads models mid-request** —
+   Docling's `docling-layout-heron` and deepdoc's five ONNX files are not baked
+   into the image; the first request pays the download (or fails hard when
+   egress is blocked). Pre-fetch at image build (like the OCR weights already
+   are) or at startup.
+3. **Parse-failure pile-up**: `docling.convert` runs under a 120s timeout with
+   2 retries, then falls back to the layout parser (its own downloads +
+   retries). With unreachable weights a single 2-page ingest kept the server
+   busy 10+ minutes. Consider fail-fast when the model cache is empty and
+   egress fails, and check whether the timed-out converter thread keeps
+   running after abandonment.
+4. **`DoclingParser` defaults unknown mime types to a `.pdf` temp suffix**
+   (`parsers.py` suffix map `.get(mime, ".pdf")`) — a non-PDF, non-Office
+   binary would be parsed as PDF. Cosmetic today (text/markdown take
+   `process_text`), but a wrong default.
+
+### Controlled test status
+
+Aborted mid-run (operator will run dummy docs instead). What did get verified
+live from the dev container: profile `api` resolution + startup validation
+logs, ZDR header injection on real OpenRouter calls (chat + embeddings both
+200 with `provider.zdr=true`), qdrant/postgres connectivity. NOT yet verified:
+judge→refine→metadata on a real doc, embeddings sidecar, search. Test residue
+fully flushed (workflow_runs/node_runs/artifact_refs/active_doc_versions rows
+deleted, `artifacts/runs/1,2` removed, qdrant untouched-empty, operator
+`config/models.yaml` restored to pinned nomic embeddings).
+
+Environment note: the assistant's sandbox cannot reach the HF weights CDN
+(`cdn-lfs.hf.co`, `cas-bridge.xethub.hf.co` resolve to 0.0.0.0) — model
+downloads must happen host-side or in the compose services.
+
+---
+
+
 Session-continuity log. Dev-container rebuilds can lose assistant conversation
 state, so each working session appends a dated entry here summarizing what was
 done, what was verified, and what is open. Newest entry first. Keep entries

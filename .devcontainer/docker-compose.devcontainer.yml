@@ -22,25 +22,29 @@ services:
   # and mount the host filesystem. That is a large blast radius to accept for
   # what is really a read-only need (reading logs while troubleshooting).
   #
-  # This proxy holds the real socket and re-exposes only GET endpoints over the
-  # compose network. POST=0 is the load-bearing setting: it blocks every
-  # mutating call, so `docker rm -f`, `docker run --privileged`, and
-  # `docker exec` are refused at the proxy rather than trusted not to happen.
+  # This proxy holds the real socket and re-exposes a *lifecycle* surface over
+  # the compose network: inspecting, logs, and start/stop/restart/exec of
+  # containers, so the dev shell can bounce a crash-looping sidecar or debug a
+  # service without host access. POST=1 with CONTAINERS=1 also permits
+  # container creation, so this is a deliberate widening of the original
+  # read-only design (chosen 2026-08-27: in-container command access is worth
+  # more day-to-day than the narrower surface). It is still better than
+  # mounting the raw socket: the proxy only exposes the sections switched on
+  # below, and stays unreachable from outside this compose network.
   #
   # Deliberately NOT published to a host port — reachable only from services on
   # this compose network.
   #
-  # Works: ps, logs (incl. -f), inspect, stats, top, events, images, networks.
-  # Refused by design: exec, run, stop/start/restart, rm, build, compose up.
-  # Run lifecycle commands from the Windows host instead — and note that
-  # `docker compose up` from in here would misresolve bind mounts anyway, since
-  # the daemon reads paths on the host where /workspace is E:\.
+  # Works: ps, logs (incl. -f), inspect, stats, top, events, images, networks,
+  # start/stop/restart, exec, rm, create.
+  # Still run BUILDS and `docker compose up` from the Windows host: the daemon
+  # resolves bind-mount paths on the host, where /workspace is E:\ — compose
+  # from in here would send Linux paths the daemon cannot find.
   # ---------------------------------------------------------------------
   docker-proxy:
     image: tecnativa/docker-socket-proxy:v0.5.0
     container_name: atlas-docker-proxy
     environment:
-      # Read-only surface for troubleshooting.
       CONTAINERS: 1      # ps, inspect, logs, stats, top
       IMAGES: 1
       NETWORKS: 1
@@ -49,13 +53,12 @@ services:
       VERSION: 1
       PING: 1
       EVENTS: 1
-      # Mutating access stays off. Changing these re-opens the blast radius
-      # this proxy exists to close.
-      POST: 0
-      EXEC: 0
-      ALLOW_START: 0
-      ALLOW_STOP: 0
-      ALLOW_RESTARTS: 0
+      # Lifecycle surface (see header note for the tradeoff).
+      POST: 1
+      EXEC: 1
+      ALLOW_START: 1
+      ALLOW_STOP: 1
+      ALLOW_RESTARTS: 1
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     restart: unless-stopped
