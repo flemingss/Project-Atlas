@@ -989,6 +989,24 @@ def make_vlm_ingest_router(
                 warn = f"Pipeline processing failed: {exc}"
                 log.exception("Pipeline processing failed for VLM commit run=%d", run_id)
                 pipeline_warnings.append(warn)
+                # Mark the run failed so it doesn't sit in 'running' forever —
+                # a run whose pipeline feed died has no chunks and would only
+                # surface later as a dangling-run maintenance finding.
+                try:
+                    from sqlalchemy import select as _select
+
+                    from atlas.models import WorkflowRun as _WorkflowRun
+
+                    with session_factory() as _session:
+                        _w = _session.execute(
+                            _select(_WorkflowRun).where(_WorkflowRun.id == run_id)
+                        ).scalars().first()
+                        if _w is not None:
+                            _w.status = "failed"
+                            _w.error_message = warn[:500]
+                            _session.commit()
+                except Exception:
+                    log.warning("Could not mark run %d failed after pipeline error", run_id, exc_info=True)
 
         msg = "VLM ingest committed"
         if chunks_upserted:

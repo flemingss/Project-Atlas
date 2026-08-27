@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import logging
 import shutil
 import time
@@ -119,6 +120,10 @@ async def _maintenance_loop(
                                 f"{settings.atlas_qdrant_url.rstrip('/')}/collections/{collection}/points/scroll",
                                 json=body,
                             )
+                            if resp.status_code == 404:
+                                # Collection not created yet (empty deployment,
+                                # or flushed) — nothing to scan.
+                                break
                             resp.raise_for_status()
                             result = (resp.json() or {}).get("result") or {}
                             points = result.get("points") or []
@@ -266,7 +271,11 @@ def create_app() -> FastAPI:
         engine.dispose()
         log.info("Atlas shutdown: engine disposed, maintenance stopped")
 
-    app = FastAPI(title="Project Atlas", version="0.1.0", lifespan=lifespan)
+    try:
+        _pkg_version = importlib.metadata.version("project-atlas")
+    except importlib.metadata.PackageNotFoundError:
+        _pkg_version = "0.0.0-dev"
+    app = FastAPI(title="Project Atlas", version=_pkg_version, lifespan=lifespan)
 
     @app.get("/health")
     async def health() -> dict:
@@ -284,6 +293,7 @@ def create_app() -> FastAPI:
     async def root() -> dict:
         return {
             "name": "Project Atlas",
+            "version": _pkg_version,
             "status": "ok",
             "health": "/health",
             "docs": "/docs",

@@ -64,11 +64,16 @@ services:
     # bundles a fixed hf-hub. Same model, same API.
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
     container_name: atlas-embeddings
-    command: ["--model-id", "nomic-ai/nomic-embed-text-v1.5", "--port", "80"]
+    # --revision pins the last-known-good commit of the model repo. Its HEAD
+    # ("v5 Transformers (#57)", e9b6763, 2026) regenerated config.json with
+    # BOTH `max_position_embeddings` and `n_positions`; TEI's serde parser
+    # treats those as aliases of one field and dies with
+    # "duplicate field `max_position_embeddings`". Pinning also protects the
+    # corpus: a silently-updated embedder would corrupt retrieval (see above).
+    command: ["--model-id", "nomic-ai/nomic-embed-text-v1.5", "--revision", "e5cf08aadaa33385f5990def41f7a23405aec398", "--port", "80"]
     ports:
       # Host debugging only; Atlas reaches it as http://embeddings:80 on the
-      # compose network. 18080 is deliberately avoided — docker-compose.optest.yml
-      # publishes Atlas there, and the two stacks should be able to coexist.
+      # compose network.
       - "18090:80"
     volumes:
       # Cache the weights so restarts do not re-download ~550MB.

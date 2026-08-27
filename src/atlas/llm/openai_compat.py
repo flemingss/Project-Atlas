@@ -395,19 +395,13 @@ class OpenAICompatibleProvider(ILlmProvider):
         except _LlmRetryableError as e:
             raise ValueError(str(e)) from e
 
-    async def embed(self, *, model: str, texts: list[str], params: dict[str, Any]) -> list[list[float]]:
-        payload: dict[str, Any] = {
-            "model": model,
-            "input": texts,
-            **(params or {}),
-        }
-        # Provider-level request keys (ZDR routing policy, etc). Applied after
-        # params so a role cannot accidentally override a safety setting.
-        if self._extra_body:
-            payload.update(self._extra_body)
-        if os.environ.get("ATLAS_OPENAI_TRACE"):
-            print(f"[openai_compat] POST {self._v1}/embeddings model={model} n={len(texts)}", file=sys.stderr)
+    # Embedding servers cap the number of inputs per request — the TEI sidecar
+    # rejects anything above its --max-client-batch-size (default 32) with a
+    # 422. Batch client-side so callers can embed arbitrarily many texts (a
+    # single committed manual easily chunks past any server-side cap).
+    _EMBED_MAX_BATCH = 32
 
+    async def embed(self, *, model: str, texts: list[str], params: dict[str, Any]) -> list[list[float]]:
         cfg = get_retry_config("llm")
         retry_cfg = RetryConfig(
             max_retries=cfg.max_retries,
@@ -416,14 +410,36 @@ class OpenAICompatibleProvider(ILlmProvider):
             jitter=cfg.jitter,
             retryable_exceptions=(_LlmRetryableError,),
         )
-        try:
-            return await async_retry(
-                self._do_embed,
-                model=model,
-                payload=payload,
-                config=retry_cfg,
-                subsystem="llm",
-                operation="embed",
-            )
-        except _LlmRetryableError as e:
-            raise ValueError(str(e)) from e
+
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), self._EMBED_MAX_BATCH):
+            batch = texts[start : start + self._EMBED_MAX_BATCH]
+            payload: dict[str, Any] = {
+                "model": model,
+                "input": batch,
+                **(params or {}),
+            }
+            # Provider-level request keys (ZDR routing policy, etc). Applied after
+            # params so a role cannot accidentally override a safety setting.
+            if self._extra_body:
+                payload.update(self._extra_body)
+            if os.environ.get("ATLAS_OPENAI_TRACE"):
+                print(
+                    f"[openai_compat] POST {self._v1}/embeddings model={model} "
+                    f"n={len(batch)} ({start + len(batch)}/{len(texts)})",
+                    file=sys.stderr,
+                )
+            try:
+                vectors.extend(
+                    await async_retry(
+                        self._do_embed,
+                        model=model,
+                        payload=payload,
+                        config=retry_cfg,
+                        subsystem="llm",
+                        operation="embed",
+                    )
+                )
+            except _LlmRetryableError as e:
+                raise ValueError(str(e)) from e
+        return vectors
