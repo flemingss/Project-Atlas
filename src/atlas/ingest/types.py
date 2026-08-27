@@ -27,34 +27,6 @@ GARBAGE_LAYOUT_TYPES = frozenset({LayoutType.HEADER, LayoutType.FOOTER, LayoutTy
 
 
 @dataclass
-class LayoutBox:
-    """A detected layout region on a PDF page."""
-    x0: float
-    top: float
-    x1: float
-    bottom: float
-    layout_type: LayoutType
-    score: float
-    page_number: int
-    text: str = ""
-    layoutno: str = ""
-
-
-@dataclass
-class OCRBox:
-    """A single OCR-detected text box."""
-    x0: float
-    top: float
-    x1: float
-    bottom: float
-    text: str
-    score: float = 1.0
-    page_number: int = 0
-    layout_type: str = ""
-    layoutno: str = ""
-
-
-@dataclass
 class ParsedRegion:
     """A classified text region from the PDF parser."""
     layout_type: LayoutType

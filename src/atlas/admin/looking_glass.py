@@ -15,7 +15,6 @@ from atlas.settings import Settings
 from atlas.workflow_ledger import WorkflowRunResponse, to_run_response
 
 from ._helpers import (
-    group_count,
     ledger_summary,
     parse_cursor,
     qdrant_collection,

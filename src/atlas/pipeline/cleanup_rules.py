@@ -33,7 +33,6 @@ Step types
 from __future__ import annotations
 
 import fnmatch
-import html
 import logging
 import re
 from dataclasses import dataclass, field

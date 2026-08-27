@@ -97,31 +97,10 @@ def test_trace_operation_failure():
     assert metric.success is False
 
 
-def test_get_summary():
-    """Test getting diagnostics summary."""
-    diag = DiagnosticsManager()
-
-    diag.log_error(component="test", error_code=ErrorCode.DOC_PARSE_FAILED, message="Error 1")
-    diag.log_warning(component="test", message="Warning 1")
-    diag.log_info(component="test", message="Info 1")
-    diag.record_metric(operation="op1", duration_ms=100, success=True)
-    diag.record_metric(operation="op2", duration_ms=200, success=False)
-
-    summary = diag.get_summary()
-
-    assert summary["total_events"] == 3
-    assert summary["errors"] == 1
-    assert summary["warnings"] == 1
-    assert summary["metrics_count"] == 2
-    assert summary["performance_summary"]["total_operations"] == 2
-    assert summary["performance_summary"]["successful_operations"] == 1
-
-
 def test_error_code_values():
     """Test error code enum values."""
     assert ErrorCode.DOC_PARSE_FAILED == "DOC_PARSE_FAILED"
     assert ErrorCode.JUDGE_INVALID_SCORE == "JUDGE_INVALID_SCORE"
-    assert ErrorCode.VRAM_EXCEEDED == "VRAM_EXCEEDED"
 
 
 def test_trace_level_values():

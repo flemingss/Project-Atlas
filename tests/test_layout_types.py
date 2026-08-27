@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from atlas.ingest.types import (
     GARBAGE_LAYOUT_TYPES,
-    LayoutBox,
     LayoutType,
-    OCRBox,
     PDFParseResult,
     ParsedRegion,
     TableResult,
@@ -98,39 +96,6 @@ def test_table_not_in_garbage():
 # ---------------------------------------------------------------------------
 # Dataclass instantiation
 # ---------------------------------------------------------------------------
-
-def test_layout_box_instantiation():
-    box = LayoutBox(
-        x0=0.0, top=0.0, x1=100.0, bottom=50.0,
-        layout_type=LayoutType.TEXT, score=0.95, page_number=1,
-    )
-    assert box.x0 == 0.0
-    assert box.x1 == 100.0
-    assert box.layout_type == LayoutType.TEXT
-    assert box.score == 0.95
-    assert box.page_number == 1
-    assert box.text == ""       # default
-    assert box.layoutno == ""   # default
-
-
-def test_layout_box_with_text():
-    box = LayoutBox(
-        x0=10.0, top=20.0, x1=300.0, bottom=80.0,
-        layout_type=LayoutType.TITLE, score=0.99, page_number=0,
-        text="Chapter 1", layoutno="t_0",
-    )
-    assert box.text == "Chapter 1"
-    assert box.layoutno == "t_0"
-
-
-def test_ocr_box_instantiation():
-    box = OCRBox(x0=5.0, top=10.0, x1=200.0, bottom=40.0, text="Hello")
-    assert box.text == "Hello"
-    assert box.score == 1.0        # default
-    assert box.page_number == 0    # default
-    assert box.layout_type == ""   # default
-    assert box.layoutno == ""      # default
-
 
 def test_parsed_region_instantiation():
     region = ParsedRegion(

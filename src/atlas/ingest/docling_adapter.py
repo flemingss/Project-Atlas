@@ -204,18 +204,6 @@ def _try_export_markdown(doc: Any) -> str | None:
     return None
 
 
-def parse_pdf_path(*, pdf_path: Path) -> DoclingParseResult:
-    """Parse a PDF using Docling.
-
-    Deprecated wrapper around `parse_document_path`.
-
-    Raises:
-      - DoclingUnavailableError if Docling isn't installed
-      - DoclingParseError for parsing/export failures
-    """
-    return parse_document_path(doc_path=pdf_path, source_mime_type="application/pdf")
-
-
 def parse_document_path(*, doc_path: Path, source_mime_type: str) -> DoclingParseResult:
     """Parse a document (PDF/Office) using Docling.
 

@@ -169,43 +169,6 @@ async def test_refine_max_retries_returns_original() -> None:
     assert result.refined_markdown == "some content"
 
 
-def test_refine_fidelity_flag_needs_review_when_retries_exceeded() -> None:
-    node = _refine_node(max_retries=2)
-    flag = node.determine_fidelity_flag(judge_score=3, refine_success=True, retry_count=2)
-    assert flag == FidelityFlag.NEEDS_REVIEW
-
-
-def test_refine_fidelity_flag_verified_on_high_score() -> None:
-    node = _refine_node()
-    flag = node.determine_fidelity_flag(judge_score=5, refine_success=False, retry_count=0)
-    assert flag == FidelityFlag.VERIFIED
-
-
-def test_refine_fidelity_flag_verified_on_score4() -> None:
-    node = _refine_node()
-    flag = node.determine_fidelity_flag(judge_score=4, refine_success=False, retry_count=1)
-    assert flag == FidelityFlag.VERIFIED
-
-
-def test_refine_fidelity_flag_low_confidence_on_low_score() -> None:
-    node = _refine_node()
-    flag = node.determine_fidelity_flag(judge_score=2, refine_success=False, retry_count=0)
-    assert flag == FidelityFlag.LOW_CONFIDENCE
-
-
-def test_refine_fidelity_flag_partial_on_borderline_score() -> None:
-    node = _refine_node()
-    flag = node.determine_fidelity_flag(judge_score=3, refine_success=True, retry_count=1)
-    assert flag == FidelityFlag.PARTIAL
-
-
-def test_refine_fidelity_flag_retries_exceeded_overrides_high_score() -> None:
-    """NEEDS_REVIEW takes priority over VERIFIED even if score is high."""
-    node = _refine_node(max_retries=2)
-    flag = node.determine_fidelity_flag(judge_score=5, refine_success=True, retry_count=2)
-    assert flag == FidelityFlag.NEEDS_REVIEW
-
-
 # ---------------------------------------------------------------------------
 # Metadata node tests
 # ---------------------------------------------------------------------------

@@ -26,7 +26,6 @@ from __future__ import annotations
 import html
 import re
 import logging
-import unicodedata
 from datetime import datetime, timezone
 from typing import Any
 

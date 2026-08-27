@@ -8,12 +8,11 @@ that is loaded from the ``retry`` section of ``pipeline.yaml``.
 from __future__ import annotations
 
 import asyncio
-import functools
 import logging
 import random
 import time
-from dataclasses import dataclass, field
-from typing import Any, Callable, Sequence, Type
+from dataclasses import dataclass
+from typing import Any, Callable, Type
 
 log = logging.getLogger(__name__)
 

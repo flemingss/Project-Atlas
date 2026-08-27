@@ -1,46 +1,7 @@
 """Tests for enhanced data schemas."""
 
 
-from atlas.schemas import ChunkMetadata, FidelityFlag, JudgeResult, ParseProfile
-
-
-def test_chunk_metadata_creation():
-    """Test creating chunk metadata with required fields."""
-    metadata = ChunkMetadata(
-        tenant_id="test-tenant",
-        project_id="test-project",
-        doc_id="doc-123",
-        doc_version="1",
-        chunk_index=0,
-        text="Sample text",
-        content_hash="abc123",
-    )
-
-    assert metadata.tenant_id == "test-tenant"
-    assert metadata.chunk_index == 0
-    assert metadata.is_finalized is False
-    assert metadata.is_sensitive is True  # Default
-    assert metadata.metadata_tier == 1  # Default
-
-
-def test_chunk_metadata_with_hierarchical_info():
-    """Test chunk metadata with section path and parent info."""
-    metadata = ChunkMetadata(
-        tenant_id="test-tenant",
-        project_id="test-project",
-        doc_id="doc-123",
-        doc_version="1",
-        chunk_index=0,
-        text="Sample text",
-        content_hash="abc123",
-        parent_header_id="header-1",
-        sibling_ids=["chunk-1", "chunk-2"],
-        section_path=["Chapter 1", "Introduction"],
-    )
-
-    assert metadata.parent_header_id == "header-1"
-    assert len(metadata.sibling_ids) == 2
-    assert metadata.section_path == ["Chapter 1", "Introduction"]
+from atlas.schemas import FidelityFlag, JudgeResult, ParseProfile
 
 
 def test_judge_result_creation():

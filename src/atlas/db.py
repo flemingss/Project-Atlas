@@ -26,8 +26,3 @@ def make_engine(db_url: str) -> Engine:
 def make_sessionmaker(engine: Engine) -> sessionmaker[Session]:
     return sessionmaker(bind=engine, expire_on_commit=False)
 
-
-@contextmanager
-def session_scope(session_factory: sessionmaker[Session]) -> Iterator[Session]:
-    with session_factory() as session:
-        yield session

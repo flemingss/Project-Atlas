@@ -14,10 +14,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Iterator
 
-
 def _utc_now_iso_z() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
 
 class ErrorCode(str, Enum):
     """Structured error codes (HLD section 5: Diagnostics)."""
@@ -53,11 +51,6 @@ class ErrorCode(str, Enum):
     VECTORSTORE_SEARCH_FAILED = "VECTORSTORE_SEARCH_FAILED"
     VECTORSTORE_CONNECTION_ERROR = "VECTORSTORE_CONNECTION_ERROR"
 
-    # Resource errors
-    VRAM_EXCEEDED = "VRAM_EXCEEDED"
-    QUEUE_DEPTH_EXCEEDED = "QUEUE_DEPTH_EXCEEDED"
-    CONCURRENCY_LIMIT = "CONCURRENCY_LIMIT"
-
     # Configuration errors
     CONFIG_INVALID = "CONFIG_INVALID"
     CONFIG_VERSION_NOT_FOUND = "CONFIG_VERSION_NOT_FOUND"
@@ -74,7 +67,6 @@ class ErrorCode(str, Enum):
     # General errors
     UNKNOWN_ERROR = "UNKNOWN_ERROR"
 
-
 class TraceLevel(str, Enum):
     """Trace levels for debugging (HLD section 5: debug trace level)."""
 
@@ -82,7 +74,6 @@ class TraceLevel(str, Enum):
     BASIC = "basic"
     DETAILED = "detailed"
     FULL = "full"  # Captures intermediate prompts/responses
-
 
 @dataclass
 class DiagnosticEvent:
@@ -97,7 +88,6 @@ class DiagnosticEvent:
     context: dict[str, Any] = field(default_factory=dict)
     trace_data: dict[str, Any] = field(default_factory=dict)
 
-
 @dataclass
 class PerformanceMetrics:
     """Performance metrics for operations."""
@@ -107,7 +97,6 @@ class PerformanceMetrics:
     success: bool
     timestamp: str
     metadata: dict[str, Any] = field(default_factory=dict)
-
 
 class DiagnosticsManager:
     """Centralized diagnostics manager for structured logging and metrics.
@@ -274,35 +263,8 @@ class DiagnosticsManager:
                 metadata=final_metadata,
             )
 
-    def get_summary(self) -> dict[str, Any]:
-        """Get a summary of diagnostics and metrics."""
-        errors = [e for e in self.events if e.level == "ERROR"]
-        warnings = [e for e in self.events if e.level == "WARNING"]
-
-        return {
-            "total_events": len(self.events),
-            "errors": len(errors),
-            "warnings": len(warnings),
-            "metrics_count": len(self.metrics),
-            "recent_errors": [
-                {"code": e.error_code, "message": e.message, "component": e.component}
-                for e in errors[-5:]
-            ],
-            "performance_summary": {
-                "total_operations": len(self.metrics),
-                "successful_operations": sum(1 for m in self.metrics if m.success),
-                "avg_duration_ms": (
-                    sum(m.duration_ms for m in self.metrics) / len(self.metrics)
-                    if self.metrics
-                    else 0
-                ),
-            },
-        }
-
-
 # Global diagnostics instance
 _global_diagnostics: DiagnosticsManager | None = None
-
 
 def get_diagnostics(trace_level: TraceLevel = TraceLevel.BASIC) -> DiagnosticsManager:
     """Get or create the global diagnostics manager.
