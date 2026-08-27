@@ -39,8 +39,13 @@ updates:
       #   migrate together with an editor layout regression pass.
       - dependency-name: react-resizable-panels
         update-types: ["version-update:semver-major"]
+      # - Tailwind 4 is a real migration (CSS-first config, PostCSS plugin
+      #   split, tailwind.config.js overhaul) — do it once, deliberately,
+      #   together with tailwind-merge 3 below.
+      - dependency-name: tailwindcss
+        update-types: ["version-update:semver-major"]
       # - tailwind-merge 3 targets Tailwind v4; we are on Tailwind 3 —
-      #   adopt with a future Tailwind 4 migration.
+      #   adopt with the Tailwind 4 migration.
       - dependency-name: tailwind-merge
         update-types: ["version-update:semver-major"]
       # - react 19: framework major; adopt deliberately with a full sweep.
