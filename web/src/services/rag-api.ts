@@ -8,8 +8,9 @@ import { apiFetch, authHeaders } from './shared';
 
 export interface IngestTextRequest {
   text: string;
-  doc_name?: string;
-  doc_id?: string;
+  /** Required by the backend (POST /rag/ingest/text). There is no doc_name
+   *  field server-side — the document's identity is doc_id. */
+  doc_id: string;
   doc_version?: string;
   is_finalized?: boolean;
   is_sensitive?: boolean;

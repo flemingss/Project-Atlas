@@ -49,7 +49,7 @@ import { useScopeStore } from '@/stores/scope-store';
 import { useIngestDefaultsStore } from '@/stores/ingest-defaults-store';
 import { vlmIngestApi } from '@/services/vlm-ingest-api';
 import { ragApi, type IngestResponse } from '@/services/rag-api';
-import { useVlmIngestStore, type WizardStep } from '@/stores/vlm-ingest-store';
+import { useVlmIngestStore, VLM_SESSION_STORAGE_KEY, type WizardStep } from '@/stores/vlm-ingest-store';
 import { MaskEditor } from '@/components/mask-editor';
 import {
   useStartSession,
@@ -122,6 +122,46 @@ export function IngestPage() {
       markSessionExpired('The backend session no longer exists (server restart/reload).');
     }
   }, [sessionQuery.error, markSessionExpired]);
+
+  // Keep wizard page state in sync with the server — this is what makes the
+  // progress bar move during bulk (server-side) processing.
+  const syncPagesFromServer = useVlmIngestStore((s) => s.syncPagesFromServer);
+  useEffect(() => {
+    if (sessionQuery.data) syncPagesFromServer(sessionQuery.data);
+  }, [sessionQuery.data, syncPagesFromServer]);
+
+  // Re-attach after a page refresh: the wizard lives in memory, but the
+  // backend session (and any bulk processing) keeps running. If a session id
+  // was persisted and the server still knows it, rehydrate and jump to the
+  // step matching the server's state.
+  const resumeSession = useVlmIngestStore((s) => s.resumeSession);
+  useEffect(() => {
+    if (useVlmIngestStore.getState().sessionId) return;
+    // Prefer an explicit ?vlm_session= deep-link, then the persisted id.
+    const fromUrl = new URLSearchParams(window.location.search).get('vlm_session');
+    let saved: string | null = fromUrl;
+    if (!saved) {
+      try {
+        saved = localStorage.getItem(VLM_SESSION_STORAGE_KEY);
+      } catch {
+        return;
+      }
+    }
+    if (!saved) return;
+    vlmIngestApi
+      .getSession(saved)
+      .then((session) => {
+        resumeSession(session);
+        setMethod('vlm');
+        toast.info(`Re-attached to session: ${session.source_filename} (${session.status})`);
+      })
+      .catch(() => {
+        try {
+          localStorage.removeItem(VLM_SESSION_STORAGE_KEY);
+        } catch { /* ignore */ }
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const steps = getSteps(method);
   const currentIdx = steps.findIndex((s) => s.key === unifiedStep);
@@ -522,7 +562,8 @@ function ImportMethodContent() {
     try {
       const fd = new FormData();
       fd.append('file', file);
-      if (docName) fd.append('doc_name', docName);
+      // Backend requires doc_id (there is no doc_name field server-side).
+      fd.append('doc_id', docName.trim() || file.name.replace(/\.[^.]+$/, ''));
       fd.append('is_finalized', String(searchable));
       fd.append('is_sensitive', String(sensitive));
       if (workspace) fd.append('tenant_id', workspace);
@@ -620,9 +661,15 @@ function PasteMethodContent() {
     setResult(null);
     setError(null);
     try {
+      const docId = docName.trim();
+      if (!docId) {
+        toast.error('Enter a document name — it becomes the doc ID.');
+        setUploading(false);
+        return;
+      }
       const resp = await ragApi.ingestText({
         text: textContent,
-        doc_name: docName || undefined,
+        doc_id: docId,
         is_finalized: searchable,
         is_sensitive: sensitive,
         tenant_id: workspace || undefined,

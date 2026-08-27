@@ -103,6 +103,14 @@ export function DashboardPage() {
   const [qdrantStatus, setQdrantStatus] = useState<StatusLevel>('unknown');
   const [metricsLoading, setMetricsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [apiVersion, setApiVersion] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch('/')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((info) => setApiVersion(info?.version ?? null))
+      .catch(() => setApiVersion(null));
+  }, []);
 
   const loadMetrics = async () => {
     if (!isAdmin) return;
@@ -241,7 +249,7 @@ export function DashboardPage() {
           <CardContent className="space-y-2 text-xs">
             <div className="flex justify-between">
               <span className="text-text-muted">API Version</span>
-              <span className="font-mono text-text-primary">0.1.0</span>
+              <span className="font-mono text-text-primary">{apiVersion ?? '—'}</span>
             </div>
             <Separator />
             <div className="flex justify-between">

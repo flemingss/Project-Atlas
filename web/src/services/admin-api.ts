@@ -74,7 +74,34 @@ export interface ConfigVersionSummary {
   config_hash: string;
   created_at: string;
 }
+export interface ModelRoleConfig {
+  provider?: string;
+  model_name?: string;
+  max_output_tokens?: number;
+  params?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+export interface ModelProviderConfig {
+  type?: string;
+  base_url?: string;
+  base_url_env?: string;
+  enforce_zdr?: boolean;
+  [key: string]: unknown;
+}
 export interface EffectiveConfig {
+  hash?: string;
+  pipeline?: Record<string, unknown>;
+  models?: {
+    active_profile?: string;
+    providers?: Record<string, ModelProviderConfig>;
+    roles?: Record<string, ModelRoleConfig>;
+    [key: string]: unknown;
+  };
+  source?: {
+    yaml?: { profile?: string; [key: string]: unknown };
+    db?: { active_id?: number } | null;
+    [key: string]: unknown;
+  };
   [key: string]: unknown;
 }
 

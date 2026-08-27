@@ -37,6 +37,7 @@ import {
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import {
   adminApi,
+  type EffectiveConfig,
   type LookingGlassMetrics,
   type RunSummary,
   type LookingGlassQdrant,
@@ -55,6 +56,7 @@ export function AdminHealthPage() {
   const [failures, setFailures] = useState<Record<string, unknown> | null>(null);
   const [inventory, setInventory] = useState<Record<string, unknown> | null>(null);
   const [runs, setRuns] = useState<RunSummary[]>([]);
+  const [llmConfig, setLlmConfig] = useState<EffectiveConfig | null>(null);
   const [loading, setLoading] = useState(false);
   const [selfTestResult, setSelfTestResult] = useState<Record<string, unknown> | null>(null);
   const [selfTestRunning, setSelfTestRunning] = useState(false);
@@ -62,7 +64,7 @@ export function AdminHealthPage() {
   const loadAll = async () => {
     setLoading(true);
     try {
-      const [m, q, ls, inf, fa, inv, r] = await Promise.allSettled([
+      const [m, q, ls, inf, fa, inv, r, cfg] = await Promise.allSettled([
         adminApi.lookingGlassMetrics(),
         adminApi.lookingGlassQdrant(),
         adminApi.lookingGlassLedgerSummary(),
@@ -70,6 +72,7 @@ export function AdminHealthPage() {
         adminApi.lookingGlassFailures(),
         adminApi.lookingGlassInventory(),
         adminApi.listRuns({ limit: 20 }),
+        adminApi.effectiveConfig(),
       ]);
       if (m.status === 'fulfilled') setMetrics(m.value);
       if (q.status === 'fulfilled') setQdrant(q.value);
@@ -78,6 +81,7 @@ export function AdminHealthPage() {
       if (fa.status === 'fulfilled') setFailures(fa.value);
       if (inv.status === 'fulfilled') setInventory(inv.value);
       if (r.status === 'fulfilled') setRuns(r.value);
+      if (cfg.status === 'fulfilled') setLlmConfig(cfg.value);
     } finally {
       setLoading(false);
     }
@@ -138,6 +142,9 @@ export function AdminHealthPage() {
           <MetricCard icon={Activity} label="Success rate" value={`${successRate}%`} />
         </div>
       )}
+
+      {/* LLM configuration */}
+      {llmConfig && <LlmConfigSection config={llmConfig} />}
 
       {/* Qdrant status */}
       <JsonSection title="Qdrant cluster" icon={<Database className="size-4" />} data={qdrant} />
@@ -217,6 +224,74 @@ export function AdminHealthPage() {
         <JsonSection title="Self-test result" icon={<Server className="size-4" />} data={selfTestResult} defaultOpen />
       )}
     </PageShell>
+  );
+}
+
+function LlmConfigSection({ config }: { config: EffectiveConfig }) {
+  const profile = config.models?.active_profile ?? config.source?.yaml?.profile ?? 'none';
+  const providers = config.models?.providers ?? {};
+  const roles = config.models?.roles ?? {};
+  const dbVersion = config.source?.db?.active_id;
+  const hash = config.hash ? config.hash.slice(0, 12) : null;
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Server className="size-4" />
+          LLM configuration
+          <Badge variant="default" className="text-[10px] uppercase">
+            profile: {profile}
+          </Badge>
+          <Badge variant="outline" className="ml-auto text-[10px]">
+            {dbVersion != null ? `DB version #${dbVersion}` : 'YAML defaults'}
+            {hash ? ` · ${hash}` : ''}
+          </Badge>
+        </CardTitle>
+        <CardDescription className="text-xs">
+          Models the pipeline resolves per role under the active profile. Embeddings are
+          pinned across profiles.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="p-0">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="text-xs">Role</TableHead>
+              <TableHead className="text-xs">Provider</TableHead>
+              <TableHead className="text-xs">Model</TableHead>
+              <TableHead className="text-xs">Privacy</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {Object.entries(roles).map(([role, rc]) => {
+              const provider = rc.provider ?? '—';
+              const zdr = providers[provider]?.enforce_zdr === true;
+              return (
+                <TableRow key={role}>
+                  <TableCell className="text-xs">{role.replace(/_model$/, '')}</TableCell>
+                  <TableCell className="font-mono text-xs">{provider}</TableCell>
+                  <TableCell className="max-w-[280px] truncate font-mono text-xs" title={rc.model_name}>
+                    {rc.model_name ?? '—'}
+                  </TableCell>
+                  <TableCell>
+                    {zdr ? (
+                      <Badge variant="outline" className="text-[10px] text-state-success">
+                        ZDR enforced
+                      </Badge>
+                    ) : provider === 'embeddings' ? (
+                      <Badge variant="outline" className="text-[10px]">local sidecar</Badge>
+                    ) : (
+                      <Badge variant="outline" className="text-[10px]">—</Badge>
+                    )}
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
   );
 }
 

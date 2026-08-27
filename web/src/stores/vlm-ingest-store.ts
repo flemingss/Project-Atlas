@@ -93,12 +93,17 @@ export interface VlmIngestState {
 
   // Actions
   setSession: (session: SessionSummary) => void;
+  /** Rehydrate the wizard from a live backend session (after page refresh). */
+  resumeSession: (session: SessionSummary) => void;
   setStep: (step: WizardStep) => void;
   setGlobalConfig: (cfg: Partial<Pick<VlmIngestState, 'dpi' | 'cropTop' | 'cropBottom' | 'cropLeft' | 'cropRight' | 'systemPrompt'>>) => void;
   setThumbnails: (thumbs: ThumbnailEntry[]) => void;
   setPageEnabled: (pageNum: number, enabled: boolean) => void;
   setPageOverride: (pageNum: number, overrides: Partial<Pick<PageState, 'dpiOverride' | 'cropTopOverride' | 'cropBottomOverride' | 'cropLeftOverride' | 'cropRightOverride'>>) => void;
   setPageResult: (pageNum: number, markdown: string, model: string, status: string) => void;
+  /** Merge server-side page statuses (from the polled session summary) into
+   *  local wizard state. Keeps bulk (server-side) processing progress live. */
+  syncPagesFromServer: (session: SessionSummary) => void;
   setPageError: (pageNum: number, error: string) => void;
   setPageMarkdown: (pageNum: number, markdown: string) => void;
   setProcessing: (isProcessing: boolean, pageNum?: number | null) => void;
@@ -118,7 +123,7 @@ export interface VlmIngestState {
 
 // ── Defaults ──────────────────────────────────────────────────────
 
-const INITIAL_STATE: Omit<VlmIngestState, 'setSession' | 'setStep' | 'setGlobalConfig' | 'setThumbnails' | 'setPageEnabled' | 'setPageOverride' | 'setPageResult' | 'setPageError' | 'setPageMarkdown' | 'setProcessing' | 'setAutoProcess' | 'setStitchResult' | 'setFinalMarkdown' | 'setStatus' | 'markSessionExpired' | 'setPageAnalysis' | 'addMaskRegion' | 'removeMaskRegion' | 'clearMaskRegions' | 'setMaskRegions' | 'autoSuggestMasks' | 'reset'> = {
+const INITIAL_STATE: Omit<VlmIngestState, 'setSession' | 'resumeSession' | 'setStep' | 'setGlobalConfig' | 'setThumbnails' | 'setPageEnabled' | 'setPageOverride' | 'setPageResult' | 'syncPagesFromServer' | 'setPageError' | 'setPageMarkdown' | 'setProcessing' | 'setAutoProcess' | 'setStitchResult' | 'setFinalMarkdown' | 'setStatus' | 'markSessionExpired' | 'setPageAnalysis' | 'addMaskRegion' | 'removeMaskRegion' | 'clearMaskRegions' | 'setMaskRegions' | 'autoSuggestMasks' | 'reset'> = {
   sessionId: null,
   runId: null,
   filename: '',
@@ -149,30 +154,48 @@ const INITIAL_STATE: Omit<VlmIngestState, 'setSession' | 'setStep' | 'setGlobalC
 
 // ── Store ─────────────────────────────────────────────────────────
 
+/** localStorage key holding the live backend session id, so a page refresh
+ *  can re-attach to a session the server is still processing. */
+export const VLM_SESSION_STORAGE_KEY = 'atlas_vlm_session';
+
+function buildPages(session: SessionSummary): PageState[] {
+  return Array.from({ length: session.page_count }, (_, i) => {
+    const backendPage = session.pages?.[i];
+    return {
+      pageNum: i,
+      enabled: backendPage?.enabled ?? true,
+      status: backendPage?.status ?? 'pending',
+      markdown: backendPage?.markdown ?? '',
+      model: backendPage?.model ?? '',
+      error: undefined,
+      dpiOverride: null,
+      cropTopOverride: null,
+      cropBottomOverride: null,
+      cropLeftOverride: null,
+      cropRightOverride: null,
+      contentClass: null,
+      imageRatio: null,
+      imageRects: [],
+      maskRegions: [],
+    };
+  });
+}
+
+function rememberSession(sessionId: string | null) {
+  try {
+    if (sessionId) localStorage.setItem(VLM_SESSION_STORAGE_KEY, sessionId);
+    else localStorage.removeItem(VLM_SESSION_STORAGE_KEY);
+  } catch {
+    /* storage unavailable — resume just won't work */
+  }
+}
+
 export const useVlmIngestStore = create<VlmIngestState>((set) => ({
   ...INITIAL_STATE,
 
   setSession: (session) => {
-    const pages = Array.from({ length: session.page_count }, (_, i) => {
-      const backendPage = session.pages?.[i];
-      return {
-        pageNum: i,
-        enabled: backendPage?.enabled ?? true,
-        status: backendPage?.status ?? 'pending',
-        markdown: backendPage?.markdown ?? '',
-        model: backendPage?.model ?? '',
-        error: undefined,
-        dpiOverride: null,
-        cropTopOverride: null,
-        cropBottomOverride: null,
-        cropLeftOverride: null,
-        cropRightOverride: null,
-        contentClass: null,
-        imageRatio: null,
-        imageRects: [],
-        maskRegions: [],
-      };
-    });
+    const pages = buildPages(session);
+    rememberSession(session.session_id);
     set({
       sessionId: session.session_id,
       runId: session.run_id,
@@ -183,6 +206,37 @@ export const useVlmIngestStore = create<VlmIngestState>((set) => ({
       pages,
       totalEnabled: pages.filter((p) => p.enabled).length,
       step: 'configure',
+      sessionExpired: false,
+      sessionExpiredReason: '',
+    });
+  },
+
+  resumeSession: (session) => {
+    const pages = buildPages(session);
+    // Land on the step matching the server's state. Per-page overrides and
+    // mask regions live server-side and are not rehydrated here — results
+    // (status/markdown) are, which is what review/commit need.
+    const step: WizardStep =
+      session.status === 'processing'
+        ? 'processing'
+        : session.status === 'complete'
+          ? 'review'
+          : 'configure';
+    rememberSession(session.session_id);
+    const done = pages.filter((p) => p.status === 'done' || p.status === 'skipped').length;
+    set({
+      sessionId: session.session_id,
+      runId: session.run_id,
+      filename: session.source_filename,
+      pageCount: session.page_count,
+      sessionStatus: session.status,
+      headless: session.headless,
+      pages,
+      totalEnabled: pages.filter((p) => p.enabled).length,
+      processedCount: done,
+      step,
+      status: 'idle',
+      statusText: `Re-attached to session (${session.status})`,
       sessionExpired: false,
       sessionExpiredReason: '',
     });
@@ -223,6 +277,36 @@ export const useVlmIngestStore = create<VlmIngestState>((set) => ({
       return { pages, processedCount };
     }),
 
+  syncPagesFromServer: (session) =>
+    set((s) => {
+      const serverPages = session.pages;
+      if (!serverPages?.length || s.sessionId !== session.session_id) {
+        return {};
+      }
+      const byNum = new Map(serverPages.map((sp) => [sp.page_num, sp]));
+      let changed = false;
+      const pages = s.pages.map((p) => {
+        const sp = byNum.get(p.pageNum);
+        if (!sp || sp.status === p.status) return p;
+        changed = true;
+        // Never clobber an operator-edited result: keep local markdown when
+        // the page was already done locally and differs from the server's.
+        const keepLocalMd =
+          p.status === 'done' && p.markdown !== '' && p.markdown !== sp.markdown;
+        return {
+          ...p,
+          status: sp.status,
+          model: sp.model || p.model,
+          markdown: keepLocalMd ? p.markdown : (sp.markdown ?? p.markdown),
+        };
+      });
+      if (!changed && s.sessionStatus === session.status) return {};
+      const processedCount = pages.filter(
+        (p) => p.status === 'done' || p.status === 'skipped',
+      ).length;
+      return { pages, processedCount, sessionStatus: session.status };
+    }),
+
   setPageError: (pageNum, error) =>
     set((s) => ({
       pages: s.pages.map((p) =>
@@ -256,7 +340,8 @@ export const useVlmIngestStore = create<VlmIngestState>((set) => ({
 
   setStatus: (status, statusText) => set({ status, statusText }),
 
-  markSessionExpired: (reason) =>
+  markSessionExpired: (reason) => {
+    rememberSession(null);
     set({
       status: 'error',
       statusText: 'Session expired',
@@ -264,7 +349,8 @@ export const useVlmIngestStore = create<VlmIngestState>((set) => ({
       sessionExpiredReason: reason,
       isProcessing: false,
       currentProcessingPage: null,
-    }),
+    });
+  },
 
   setPageAnalysis: (pageNum, analysis) =>
     set((s) => ({
@@ -321,5 +407,8 @@ export const useVlmIngestStore = create<VlmIngestState>((set) => ({
       ),
     })),
 
-  reset: () => set({ ...INITIAL_STATE }),
+  reset: () => {
+    rememberSession(null);
+    set({ ...INITIAL_STATE });
+  },
 }));
