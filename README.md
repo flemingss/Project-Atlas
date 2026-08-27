@@ -1,6 +1,6 @@
 # Project Atlas
 
-Local-first RAG system with a running FastAPI service (admin + RAG MVP), config versioning, and a repeatable black-box E2E runner.
+Local-first RAG system with a running FastAPI service (admin + RAG MVP), config versioning, and a black-box E2E scenario suite.
 
 Pipeline: **Ingest → Cleanup → Judge → Refine → Metadata → Embeddings → Chunking → Commit** (11 nodes). Features config-driven cleanup rules engine, cleanup feedback API, metrics aggregation, LLM-assisted rule suggestion, Cleanup & Tuning UI, multi-dimensional judge rubric with per-dimension rationale, rich judge-to-refine context injection (sub-scores + iteration context), score regression rollback, diminishing-returns detection, cleanup-rejudge cycle guard, refine content-safety guardrails (min_preservation_ratio), failed-refines-don't-burn-retries semantics, rich HITL task context with resume loop guard, retry/backoff on all external calls, chunk QA with automatic fallback, Docling health scoring, unified routing with fail-fast and rule-tag escalation, fidelity mode search filtering, and five configurable builtin extraction-artifact fixes.
 
@@ -75,21 +75,32 @@ exists in the devcontainer overlay, not the production compose file.
 
 ## Quickstart (Infra)
 
+There are exactly **two supported stacks** — dev and prod. Both build from the
+same `Dockerfile`.
+
+**Dev** (bind-mounted source, admin-auth bypass, workspace shell + filtered
+docker proxy). `.env` sets `COMPOSE_FILE` to the dev overlay chain, so from the
+repo root this is simply:
+
 ```powershell
-docker compose up -d
+docker compose up -d --build
 ```
 
-**Building?** By default, `docker compose build` uses the full `Dockerfile` (~13.8 GB). For VLM-only deployments, use the lightweight variant:
+That is equivalent to:
 
 ```powershell
-docker compose -f docker-compose.slim.yml up -d    # VLM-only, ~1.5–2 GB
+docker compose -f docker-compose.yml -f docker-compose.dev.yml -f .devcontainer/docker-compose.devcontainer.yml up -d --build
 ```
 
-See [BUILD_VARIANTS.md](BUILD_VARIANTS.md) for full comparison and trade-offs.
+**Prod** (immutable image, no mounts, no dev bypass — requires `ATLAS_ADMIN_TOKEN`):
 
-For the bind-mount dev override (`docker-compose.dev.yml`), Atlas now defaults to **no auto-reload**
-to keep in-memory VLM ingest sessions stable while using the wizard.
-If you need backend live-reload while coding, set `ATLAS_DEV_AUTO_RELOAD=true` before `docker compose up`.
+```powershell
+docker compose -f docker-compose.yml up -d --build
+```
+
+In the dev stack, Atlas defaults to **no auto-reload** to keep in-memory VLM
+ingest sessions stable while using the wizard. If you need backend live-reload
+while coding, set `ATLAS_DEV_AUTO_RELOAD=true` before `docker compose up`.
 
 If you set `ATLAS_ENV` to a non-dev value (e.g. `prod`), Atlas will refuse to start unless you also set `ATLAS_ADMIN_TOKEN`.
 
@@ -102,13 +113,9 @@ By default, this repo’s compose stack brings up the **baseline appliance** onl
 
 ### PDF/Office ingestion (Docling)
 
-PDF/Office parsing requires Docling (full `Dockerfile` only; not available in slim variant).
-
-If you're using `docker-compose.slim.yml`, all PDFs must be ingested via VLM method.
-
-If PDF ingest fails because Docling is missing, either:
-1. Ensure you're using the full `Dockerfile` (default)
-2. Switch to VLM-only ingestion via slim variant ([BUILD_VARIANTS.md](BUILD_VARIANTS.md))
+PDF/Office parsing uses Docling, which is part of the standard image (parse
+models are baked in at build time). If PDF ingest fails because Docling is
+missing, rebuild the image (`docker compose build atlas`).
 
 Optional / experimental (profile-gated) Dify stack:
 
@@ -250,8 +257,6 @@ See [`web/README.md`](web/README.md) for the full developer guide (directory str
 
 ## Tests
 
-**For comprehensive testing documentation, see [`E2E_TEST_GUIDE.md`](E2E_TEST_GUIDE.md).**
-
 Fast unit/breadcrumb tests (no Docker/LM Studio required):
 
 ```powershell
@@ -304,42 +309,19 @@ curl -H "X-Atlas-Admin-Token: $env:ATLAS_ADMIN_TOKEN" -X POST http://127.0.0.1:2
 
 ## E2E Scenario Tests
 
-**For comprehensive testing documentation, see [`E2E_TEST_GUIDE.md`](E2E_TEST_GUIDE.md).**
-
-Black-box E2E scenario runner (talks to a running API + Qdrant):
-
-```powershell
-docker compose -f docker-compose.e2e.yml up -d
-& ".\.venv\Scripts\python.exe" -m atlas
-
-# In a second terminal (scenarios only):
-& ".\.venv\Scripts\python.exe" scripts\e2e_scenarios.py
-
-# Or run the full orchestrated flow (docker + api + scenarios):
-& ".\.venv\Scripts\python.exe" scripts\e2e_runner.py
-```
-
-**Deterministic mode** (CI-safe, uses mock LLM providers):
+Black-box E2E scenarios (`scripts/e2e_scenarios.py`) talk to a **running**
+stack over HTTP. With the dev stack up, run them from the workspace container:
 
 ```powershell
-# Dockerized full stack
-docker compose -f docker-compose.optest.yml --profile deterministic up --abort-on-container-exit
-```
-
-**Local LLM mode** (validates real AI behavior with Ollama or LM Studio):
-
-```powershell
-# With Ollama (auto-pulls models)
-docker compose -f docker-compose.optest.yml --profile local_llm up --abort-on-container-exit
-
-# With LM Studio on host
-docker compose -f docker-compose.optest.yml --profile lmstudio up --abort-on-container-exit
+docker exec atlas-workspace python scripts/e2e_scenarios.py --api-url http://atlas:8080 --qdrant-url http://qdrant:6333 --timeout 60
 ```
 
 Notes:
-- If LM Studio isn’t running, the runner will activate a deterministic embeddings config version automatically.
 - If the Qdrant collection already exists, the runner matches its vector dimension.
-- See `E2E_TEST_GUIDE.md` for detailed scenario descriptions and test strategies.
+- The dedicated e2e/optest compose stacks were removed in the dev/prod
+  consolidation; they predate the embeddings sidecar. See git history
+  (`E2E_TEST_GUIDE.md`, `OPTEST.md`, `docker-compose.optest.yml`) if a CI
+  harness is revived later.
 
 You can also run the built-in self-test against a running appliance:
 

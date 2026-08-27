@@ -594,7 +594,7 @@ Project documentation was consolidated in v0.7.3-dev to reduce maintenance burde
 
 - **Removed**: `HLD.md` (superseded by this doc + ARCHITECTURE.md), `PDF_OVERHAUL_PLAN.md` (completed — absorbed into Phases 10-11), `VALIDATION_REPORT.md` (frozen v0.7.0 snapshot), `CAPABILITIES_AUDIT.md` (extreme maintenance burden — capability status tracked here and in CHANGELOG).
 - **Authoritative docs**: This file (build-continuity/roadmap), `ARCHITECTURE.md` (current system state), `README.md` (quickstart), `config/PIPELINE_REFERENCE.md` (config reference).
-- **Supplementary**: `E2E_TEST_GUIDE.md`, `OPTEST.md`, `BUILD_VARIANTS.md`, `PIPELINE_QUALITY_IMPROVEMENTS.md`, `web/README.md`, `web/STYLE_GUIDE.md`.
+- **Supplementary**: `PIPELINE_QUALITY_IMPROVEMENTS.md`, `web/README.md`, `web/STYLE_GUIDE.md`. (`E2E_TEST_GUIDE.md`, `OPTEST.md`, `BUILD_VARIANTS.md` removed 2026-08-27 with the dev/prod compose consolidation — see CHANGELOG.)
 
 ---
 
