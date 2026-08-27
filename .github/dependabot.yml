@@ -34,6 +34,15 @@ updates:
       #   needs editor regression testing before adopting.
       - dependency-name: pdfjs-dist
         update-types: ["version-update:semver-major"]
+      # - react-resizable-panels 4: renamed exports (Group/Separator) AND the
+      #   data-attribute contract our resizable component styles against;
+      #   migrate together with an editor layout regression pass.
+      - dependency-name: react-resizable-panels
+        update-types: ["version-update:semver-major"]
+      # - tailwind-merge 3 targets Tailwind v4; we are on Tailwind 3 —
+      #   adopt with a future Tailwind 4 migration.
+      - dependency-name: tailwind-merge
+        update-types: ["version-update:semver-major"]
       # - react 19: framework major; adopt deliberately with a full sweep.
       - dependency-name: react
         update-types: ["version-update:semver-major"]
