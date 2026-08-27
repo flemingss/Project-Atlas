@@ -220,6 +220,34 @@ def make_vlm_ingest_router(
             raise HTTPException(status_code=404, detail=f"Session '{sid}' not found or expired")
         return s
 
+    def _arm_checkpointing(s: VlmIngestSession) -> None:
+        """Point the session's write-through checkpoint at the artifacts dir.
+
+        Each completed page's markdown is persisted immediately so a crash or
+        restart during a multi-hour bulk run loses at most the in-flight page.
+        The dir also stores the config for headless salvage/re-runs.
+        """
+        d = artifacts_dir / "vlm_sessions" / s.session_id
+        s.checkpoint_dir = str(d)
+        try:
+            import json as _json
+
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "session.json").write_text(
+                _json.dumps(
+                    {
+                        "session_id": s.session_id,
+                        "source_filename": s.source_filename,
+                        "page_count": s.page_count,
+                        "config": s.config.to_dict(),
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        except OSError:
+            log.warning("Could not initialise checkpoint dir for sid=%s", s.session_id, exc_info=True)
+
     def _find_source_pdf(run_id: int) -> tuple[bytes, str]:
         """Locate and read the source PDF for a run_id."""
         with session_factory() as session:
@@ -289,6 +317,7 @@ def make_vlm_ingest_router(
             config=cfg,
             headless=req.headless,
         )
+        _arm_checkpointing(s)
         log.info("VLM ingest session started: sid=%s run=%d pages=%d", s.session_id, req.run_id, n_pages)
 
         return StartSessionResponse(
@@ -327,6 +356,7 @@ def make_vlm_ingest_router(
             config=cfg,
             headless=headless,
         )
+        _arm_checkpointing(s)
         log.info("VLM ingest session started (upload): sid=%s pages=%d", s.session_id, n_pages)
 
         return StartSessionResponse(

@@ -87,14 +87,22 @@ class QdrantStore:
             vectors_config=qm.VectorParams(size=vector_size, distance=qm.Distance.COSINE),
         )
 
+    # A multi-thousand-page document chunks into thousands of points; sending
+    # them in one request risks Qdrant's REST payload limit (~32MB) and makes
+    # a transient failure retry the entire set. 512 points ≈ 2-3MB per call.
+    _UPSERT_BATCH = 512
+
     def upsert_points(self, *, points: list[qm.PointStruct]) -> None:
         if not points:
             return
 
-        def _do() -> None:
-            self._client.upsert(collection_name=self._collection, points=points, wait=True)
+        for start in range(0, len(points), self._UPSERT_BATCH):
+            batch = points[start : start + self._UPSERT_BATCH]
 
-        sync_retry(_do, config=self._retry_cfg(), subsystem="vectorstore", operation="upsert")
+            def _do(b: list[qm.PointStruct] = batch) -> None:
+                self._client.upsert(collection_name=self._collection, points=b, wait=True)
+
+            sync_retry(_do, config=self._retry_cfg(), subsystem="vectorstore", operation="upsert")
 
     def search(
         self,

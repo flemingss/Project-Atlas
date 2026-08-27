@@ -1,5 +1,44 @@
 # Worklog
 
+## 2026-08-27 (real docs + scale audit) — First production doc indexed; timing measured; long-job durability fixes
+
+First real document went through the full VLM path cleanly: 44 pages
+(42 enabled), zero page errors, committed and indexed (78 chunks, embed
+batching handled 3 batches). Run marked completed.
+
+**Measured timing** (from container log timestamps):
+- Bulk VLM processing: 42 pages in ~11.8 min ≈ **17 s/page average**
+  (range ~5–60 s/page; the earlier 11-page test doc ran ~90 s/page — density
+  and provider routing dominate). Stitch + commit + embed: ~2 min.
+- Projections: 2,000 pages ≈ **9–50 h**; 3,000 pages ≈ **14–75 h**.
+
+**Scale audit against a 2,000-page job (3,000 as stress target)** — three
+fixes landed:
+1. Session TTL was 1 h from `created_at`, never refreshed — any >1 h job
+   would be evicted mid-run (by maintenance or another session's create()).
+   Now inactivity-based: polls and page progress refresh it.
+2. Page results were RAM-only (restart = total loss, proven twice at small
+   scale). Now write-through checkpointed to
+   `artifacts/vlm_sessions/<sid>/page_NNNN.md` (+ `session.json` with the
+   render config) — a crash loses at most the in-flight page; salvage via
+   Import or headless re-run from the saved config.
+3. Qdrant upsert was one call for all points; now batched at 512.
+
+**Verified sound at scale already**: per-page errors don't abort the bulk
+loop; provider-level retry covers transient VLM failures; rendering runs in
+the threadpool (event loop stays free — /health green throughout); embed
+batches of 32 (~6k chunks ≈ 188 batches, minutes); process-all and commit
+survive client disconnects.
+
+**Known limits, deliberately deferred**:
+- Thumbnails endpoint renders every page in ONE response (~48 KB/page ⇒
+  ~150 MB at 3k pages). Fine to a few hundred pages; beyond that use
+  headless mode or skip the Pages grid. Needs pagination if the wizard must
+  handle thousand-page docs interactively.
+- No automatic resume-from-checkpoint after API restart (salvage is manual).
+- ATLAS_PDF_MAX_BYTES defaults to 200 MB (env-tunable) and the PDF is held
+  in session RAM for the run's duration.
+
 ## 2026-08-27 (testing round 1) — Real-doc VLM + import flows exercised end to end; 8 bugs found and fixed
 
 Operator ran the full VLM wizard against a real 11-page datasheet

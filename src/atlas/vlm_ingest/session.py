@@ -146,6 +146,15 @@ class VlmIngestSession:
     status: SessionStatus = SessionStatus.CONFIGURING
     stitched: StitchResult | None = None
     created_at: float = field(default_factory=time.time)
+    # Refreshed by any access or page progress; TTL eviction keys off this so
+    # a multi-hour bulk run (thousands of pages) is never evicted mid-job.
+    last_activity: float = field(default_factory=time.time)
+
+    # Write-through checkpoint directory. When set, every completed page's
+    # markdown is persisted here immediately, so a crash or restart during a
+    # long bulk run loses at most the in-flight page (the in-memory session is
+    # still gone, but the expensive VLM output is salvageable from disk).
+    checkpoint_dir: str | None = None
 
     # Headless flag
     headless: bool = False
@@ -199,19 +208,43 @@ class VlmIngestSession:
 
     # -- mutations --
 
+    def touch(self) -> None:
+        """Record activity — keeps the session alive under TTL eviction."""
+        self.last_activity = time.time()
+
+    def _checkpoint_page(self, page_num: int, markdown: str) -> None:
+        """Best-effort write-through of a completed page's markdown."""
+        if not self.checkpoint_dir:
+            return
+        try:
+            from pathlib import Path
+
+            d = Path(self.checkpoint_dir)
+            d.mkdir(parents=True, exist_ok=True)
+            (d / f"page_{page_num:04d}.md").write_text(markdown, encoding="utf-8")
+        except OSError:
+            log.warning(
+                "Checkpoint write failed: sid=%s page=%d", self.session_id, page_num,
+                exc_info=True,
+            )
+
     def set_page_result(self, page_num: int, result: PageResult) -> None:
         """Store VLM output for a page."""
         self.page_results[page_num] = result
         self.page_statuses[page_num] = PageStatus.DONE
+        self.touch()
+        self._checkpoint_page(page_num, result.markdown)
 
     def set_page_error(self, page_num: int, error: str) -> None:
         """Record a page-level error."""
         self.page_errors[page_num] = error
         self.page_statuses[page_num] = PageStatus.ERROR
+        self.touch()
 
     def skip_page(self, page_num: int) -> None:
         """Mark page as skipped (operator decision)."""
         self.page_statuses[page_num] = PageStatus.SKIPPED
+        self.touch()
 
     def update_page_settings(self, page_num: int, **overrides: Any) -> None:
         """Apply per-page overrides."""
@@ -306,7 +339,14 @@ class SessionRegistry:
 
     def get(self, session_id: str) -> VlmIngestSession | None:
         with self._lock:
-            return self._sessions.get(session_id)
+            s = self._sessions.get(session_id)
+            if s is not None:
+                # Any read (status polls included) counts as activity, so an
+                # attended long-running job cannot expire out from under the
+                # operator. Unattended jobs stay alive via page-progress
+                # touches in set_page_result/set_page_error.
+                s.touch()
+            return s
 
     def delete(self, session_id: str) -> bool:
         with self._lock:
@@ -317,11 +357,15 @@ class SessionRegistry:
             return [s.summary() for s in self._sessions.values()]
 
     def _evict_expired(self) -> None:
+        # TTL is measured from the last *activity*, not creation: a 2,000-page
+        # bulk run takes many hours and must not be evicted mid-job. Only a
+        # session nobody has touched (no polls, no page progress) for a full
+        # TTL window is considered abandoned.
         now = time.time()
         with self._lock:
             expired = [
                 sid for sid, s in self._sessions.items()
-                if now - s.created_at > self._ttl
+                if now - s.last_activity > self._ttl
             ]
             for sid in expired:
                 log.info("Evicting expired VLM ingest session: %s", sid)

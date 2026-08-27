@@ -24,6 +24,24 @@ assigned yet — pick the next version and bump both when it ships.
   against the live dev stack (see README "E2E Scenario Tests"). Everything
   else is recoverable from git history if a CI harness is revived.
 
+### Fixed (2026-08-27, long-job durability)
+- **VLM session TTL is now activity-based** (`src/atlas/vlm_ingest/session.py`):
+  eviction keyed off `created_at` with a 1-hour TTL, so any bulk run longer
+  than an hour could be evicted mid-job (by the maintenance loop or by another
+  session's `create()`), destroying all VLM output. TTL now measures
+  inactivity: status polls and page progress both refresh it, so attended and
+  headless multi-hour runs (2,000+ pages ≈ 9–50 h at observed 17–90 s/page)
+  survive; only sessions untouched for a full TTL window are evicted.
+- **Page results checkpoint to disk as they complete**
+  (`artifacts/vlm_sessions/<sid>/page_NNNN.md` + `session.json` with the
+  render config): sessions are in-memory, so an API restart mid-run used to
+  lose every processed page. A crash now loses at most the in-flight page;
+  completed output is salvageable from the checkpoint dir (re-ingestable via
+  Import, or headless re-run from the saved config).
+- **Qdrant upserts batched at 512 points** (`vectorstore/qdrant_store.py`):
+  a single upsert with thousands of points (3,000 pages ≈ ~6k chunks) risks
+  the REST payload cap and retries the whole set on one transient failure.
+
 ### Fixed (2026-08-27, operator testing round 1)
 - **Embeddings batched client-side** (`src/atlas/llm/openai_compat.py`): `embed()`
   sent every text in one request; the TEI sidecar rejects >32 inputs per call
