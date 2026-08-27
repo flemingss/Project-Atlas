@@ -128,11 +128,11 @@ export function AdminCleanupPage() {
     setSuggestion(null);
     try {
       const s = await adminApi.suggestRule({
-        sample_markdown: sampleMd,
-        observed_issues: observedIssues,
+        markdown_sample: sampleMd,
+        issues: observedIssues,
       });
       setSuggestion(s);
-      setRuleYaml(s.yaml);
+      setRuleYaml(s.rule_yaml ?? '');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Suggestion failed');
     } finally {
@@ -144,7 +144,7 @@ export function AdminCleanupPage() {
     if (!ruleYaml.trim()) return;
     setApplying(true);
     try {
-      await adminApi.applyRule({ yaml: ruleYaml });
+      await adminApi.applyRule({ rule_yaml: ruleYaml });
       toast.success('Rule applied');
       setRuleYaml('');
       setSuggestion(null);
@@ -183,10 +183,10 @@ export function AdminCleanupPage() {
   };
 
   const handleImportRules = async (file: File) => {
-    const fd = new FormData();
-    fd.append('file', file);
     try {
-      await adminApi.importRules(fd);
+      // Backend takes the YAML as a JSON string field, not a file upload.
+      const rulesYaml = await file.text();
+      await adminApi.importRules({ rules_yaml: rulesYaml, mode: 'replace' });
       toast.success('Rules imported');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Import failed');

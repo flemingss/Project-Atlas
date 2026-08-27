@@ -126,7 +126,8 @@ export interface CleanupFeedbackSummary {
   total: number;
 }
 export interface CleanupRuleSuggestion {
-  yaml: string;
+  /** Suggested rule as a YAML string (backend field name: rule_yaml). */
+  rule_yaml: string;
   rationale: string;
   warnings?: string[];
 }
@@ -282,10 +283,11 @@ export const adminApi = {
       method: 'POST',
     });
   },
-  validateRules(payload: { rules: unknown }) {
+  validateRules(rules: unknown[]) {
+    // Backend takes the bare JSON array as the request body.
     return apiFetch<{ valid: boolean; errors?: string[] }>('/admin/config/validate-rules', {
       method: 'POST',
-      body: JSON.stringify(payload),
+      body: JSON.stringify(rules),
     });
   },
   reloadYaml() {
@@ -380,13 +382,15 @@ export const adminApi = {
   },
 
   // ── Cleanup rules ──
-  suggestRule(payload: { sample_markdown: string; observed_issues: string }) {
+  // Field names mirror the backend Pydantic models exactly
+  // (RuleSuggestionRequest / ApplyCleanupRuleRequest / ImportCleanupRulesRequest).
+  suggestRule(payload: { markdown_sample: string; issues?: string }) {
     return apiFetch<CleanupRuleSuggestion>('/admin/cleanup-rules/suggest', {
       method: 'POST',
       body: JSON.stringify(payload),
     });
   },
-  applyRule(payload: { yaml: string }) {
+  applyRule(payload: { rule_yaml: string; name?: string; notes?: string }) {
     return apiFetch<{ status: string }>('/admin/cleanup-rules/apply', {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -400,10 +404,10 @@ export const adminApi = {
   exportRules() {
     return apiFetch<{ rules: unknown }>('/admin/cleanup-rules/export');
   },
-  importRules(payload: FormData) {
-    return apiFetchRaw('/admin/cleanup-rules/import', {
+  importRules(payload: { rules_yaml: string; mode?: 'replace' | 'merge'; name?: string; notes?: string }) {
+    return apiFetch<{ ok: boolean }>('/admin/cleanup-rules/import', {
       method: 'POST',
-      body: payload,
+      body: JSON.stringify(payload),
     });
   },
 

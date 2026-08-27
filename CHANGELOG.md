@@ -24,6 +24,19 @@ assigned yet — pick the next version and bump both when it ships.
   against the live dev stack (see README "E2E Scenario Tests"). Everything
   else is recoverable from git history if a CI harness is revived.
 
+### Fixed (2026-08-28, cleanup-page API contracts)
+- **SPA: every Cleanup & Feedback rule endpoint had drifted from the backend
+  contract.** Suggest sent `sample_markdown`/`observed_issues` where the
+  backend takes `markdown_sample`/`issues` (both defaulted, so the user's
+  sample was silently dropped and the LLM saw an empty input), then the UI
+  read `.yaml` from a response whose field is `rule_yaml` — seeding undefined
+  into state and crashing the page on the next render (`.trim()` on
+  undefined). Apply sent `yaml` vs required `rule_yaml` (422), Import sent
+  FormData to a JSON endpoint, and validateRules wrapped the array the
+  backend takes bare. All five aligned to the backend Pydantic models;
+  suggestion state is nullish-guarded. Flow verified end-to-end headlessly
+  with a synthetic sample.
+
 ### Fixed (2026-08-27, hardening round)
 - **`/rag` endpoints carry the admin auth posture** (`src/atlas/api_rag.py`):
   ingest (write path) and search (returns document content) were fully
