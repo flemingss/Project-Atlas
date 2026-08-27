@@ -16,3 +16,6 @@ project_atlas.egg-info
 node_modules
 web/node_modules
 web/dist
+
+# Runtime-downloaded parse models (the image bakes its own copy)
+models

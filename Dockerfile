@@ -56,6 +56,21 @@ RUN mkdir -p src/atlas && echo '__version__ = "0.0.0"' > src/atlas/__init__.py \
     && pip install --no-cache-dir --upgrade pip \
     && if [ -n "$ATLAS_PIP_EXTRAS" ]; then pip install --no-cache-dir ".[${ATLAS_PIP_EXTRAS}]"; else pip install --no-cache-dir .; fi
 
+# ---------- Parse model weights (cached with the dependency layer) ----------
+# Without this, the FIRST PDF ingest of a fresh deployment downloads these at
+# request time — minutes of added latency, and a hard failure wherever egress
+# to the HF CDN is restricted. Bake them in instead:
+# - Docling layout (heron) + table models into the HF cache, where
+#   docling.StandardPdfPipeline resolves them at runtime.
+# - deepdoc's ONNX set into ./models/deepdoc, where atlas.ingest.model_manager
+#   expects it (fallback layout parser).
+RUN python -c "\
+from huggingface_hub import snapshot_download; \
+snapshot_download('docling-project/docling-layout-heron'); \
+snapshot_download('docling-project/docling-models'); \
+snapshot_download('InfiniFlow/deepdoc', local_dir='/app/models/deepdoc', \
+    allow_patterns=['layout.onnx', 'det.onnx', 'rec.onnx', 'ocr.res', 'tsr.onnx'])"
+
 # ---------- Source layer (rebuilds only on code changes — fast) ----------
 COPY src ./src
 RUN pip install --no-cache-dir --no-deps .

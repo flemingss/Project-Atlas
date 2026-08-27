@@ -9,6 +9,7 @@ Each concrete ``DocumentParser`` encapsulates one parsing approach.
 
 from __future__ import annotations
 
+import asyncio
 import logging as _logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -71,11 +72,10 @@ class DoclingParser(DocumentParser):
         from atlas.pipeline.ingest import IngestResult
 
         try:
-            suffix = ".pdf"
             if filename and "." in filename:
                 suffix = "." + filename.rsplit(".", 1)[-1]
             else:
-                suffix = {
+                known = {
                     "application/pdf": ".pdf",
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
                     "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
@@ -83,12 +83,23 @@ class DoclingParser(DocumentParser):
                     "application/msword": ".doc",
                     "application/vnd.ms-powerpoint": ".ppt",
                     "application/vnd.ms-excel": ".xls",
-                }.get(source_mime_type, ".pdf")
+                }.get(source_mime_type)
+                if known is None:
+                    # Unknown mime with no filename: Docling detects format by
+                    # extension, so only claim .pdf when the bytes agree —
+                    # anything else gets a neutral suffix and fails detection
+                    # cleanly instead of being parsed as a broken PDF.
+                    known = ".pdf" if doc_bytes[:5] == b"%PDF-" else ".bin"
+                suffix = known
 
             with NamedTemporaryFile(delete=True, suffix=suffix) as tmp:
                 tmp.write(doc_bytes)
                 tmp.flush()
-                parsed = parse_document_path(
+                # Docling conversion is CPU-heavy and synchronous; run it off
+                # the event loop so health checks and concurrent requests stay
+                # responsive during a parse.
+                parsed = await asyncio.to_thread(
+                    parse_document_path,
                     doc_path=Path(tmp.name), source_mime_type=source_mime_type,
                 )
 
@@ -175,13 +186,14 @@ class LayoutParser(DocumentParser):
             mgr = ModelManager.get_instance(models_dir=self.ctx.settings.atlas_models_dir)
             if not all(mgr.models_available().values()):
                 _logger.info("ONNX models not yet downloaded — downloading now …")
-                mgr.ensure_models()
+                await asyncio.to_thread(mgr.ensure_models)
 
             zoom = float(
                 self.ctx.pdf_cfg.get("zoom", 0) or self.ctx.settings.atlas_layout_pdf_zoom,
             )
             parser = LayoutPdfParser(models_dir=self.ctx.settings.atlas_models_dir)
-            result = parser(doc_bytes, zoom=zoom)
+            # ONNX inference + OCR are synchronous; keep them off the event loop.
+            result = await asyncio.to_thread(parser, doc_bytes, zoom=zoom)
 
             # Confidence gate
             min_conf = float(
@@ -303,7 +315,10 @@ class VisionParser(DocumentParser):
         page_results: list[PageResult] = []
         for p in range(n_pages):
             try:
-                page_uri = render_page_base64(doc_bytes, p, dpi=dpi, crop=crop)
+                # PyMuPDF rendering is synchronous; keep it off the event loop.
+                page_uri = await asyncio.to_thread(
+                    render_page_base64, doc_bytes, p, dpi=dpi, crop=crop
+                )
                 raw_messages = build_vision_messages(
                     page_image_uri=page_uri,
                     current_markdown="",

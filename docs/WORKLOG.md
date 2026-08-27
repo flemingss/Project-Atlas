@@ -19,28 +19,24 @@ dummy-doc testing.
   `compose up` still belong on the host (daemon resolves bind-mount paths
   host-side). Recreate `docker-proxy` for this to take effect.
 
-### Found, NOT yet fixed (bug-fix push candidates)
+### Found in the aborted E2E — status
 
-1. **A busy ingest blocks the entire API.** While a PDF parse was running,
-   `GET /health` timed out (>8s). The parse path (Docling/layout, incl. their
-   model downloads) executes synchronously inside async endpoints, freezing the
-   event loop — readiness probes, the SPA, and concurrent ingests all stall.
-   Needs `run_in_executor`/thread offload around parser work.
-2. **First PDF ingest on a fresh deployment downloads models mid-request** —
-   Docling's `docling-layout-heron` and deepdoc's five ONNX files are not baked
-   into the image; the first request pays the download (or fails hard when
-   egress is blocked). Pre-fetch at image build (like the OCR weights already
-   are) or at startup.
-3. **Parse-failure pile-up**: `docling.convert` runs under a 120s timeout with
-   2 retries, then falls back to the layout parser (its own downloads +
-   retries). With unreachable weights a single 2-page ingest kept the server
-   busy 10+ minutes. Consider fail-fast when the model cache is empty and
-   egress fails, and check whether the timed-out converter thread keeps
-   running after abandonment.
-4. **`DoclingParser` defaults unknown mime types to a `.pdf` temp suffix**
-   (`parsers.py` suffix map `.get(mime, ".pdf")`) — a non-PDF, non-Office
-   binary would be parsed as PDF. Cosmetic today (text/markdown take
-   `process_text`), but a wrong default.
+1. ✅ **A busy ingest blocked the entire API** — while a PDF parse was running,
+   `GET /health` timed out (>8s); parser work (Docling, ONNX inference, model
+   downloads, VLM page rendering) ran synchronously on the event loop.
+   **Fixed**: all parser-side heavy work offloaded via `asyncio.to_thread`.
+2. ✅ **First PDF ingest downloaded models mid-request** — heron + deepdoc
+   ONNX were not in the image. **Fixed**: baked into the Docker image in the
+   dependency layer; `models/` added to `.dockerignore`.
+3. ⏳ **Parse-failure pile-up** (bug-fix push): `docling.convert` runs under a
+   120s timeout with 2 retries, then falls back to the layout parser (its own
+   downloads + retries). With unreachable weights a single 2-page ingest kept
+   the server busy 10+ minutes. Consider fail-fast when the model cache is
+   empty and egress fails, and check whether the timed-out converter thread
+   keeps running after abandonment. Largely defused by item 2, so deferred.
+4. ✅ **`DoclingParser` defaulted unknown mimes to a `.pdf` temp suffix** —
+   **Fixed**: bytes sniffed for `%PDF-`; anything else gets `.bin` and fails
+   format detection cleanly.
 
 ### Controlled test status
 
