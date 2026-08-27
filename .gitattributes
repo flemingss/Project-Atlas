@@ -1,0 +1,20 @@
+# Line-ending policy.
+#
+# This repo is developed on Windows (core.autocrlf=true is common) but runs in
+# Linux containers. Two things break without explicit rules:
+
+# 1. Shell scripts checked out with CRLF fail inside the container with
+#    "$'\r': command not found". The dev container bootstrap is a .sh file, so
+#    this would break a fresh clone's first "Reopen in Container".
+*.sh            text eol=lf
+*.bash          text eol=lf
+
+# 2. static/app/ holds committed `vite build` output. Line-ending conversion
+#    makes every in-container build show these bundles as modified even when
+#    the bytes are identical. Treat them as opaque.
+static/app/**   -text
+
+# Other container-consumed files that must stay LF.
+Dockerfile*     text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf

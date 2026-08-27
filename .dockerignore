@@ -9,3 +9,10 @@ __pycache__
 artifacts
 volumes
 project_atlas.egg-info
+
+# Frontend deps. The ui-build stage runs its own `npm ci`, so host node_modules
+# must never enter the build context: it is large, platform-specific, and its
+# .bin/ symlinks make BuildKit fail with "invalid file request".
+node_modules
+web/node_modules
+web/dist

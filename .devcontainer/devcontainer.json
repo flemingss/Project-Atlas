@@ -1,0 +1,66 @@
+{
+  "name": "Project Atlas",
+
+  // Compose the base stack (postgres/qdrant/atlas) + the dev override
+  // (bind mounts) + the workspace service this container attaches to.
+  "dockerComposeFile": [
+    "../docker-compose.yml",
+    "../docker-compose.dev.yml",
+    "docker-compose.devcontainer.yml"
+  ],
+  "service": "workspace",
+  "workspaceFolder": "/workspace",
+
+  // Node 20 matches the Dockerfile's ui-build stage. git/zsh via common-utils.
+  // Installed into the image by the devcontainer builder — nothing on the host.
+  "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "installZsh": true,
+      "upgradePackages": false
+    },
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20"
+    }
+  },
+
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+
+  // Keep the rest of the stack running when the window closes; only the
+  // workspace container is ours to stop.
+  "shutdownAction": "stopCompose",
+
+  "remoteUser": "root",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "charliermarsh.ruff",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "bradlc.vscode-tailwindcss",
+        "ms-azuretools.vscode-docker",
+        "redhat.vscode-yaml"
+      ],
+      "settings": {
+        // Interpreter is the image's system python — no .venv in here.
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "python.analysis.extraPaths": ["/workspace/src"],
+        "python.testing.pytestEnabled": true,
+        "python.testing.pytestArgs": ["tests"],
+        "[python]": {
+          "editor.defaultFormatter": "charliermarsh.ruff"
+        },
+        "files.eol": "\n"
+      }
+    }
+  },
+
+  "forwardPorts": [5173, 17333, 28080],
+  "portsAttributes": {
+    "5173": { "label": "Vite dev server" },
+    "17333": { "label": "Qdrant HTTP" },
+    "28080": { "label": "Atlas API (container)" }
+  }
+}

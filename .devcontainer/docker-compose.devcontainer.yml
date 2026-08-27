@@ -1,0 +1,123 @@
+# Dev container overlay.
+#
+# Adds a `workspace` service that shares the Atlas compose network so the
+# devcontainer shell can reach postgres/qdrant/atlas by service name.
+#
+# It is built from the repo's own Dockerfile with the identical build spec as
+# the `atlas` service, so Docker's layer cache makes this a near-free second
+# build (Docling, PyMuPDF, and the rest come along for the ride).
+#
+# The API container keeps running independently — restarting Atlas does not
+# kill your shell, and vice versa.
+#
+# NOTE: relative paths below resolve against the COMPOSE PROJECT DIRECTORY (the
+# repo root, set by the first -f file) — NOT this file's directory. Hence "." not "..".
+services:
+  # ---------------------------------------------------------------------
+  # Filtered Docker socket proxy (dev container only).
+  #
+  # Mounting /var/run/docker.sock straight into the workspace would give
+  # anything running in there — an agent, a dependency, a postinstall script —
+  # root-equivalent control of the host: it could start a privileged container
+  # and mount the host filesystem. That is a large blast radius to accept for
+  # what is really a read-only need (reading logs while troubleshooting).
+  #
+  # This proxy holds the real socket and re-exposes only GET endpoints over the
+  # compose network. POST=0 is the load-bearing setting: it blocks every
+  # mutating call, so `docker rm -f`, `docker run --privileged`, and
+  # `docker exec` are refused at the proxy rather than trusted not to happen.
+  #
+  # Deliberately NOT published to a host port — reachable only from services on
+  # this compose network.
+  #
+  # Works: ps, logs (incl. -f), inspect, stats, top, events, images, networks.
+  # Refused by design: exec, run, stop/start/restart, rm, build, compose up.
+  # Run lifecycle commands from the Windows host instead — and note that
+  # `docker compose up` from in here would misresolve bind mounts anyway, since
+  # the daemon reads paths on the host where /workspace is E:\.
+  # ---------------------------------------------------------------------
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:v0.5.0
+    container_name: atlas-docker-proxy
+    environment:
+      # Read-only surface for troubleshooting.
+      CONTAINERS: 1      # ps, inspect, logs, stats, top
+      IMAGES: 1
+      NETWORKS: 1
+      VOLUMES: 1
+      INFO: 1
+      VERSION: 1
+      PING: 1
+      EVENTS: 1
+      # Mutating access stays off. Changing these re-opens the blast radius
+      # this proxy exists to close.
+      POST: 0
+      EXEC: 0
+      ALLOW_START: 0
+      ALLOW_STOP: 0
+      ALLOW_RESTARTS: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
+  workspace:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        ATLAS_PIP_EXTRAS: ${ATLAS_PIP_EXTRAS:-}
+    image: project-atlas-workspace:dev
+    container_name: atlas-workspace
+    command: ["sleep", "infinity"]
+    working_dir: /workspace
+    # Whole repo bind-mounted so edits land on the host and `git` sees them.
+    volumes:
+      - .:/workspace:cached
+    environment:
+      ATLAS_ENV: ${ATLAS_ENV:-dev}
+      ATLAS_LOG_LEVEL: ${ATLAS_LOG_LEVEL:-INFO}
+      # NOTE: deliberately NOT setting ATLAS_DEV_BYPASS_ADMIN_AUTH here. It
+      # belongs on the `atlas` API service (docker-compose.dev.yml), not on the
+      # dev shell — it makes tests/test_admin_auth.py fail by bypassing the very
+      # auth those tests assert. Dev leaves ATLAS_ADMIN_TOKEN blank anyway.
+      # Source lives at /workspace/src in here, not /app/src.
+      PYTHONPATH: /workspace/src
+      ATLAS_CONFIG_DIR: /workspace/config
+      ATLAS_ARTIFACTS_DIR: /workspace/artifacts
+      # Service names resolve on the compose network.
+      ATLAS_DB_URL: postgresql+psycopg://atlas:atlas@postgres:5432/atlas
+      ATLAS_QDRANT_URL: http://qdrant:6333
+      # Docker CLI talks to the filtered proxy above, not the real socket.
+      DOCKER_HOST: tcp://docker-proxy:2375
+      # Embedding sidecar on the compose network. Pinned across profiles —
+      # ingest and search must not depend on LM Studio being up.
+      ATLAS_EMBEDDINGS_BASE_URL: http://embeddings:80
+      # NOT setting ATLAS_LLM_PROFILE here — same trap as ATLAS_DEV_BYPASS_ADMIN_AUTH
+      # above. Tests build their own models.yaml with no `profiles:` block, so an
+      # inherited profile makes 47 of them fail with "Unknown LLM profile". It
+      # belongs on the `atlas` API service, which already sets it. Export it by
+      # hand in a shell when you specifically want profile-resolved behaviour.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      # LM Studio runs on the Windows host.
+      ATLAS_OPENAI_BASE_URL: ${ATLAS_OPENAI_BASE_URL:-http://host.docker.internal:1234}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      embeddings:
+        # service_started, NOT service_healthy: the dev shell must come up even
+        # when the embeddings model cannot be fetched (HF CDN blocked, offline,
+        # cold-start still downloading). Blocking here makes "Reopen in
+        # Container" fail outright instead of degrading. The `atlas` API service
+        # still gates on service_healthy, where the dependency is real.
+        condition: service_started
+      docker-proxy:
+        condition: service_started
+    ports:
+      # Uvicorn when you run Atlas by hand inside the devcontainer.
+      - "28081:8080"
+      # Vite dev server (npm run dev in web/).
+      - "5173:5173"

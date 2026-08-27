@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "project-atlas"
-version = "0.7.2"
+version = "0.8.0"
 description = "Adaptive Agentic Knowledge Runtime (Project Atlas)"
 requires-python = ">=3.11"
 authors = [{ name = "Project Atlas" }]
@@ -59,6 +59,13 @@ where = ["src"]
 
 [tool.ruff]
 line-length = 100
+
+[tool.ruff.lint]
+# EXE002 (shebang-missing-executable-file) cannot produce a correct signal when
+# the tree is bind-mounted from Windows/macOS into a container: Docker Desktop
+# presents every file as 0777, so all 139 .py files look executable. Git's
+# recorded mode (100644) is the real source of truth here.
+ignore = ["EXE002"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

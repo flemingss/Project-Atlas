@@ -22,8 +22,22 @@ ARG ATLAS_PIP_EXTRAS=""
 # ---------- OS libraries (cached unless base image changes) ----------
 # Docling OCR can pull in OpenCV via rapidocr. The slim base image does not
 # include the shared libraries OpenCV expects at runtime.
+#
+# git is here rather than in the devcontainer's common-utils feature: the
+# features block does not reliably take effect for this compose-based setup
+# (no nvm/zsh/git land in the container), whereas this layer always does.
+# Without it the dev shell has no source control at all.
+#
+# docker-cli is the CLI only (no daemon). It talks to a filtered socket
+# proxy declared in .devcontainer/docker-compose.devcontainer.yml, which is
+# what makes `docker logs` available in here for troubleshooting the stack
+# without handing the container root-equivalent access to the host.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        git \
+        less \
+        openssh-client \
+        docker-cli \
         libgl1 \
         libglib2.0-0 \
         libx11-6 \
