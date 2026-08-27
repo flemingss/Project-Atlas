@@ -199,14 +199,18 @@ function HitCard({ hit, rank }: { hit: SearchHit; rank: number }) {
           </Button>
         )}
 
-        {/* Metadata row */}
+        {/* Metadata row — source/doc_version live inside the chunk payload,
+            not as top-level hit fields (the old hand-written type invented
+            them, so these badges silently never rendered). */}
         <div className="flex flex-wrap gap-1.5 text-[10px]">
-          {hit.source && <Badge variant="secondary" className="text-[10px]">{hit.source}</Badge>}
+          {typeof hit.payload?.source_filename === 'string' && hit.payload.source_filename && (
+            <Badge variant="secondary" className="text-[10px]">{hit.payload.source_filename}</Badge>
+          )}
           {hit.chunk_index != null && (
             <Badge variant="secondary" className="text-[10px]">Chunk {hit.chunk_index}</Badge>
           )}
-          {hit.doc_version != null && (
-            <Badge variant="secondary" className="text-[10px]">v{hit.doc_version}</Badge>
+          {typeof hit.payload?.doc_version === 'string' && hit.payload.doc_version && (
+            <Badge variant="secondary" className="text-[10px]">v{hit.payload.doc_version}</Badge>
           )}
         </div>
       </CardContent>

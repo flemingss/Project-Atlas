@@ -3,35 +3,11 @@
  * Human-in-the-loop review task management.
  */
 import { apiFetch } from './shared';
+import type { HitlTaskResponse } from './api-contracts';
 
-// ── Types ─────────────────────────────────────────────────────────
+// ── Types (generated from the backend OpenAPI schema) ─────────────
 
-export interface HitlTask {
-  id: number;
-  run_id: number;
-  tenant_id: string;
-  project_id: string;
-  doc_id: string;
-  doc_version: string;
-  chunk_id: string;
-  priority_score: number;
-  is_sensitive: boolean;
-  judge_score: number;
-  status: string;
-  assigned_to: string;
-  before_md: string;
-  after_md: string;
-  reason_for_edit: string;
-  meta: Record<string, unknown>;
-  created_at: string;
-  updated_at: string;
-  completed_at: string | null;
-}
-
-export interface HitlTaskListResponse {
-  tasks: HitlTask[];
-  total: number;
-}
+export type HitlTask = HitlTaskResponse;
 
 // ── Service ───────────────────────────────────────────────────────
 

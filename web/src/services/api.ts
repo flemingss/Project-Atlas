@@ -5,78 +5,35 @@
  * on non-2xx responses with a useful error message.
  */
 
-// ── Types matching the backend Pydantic models ────────────────────
+// ── Types (generated from the backend OpenAPI schema) ─────────────
 
-export interface DocResolveResponse {
-  doc_id: string;
-  run_id: number;
-  doc_version: string;
-  status: string;
-  source_filename: string;
-}
+import type {
+  DocResolveResponse,
+  LlmRefineRequest,
+  LlmRefineResponse,
+  PageInfoResponse,
+  ReJudgeRequest,
+  ReJudgeResponse,
+  SaveMarkdownRequest,
+  SaveMarkdownResponse,
+  VisionRefineRequest,
+  VisionRefineResponse,
+} from './api-contracts';
 
-export interface PageInfoResponse {
-  run_id: number;
-  page_count: number;
-  source_filename: string;
-  source_mime_type: string;
-}
+export type {
+  DocResolveResponse,
+  PageInfoResponse,
+  VisionRefineRequest,
+  VisionRefineResponse,
+  SaveMarkdownRequest,
+  SaveMarkdownResponse,
+  LlmRefineRequest,
+  LlmRefineResponse,
+  ReJudgeRequest,
+  ReJudgeResponse,
+};
 
-export interface VisionRefineRequest {
-  run_id: number;
-  page_num: number;
-  current_markdown: string;
-  dpi?: number;
-  crop_top?: number;
-  crop_bottom?: number;
-  system_prompt?: string | null;
-}
-
-export interface VisionRefineResponse {
-  corrected_markdown: string;
-  model: string;
-  page_num: number;
-  finish_reason?: string | null;
-}
-
-export interface SaveMarkdownRequest {
-  run_id: number;
-  markdown: string;
-}
-
-export interface SaveMarkdownResponse {
-  run_id: number;
-  path: string;
-  chars: number;
-  message: string;
-}
-
-export interface LlmRefineRequest {
-  run_id: number;
-  markdown: string;
-}
-
-export interface LlmRefineResponse {
-  refined_markdown: string;
-  model: string;
-  success: boolean;
-  improvements: string[];
-}
-
-export interface ReJudgeRequest {
-  run_id: number;
-  markdown: string;
-  judge_cutoff?: number;
-}
-
-export interface ReJudgeResponse {
-  score: number;
-  sub_scores: Record<string, number>;
-  rationale: string;
-  needs_refinement: boolean;
-  model: string;
-}
-
+/** Backend returns an untyped dict for page-markdown — hand-typed. */
 export interface PageMarkdownResponse {
   run_id: number;
   page_num: number;

@@ -4,116 +4,39 @@
  * Mirrors the Pydantic models in `src/atlas/api_vlm_ingest.py`.
  */
 
-// ── Types ─────────────────────────────────────────────────────────
+// ── Types (generated from the backend OpenAPI schema) ─────────────
 
-export interface StartSessionRequest {
-  run_id: number;
-  config?: Record<string, unknown> | null;
-  headless?: boolean;
-}
+import type {
+  CommitRequest,
+  CommitResponse,
+  ExportConfigResponse,
+  PageSettingsUpdate,
+  PageSummary,
+  ProcessAllResponse,
+  ProcessPageRequest,
+  ProcessPageResponse,
+  SessionSummary,
+  StartSessionRequest,
+  StartSessionResponse,
+  StitchResponse,
+  UpdateConfigRequest,
+} from './api-contracts';
 
-export interface StartSessionResponse {
-  session_id: string;
-  page_count: number;
-  source_filename: string;
-  status: string;
-  headless: boolean;
-}
-
-export interface PageSettingsUpdate {
-  page_num: number;
-  enabled?: boolean | null;
-  dpi?: number | null;
-  crop_top?: number | null;
-  crop_bottom?: number | null;
-  crop_left?: number | null;
-  crop_right?: number | null;
-  mask_regions?: Array<{ x: number; y: number; w: number; h: number }> | null;
-}
-
-export interface UpdateConfigRequest {
-  dpi?: number | null;
-  crop_top?: number | null;
-  crop_bottom?: number | null;
-  crop_left?: number | null;
-  crop_right?: number | null;
-  system_prompt?: string | null;
-  page_overrides?: PageSettingsUpdate[] | null;
-}
-
-export interface ProcessPageRequest {
-  page_num?: number | null;
-}
-
-export interface ProcessPageResponse {
-  page_num: number;
-  markdown: string;
-  model: string;
-  status: string;
-  finish_reason?: string | null;
-  /** Set when status="error"; mirrors the per-page error in ProcessAllResponse.errors. */
-  error?: string | null;
-}
-
-export interface ProcessAllResponse {
-  pages_processed: number;
-  pages_skipped: number;
-  pages_failed: number;
-  errors: Record<number, string>;
-  stitch: StitchResponse | null;
-}
-
-export interface StitchResponse {
-  markdown: string;
-  page_count: number;
-  pages_processed: number;
-  duplicate_lines_removed: number;
-  tables_merged: number;
-  headings_merged: number;
-}
-
-export interface CommitRequest {
-  markdown?: string | null;
-  feed_pipeline?: boolean;
-  tenant_id?: string;
-  project_id?: string;
-  corpus_id?: string;
-}
-
-export interface CommitResponse {
-  run_id: number | null;
-  path: string;
-  chars: number;
-  chunks_upserted: number;
-  message: string;
-  /** Non-empty when feed_pipeline=true and the pipeline upsert step fails.
-   *  The artifact is still saved; this surfaces the failure to the caller. */
-  warnings?: string[] | null;
-}
-
-export interface SessionSummary {
-  session_id: string;
-  status: string;
-  source_filename: string;
-  run_id: number | null;
-  page_count: number;
-  headless: boolean;
-  progress: Record<string, number>;
-  config: Record<string, unknown>;
-  pages?: Array<{
-    page_num: number;
-    status: string;
-    enabled: boolean;
-    markdown: string;
-    model: string;
-  }>;
-}
-
-export interface ExportConfigResponse {
-  config: Record<string, unknown>;
-  source_filename: string;
-  page_count: number;
-}
+export type {
+  StartSessionRequest,
+  StartSessionResponse,
+  PageSettingsUpdate,
+  PageSummary,
+  UpdateConfigRequest,
+  ProcessPageRequest,
+  ProcessPageResponse,
+  ProcessAllResponse,
+  StitchResponse,
+  CommitRequest,
+  CommitResponse,
+  SessionSummary,
+  ExportConfigResponse,
+};
 
 export interface ThumbnailEntry {
   page_num: number;

@@ -10,6 +10,31 @@ Built with **Vite + React 18 + TypeScript + shadcn/ui + Tailwind CSS**.
 
 ---
 
+## API contract types (generated)
+
+`src/api-types.gen.ts` is **generated** from the backend's OpenAPI schema and
+committed. Service modules alias their request/response types from
+`src/services/api-contracts.ts`, so a backend field rename fails `tsc` at
+build time instead of surfacing as a silent runtime mismatch.
+
+**When backend Pydantic models change**, regenerate against the running dev
+stack and commit the result:
+
+```bash
+# Inside the dev container (or any shell on the compose network):
+npm run gen:api
+
+# From the Windows host (no Node installed):
+docker run --rm --network project-atlas_default -v "${PWD}:/w" -w /w/web node:20 npm run gen:api
+```
+
+Never edit `api-types.gen.ts` by hand. New endpoints should get their types
+from `services/api-contracts.ts`; hand-written interfaces are only for
+endpoints whose backend response is an untyped dict (mark them with a
+comment).
+
+---
+
 ## Quick Start
 
 ### Local development (recommended)

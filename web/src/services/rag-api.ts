@@ -3,56 +3,19 @@
  * File/text ingest and semantic search.
  */
 import { apiFetch, authHeaders } from './shared';
+import type {
+  IngestTextRequest,
+  IngestTextResponse,
+  SearchHit,
+  SearchRequest,
+  SearchResponse,
+} from './api-contracts';
 
-// ── Types ─────────────────────────────────────────────────────────
+// ── Types (generated from the backend OpenAPI schema) ─────────────
 
-export interface IngestTextRequest {
-  text: string;
-  /** Required by the backend (POST /rag/ingest/text). There is no doc_name
-   *  field server-side — the document's identity is doc_id. */
-  doc_id: string;
-  doc_version?: string;
-  is_finalized?: boolean;
-  is_sensitive?: boolean;
-  tenant_id?: string;
-  project_id?: string;
-  corpus_id?: string;
-}
-
-export interface IngestResponse {
-  ok: boolean;
-  collection: string;
-  doc_id: string;
-  chunks_upserted: number;
-  error_code?: string | null;
-  error_message?: string | null;
-}
-
-export interface SearchRequest {
-  query: string;
-  top_k?: number;
-  fidelity_mode?: 'verified' | 'verified+partial' | 'all';
-  tenant_id?: string;
-  project_id?: string;
-  corpus_id?: string;
-}
-
-export interface SearchHit {
-  score: number;
-  text: string;
-  doc_id: string;
-  doc_version?: string;
-  chunk_index?: number;
-  is_finalized?: boolean;
-  source?: string;
-  payload?: Record<string, unknown>;
-}
-
-export interface SearchResponse {
-  ok: boolean;
-  collection: string;
-  hits: SearchHit[];
-}
+export type { IngestTextRequest, SearchRequest, SearchHit, SearchResponse };
+/** Kept under its historical export name; identical to IngestTextResponse. */
+export type IngestResponse = IngestTextResponse;
 
 // ── Service ───────────────────────────────────────────────────────
 

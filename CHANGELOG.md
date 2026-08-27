@@ -24,6 +24,19 @@ assigned yet — pick the next version and bump both when it ships.
   against the live dev stack (see README "E2E Scenario Tests"). Everything
   else is recoverable from git history if a CI harness is revived.
 
+### Added (2026-08-28, generated API contract types)
+- **Frontend types are now generated from the backend OpenAPI schema**
+  (`web/src/api-types.gen.ts` via `npm run gen:api`, committed; aliased
+  through `web/src/services/api-contracts.ts`). All five service modules'
+  request/response types derive from the generated schema, so any backend
+  field rename now fails `tsc` at build time — the silent-drift bug class
+  this closed appeared fifteen times across the contract audits.
+- The type gate caught one more latent bug on its first run: the Search
+  page read `hit.source` / `hit.doc_version` — fields the backend never
+  returns at the top level (they live in the chunk `payload`) — so those
+  result badges had never rendered. Now read from the payload; verified
+  live against indexed data.
+
 ### Fixed (2026-08-28, full UI/API contract audit)
 - **Every frontend call site diffed against the live OpenAPI schema** (request
   fields, required flags, response shapes — both directions). Nine further

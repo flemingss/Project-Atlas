@@ -3,9 +3,26 @@
  * Groups, config, workflow ledger, doc operations, cleanup, export/import.
  */
 import { apiFetch, apiFetchRaw } from './shared';
+import type {
+  AdoptOrphanGroupRequest,
+  ApplyCleanupRuleRequest,
+  ArtifactRefResponse,
+  ConfigVersionCreateRequest,
+  ConfigVersionResponse,
+  FeedbackCreateRequest,
+  FeedbackResponse,
+  ImportCleanupRulesRequest,
+  NodeRunResponse,
+  ResetDbRequest,
+  RuleSuggestionRequest,
+  WorkflowRunResponse,
+} from './api-contracts';
 
 // ── Types ─────────────────────────────────────────────────────────
+// Backed by the generated OpenAPI schema where the backend response is
+// typed; hand-written only for untyped-dict endpoints.
 
+/** Untyped list endpoints ({tenants: [...]}, etc.) — hand-typed. */
 export interface Tenant {
   tenant_id: string;
   display_name?: string;
@@ -22,58 +39,14 @@ export interface Corpus {
   display_name?: string;
 }
 
-export interface RunSummary {
-  id: number;
-  status: string;
-  tenant_id: string;
-  project_id: string;
-  doc_id: string;
-  doc_version: string;
-  current_node: string;
-  error_code: string;
-  error_message: string;
-  meta: Record<string, unknown>;
-  updated_at: string;
-  created_at: string;
-}
-export interface RunDetail extends RunSummary {
+export type RunSummary = WorkflowRunResponse;
+export type RunDetail = RunSummary & {
   node_runs?: NodeRun[];
   artifacts?: Artifact[];
-}
-export interface NodeRun {
-  id: number;
-  run_id: number;
-  node_name: string;
-  status: string;
-  started_at: string;
-  completed_at: string | null;
-  duration_ms: number | null;
-  input_ref: string;
-  output_ref: string;
-  error_code: string;
-  error_message: string;
-  created_at: string;
-}
-export interface Artifact {
-  id: number;
-  run_id: number;
-  node_run_id: number | null;
-  kind: string;
-  path: string;
-  sha256: string;
-  mime_type: string;
-  meta: Record<string, unknown>;
-  created_at: string;
-}
-
-export interface ConfigVersionSummary {
-  id: number;
-  name: string;
-  notes: string;
-  is_active: boolean;
-  config_hash: string;
-  created_at: string;
-}
+};
+export type NodeRun = NodeRunResponse;
+export type Artifact = ArtifactRefResponse;
+export type ConfigVersionSummary = ConfigVersionResponse;
 export interface ModelRoleConfig {
   provider?: string;
   model_name?: string;
@@ -105,22 +78,7 @@ export interface EffectiveConfig {
   [key: string]: unknown;
 }
 
-export interface CleanupFeedback {
-  id: number;
-  tenant_id: string;
-  project_id: string;
-  corpus_id: string;
-  doc_id: string;
-  chunk_id: string;
-  run_id: number | null;
-  category: string;
-  description: string;
-  source_span_start: number | null;
-  source_span_end: number | null;
-  created_by: string;
-  meta: Record<string, unknown>;
-  created_at: string;
-}
+export type CleanupFeedback = FeedbackResponse;
 export interface CleanupFeedbackSummary {
   categories: Record<string, number>;
   total: number;
@@ -227,15 +185,7 @@ export interface OrphanScanResult {
   dangling_runs: DanglingRun[];
 }
 
-export interface AdoptOrphanGroupRequest {
-  old_tenant_id: string;
-  old_project_id: string;
-  old_doc_id: string;
-  old_doc_version: string;
-  tenant_id: string;
-  project_id: string;
-  corpus_id: string;
-}
+export type { AdoptOrphanGroupRequest };
 
 export interface AdoptOrphanGroupResult {
   ok: boolean;
@@ -255,7 +205,7 @@ export const adminApi = {
   // Booleans are passed explicitly on every call: the backend defaults are
   // postgres=True/qdrant=True, so omitting a field would wipe that store
   // regardless of what the operator unchecked.
-  resetDb(payload: { postgres: boolean; qdrant: boolean; artifacts: boolean }) {
+  resetDb(payload: Required<Pick<ResetDbRequest, 'postgres' | 'qdrant' | 'artifacts'>>) {
     return apiFetch<{ ok: boolean }>('/admin/db/reset', {
       method: 'POST',
       body: JSON.stringify({ confirm: 'RESET', ...payload }),
@@ -280,7 +230,7 @@ export const adminApi = {
   configVersions() {
     return apiFetch<ConfigVersionSummary[]>('/admin/config-versions');
   },
-  createConfigVersion(payload: { name?: string; notes?: string; base?: string; patch?: Record<string, unknown>; activate?: boolean }) {
+  createConfigVersion(payload: ConfigVersionCreateRequest) {
     return apiFetch<ConfigVersionSummary>('/admin/config-versions', {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -370,7 +320,7 @@ export const adminApi = {
 
   // ── Cleanup feedback ──
   // Backend field for free text is `description` (there is no `comment`).
-  submitFeedback(payload: { doc_id: string; category: string; description?: string; tenant_id?: string; project_id?: string; corpus_id?: string }) {
+  submitFeedback(payload: FeedbackCreateRequest) {
     return apiFetch<CleanupFeedback>('/admin/cleanup-feedback', {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -393,13 +343,13 @@ export const adminApi = {
   // ── Cleanup rules ──
   // Field names mirror the backend Pydantic models exactly
   // (RuleSuggestionRequest / ApplyCleanupRuleRequest / ImportCleanupRulesRequest).
-  suggestRule(payload: { markdown_sample: string; issues?: string }) {
+  suggestRule(payload: RuleSuggestionRequest) {
     return apiFetch<CleanupRuleSuggestion>('/admin/cleanup-rules/suggest', {
       method: 'POST',
       body: JSON.stringify(payload),
     });
   },
-  applyRule(payload: { rule_yaml: string; name?: string; notes?: string }) {
+  applyRule(payload: ApplyCleanupRuleRequest) {
     return apiFetch<{ status: string }>('/admin/cleanup-rules/apply', {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -414,7 +364,7 @@ export const adminApi = {
     // Backend streams a YAML file download, not JSON.
     return apiFetchRaw('/admin/cleanup-rules/export');
   },
-  importRules(payload: { rules_yaml: string; mode?: 'replace' | 'merge'; name?: string; notes?: string }) {
+  importRules(payload: ImportCleanupRulesRequest) {
     return apiFetch<{ ok: boolean }>('/admin/cleanup-rules/import', {
       method: 'POST',
       body: JSON.stringify(payload),
