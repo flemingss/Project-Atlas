@@ -38,7 +38,7 @@
     "clsx": "^2.1.1",
     "lucide-react": "^0.546.0",
     "pdfjs-dist": "^4.9.155",
-    "react": "^18.2.0",
+    "react": "^19.2.8",
     "react-dom": "^18.2.0",
     "react-resizable-panels": "^3.0.6",
     "react-router-dom": "^7.3.0",
@@ -47,7 +47,7 @@
     "zustand": "^4.5.2"
   },
   "devDependencies": {
-    "@types/react": "^18.2.0",
+    "@types/react": "^19.2.18",
     "@types/react-dom": "^18.2.0",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
