@@ -20,6 +20,25 @@ updates:
     groups:
       npm-minor-patch:
         update-types: [minor, patch]
+    ignore:
+      # Deferred majors — each is a real migration, not a version bump.
+      # Remove the entry when its migration is scheduled:
+      # - eslint 9+: flat-config rewrite (plus plugin compatibility).
+      - dependency-name: eslint
+        update-types: ["version-update:semver-major"]
+      # - pdfjs-dist 5+: worker/version coupling with the editor's PDF pane;
+      #   needs editor regression testing before adopting.
+      - dependency-name: pdfjs-dist
+        update-types: ["version-update:semver-major"]
+      # - react 19: framework major; adopt deliberately with a full sweep.
+      - dependency-name: react
+        update-types: ["version-update:semver-major"]
+      - dependency-name: react-dom
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/react"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/react-dom"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: /
@@ -30,3 +49,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # Node majors track LTS deliberately (25 is a non-LTS current release);
+      # bump the Dockerfile ui-build stage to the next LTS by hand.
+      - dependency-name: node
+        update-types: ["version-update:semver-major"]
