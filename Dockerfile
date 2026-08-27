@@ -1,5 +1,5 @@
 # ── Stage 1: Build React UI ──
-FROM node:20-slim AS ui-build
+FROM node:25-slim AS ui-build
 WORKDIR /ui
 COPY web/package.json web/package-lock.json* ./
 RUN npm ci
