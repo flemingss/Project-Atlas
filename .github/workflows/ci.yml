@@ -1,0 +1,64 @@
+# CI — integrity gates for every push and PR.
+#
+# backend: installs from the Linux-compiled lockfile (CPU torch via the
+#   pytorch index — ~200MB instead of the ~6GB CUDA bundle), runs a clean
+#   `ruff check` (debt is registered in pyproject, the line holds here) and
+#   the full pytest suite (698 tests, 80% coverage gate from pyproject).
+#   Integration tests self-skip when Qdrant/Postgres are unreachable.
+#
+# web: npm ci + eslint + `npm run build` — the build runs `tsc -b`, which is
+#   the API-contract drift gate (src/api-types.gen.ts is generated from the
+#   backend OpenAPI schema; see web/README.md).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    env:
+      PIP_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
+      - name: Install (locked)
+        run: |
+          pip install -r requirements-dev.lock
+          pip install --no-deps .
+      - name: Lint
+        run: ruff check src tests
+      - name: Tests
+        run: python -m pytest -q
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Build (tsc contract gate + vite)
+        run: npm run build

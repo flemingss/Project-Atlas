@@ -133,7 +133,7 @@ export function LibraryPage() {
         a.download = `${docId}.zip`;
         a.click();
         URL.revokeObjectURL(url);
-      } catch (e) {
+      } catch {
         toast.error(`Export failed for ${docId}`);
       }
     }

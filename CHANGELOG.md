@@ -24,6 +24,35 @@ assigned yet — pick the next version and bump both when it ships.
   against the live dev stack (see README "E2E Scenario Tests"). Everything
   else is recoverable from git history if a CI harness is revived.
 
+### Added (2026-08-28, CI + best-practice sweep)
+- **GitHub Actions CI** (`.github/workflows/ci.yml`): `backend` job installs
+  from the Linux lockfile with CPU torch (~200MB vs ~6GB CUDA), runs a clean
+  `ruff check` and the full 698-test suite with the 80% coverage gate;
+  `web` job runs eslint and `npm run build` (`tsc` = the API-contract drift
+  gate). Plus **Dependabot** (pip/npm/actions/docker, weekly, grouped).
+- **ESLint actually works now**: `npm run lint` had no config at all and
+  errored since inception. Added a correctness-focused config
+  (typescript-eslint + react-hooks); the codebase needed exactly one fix.
+
+### Fixed (2026-08-28, CI + best-practice sweep)
+- **Lockfiles were Windows-compiled and uninstallable on Linux**
+  (`pywin32==311` with no platform marker) — nothing had ever actually used
+  them. Regenerated both on Linux against the CPU-torch index
+  (`torch==2.10.0+cpu`, no nvidia payloads) and clean-room verified:
+  lockfile install + full suite passes in a bare `python:3.11-slim`.
+- **Ruff debt burned down**: ~280 findings fixed (import order, datetime.UTC,
+  unused imports/noqa, f-strings, mechanical simplifications). The 13 B023
+  closure-over-loop-variable findings were individually reviewed: one fixed
+  by explicit binding (`export_package._cell`), twelve verified benign
+  (`layout_recognizer._find_and_tag` is only called within its defining
+  iteration) and documented via per-file ignore. The ~95 remaining
+  judgment-call findings are a **registered debt list** in `pyproject.toml`
+  with counts and rationale — `ruff check` is now clean and CI holds the
+  line; codes leave the list as their findings are fixed, never join it.
+- Best-practice sweeps that came back **clean**: every `httpx` call has an
+  explicit timeout; no stray `console.log` outside the error boundary; one
+  TODO in the entire backend.
+
 ### Added (2026-08-28, generated API contract types)
 - **Frontend types are now generated from the backend OpenAPI schema**
   (`web/src/api-types.gen.ts` via `npm run gen:api`, committed; aliased

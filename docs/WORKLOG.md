@@ -1,5 +1,31 @@
 # Worklog
 
+## 2026-08-28 (CI + debt burn-down) — Actions pipeline live; ruff clean; locks actually work now
+
+- **CI** (.github/workflows/ci.yml): backend = lockfile install (CPU torch
+  via pytorch index) + clean `ruff check` + full suite; web = eslint +
+  `npm run build` (tsc is the API-contract gate). Dependabot for
+  pip/npm/actions/docker, weekly, grouped. Validated by running the exact
+  recipe in a bare python:3.11-slim: 697 passed, 1 skipped (qdrant
+  integration test self-skips without services — by design).
+- **Lockfiles had never worked**: compiled on Windows (pywin32 pinned, no
+  platform marker) → uninstallable on Linux, so nothing consumed them.
+  Regenerated on Linux with PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu
+  (torch 2.10.0+cpu, no CUDA payloads). Regenerate them the same way after
+  dependency bumps (see .github/dependabot.yml note).
+- **Ruff: 0 findings** (was ~350). ~280 fixed; 13 B023 closure findings
+  individually adjudicated (1 real fix, 12 verified benign + documented);
+  ~95 judgment-call findings registered as an explicit debt list in
+  pyproject with counts — codes leave the list when fixed, never join it.
+- **ESLint config existed only in the npm script** — no config file, lint
+  had never run. Added correctness-focused config; exactly one violation in
+  the whole SPA (unused catch binding). That plus every-httpx-call-has-a-
+  timeout and a single TODO in the backend says the codebase is in better
+  shape than the debt counters implied.
+- Note: the workspace container's ruff (installed ad hoc) can drift from the
+  lockfile's — CI pins via the lock; prefer `pip install -r
+  requirements-dev.lock` in the workspace after recreates.
+
 ## 2026-08-27 (hardening round) — Bulletproofing pass: auth, guards, cancellation, crash reconciliation
 
 Follow-up sweep after the scale audit, hunting anything between "works" and
