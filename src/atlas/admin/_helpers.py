@@ -9,7 +9,6 @@ from sqlalchemy.orm import Session
 
 from atlas.models import HitlTaskRow, NodeRun, WorkflowRun
 
-
 # ── Qdrant helpers ───────────────────────────────────────────────────
 
 def qdrant_url(settings: Any) -> str:
@@ -84,7 +83,7 @@ def group_count(
 def ledger_summary(session: Session) -> dict[str, Any]:
     import datetime as _dt
 
-    cutoff_24h: _dt.datetime = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=24)
+    cutoff_24h: _dt.datetime = _dt.datetime.now(_dt.UTC) - _dt.timedelta(hours=24)
 
     run_status = group_count(session, label_col=WorkflowRun.status, from_table=WorkflowRun)
     run_node = group_count(session, label_col=WorkflowRun.current_node, from_table=WorkflowRun)

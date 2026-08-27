@@ -11,14 +11,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.concurrency import run_in_threadpool
 
+from atlas.artifacts import write_bytes, write_json, write_text
 from atlas.config_manager import ConfigManager
 from atlas.config_versions import get_active_config_version
-from atlas.artifacts import write_bytes, write_json, write_text
 from atlas.doc_versions import set_active_doc_version
 from atlas.hitl_ledger import HitlTaskCreateRequest, create_hitl_task
 from atlas.ingest.docling_health import compute_health as _compute_health
 from atlas.llm.registry import ModelRegistry
-from atlas.models import ArtifactRef as ArtifactRefModel, WorkflowRun
+from atlas.models import ArtifactRef as ArtifactRefModel
+from atlas.models import WorkflowRun
 from atlas.pipeline.ingest import IngestNode
 from atlas.pipeline.judge import JudgeNode
 from atlas.pipeline.metadata import MetadataNode
@@ -32,8 +33,14 @@ from atlas.rag.normalize import normalize_markdown
 from atlas.schemas import FidelityFlag
 from atlas.settings import Settings
 from atlas.vectorstore.qdrant_store import QdrantStore
-from atlas.workflow_ledger import ArtifactRefCreateRequest, WorkflowRunCreateRequest, add_artifact_ref, create_workflow_run
-from atlas.workflow_ledger import NodeRunCreateRequest, create_node_run
+from atlas.workflow_ledger import (
+    ArtifactRefCreateRequest,
+    NodeRunCreateRequest,
+    WorkflowRunCreateRequest,
+    add_artifact_ref,
+    create_node_run,
+    create_workflow_run,
+)
 
 log = logging.getLogger(__name__)
 
@@ -500,7 +507,7 @@ async def _commit_chunks_to_qdrant(
     except Exception:
         log.warning("Failed to purge stale chunks for run %s", run_id, exc_info=True)
 
-    now = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    now = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
 
     judge = ctx.results.get("judge") or {}
     meta = ctx.results.get("metadata") or {}
@@ -1165,7 +1172,7 @@ async def resume_completed_hitl_task(
         if markdown.strip() == "":
             raise ValueError("task has empty after_md")
 
-        resumed_at = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+        resumed_at = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
         run.status = "running"
         run.current_node = "ingest"
         # Record resume provenance in run metadata.

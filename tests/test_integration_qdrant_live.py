@@ -14,7 +14,7 @@ def _qdrant_reachable(url: str) -> bool:
     try:
         r = httpx.get(f"{url.rstrip('/')}/collections", timeout=1.5)
         return r.status_code == 200
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 
@@ -48,6 +48,6 @@ def test_qdrant_store_roundtrip_live() -> None:
 
     # Best-effort cleanup (don’t fail the test if cleanup errors).
     try:
-        store._client.delete_collection(collection_name=collection)  # noqa: SLF001
-    except Exception:  # noqa: BLE001
+        store._client.delete_collection(collection_name=collection)
+    except Exception:
         pass

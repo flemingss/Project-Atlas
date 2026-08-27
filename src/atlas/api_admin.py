@@ -66,8 +66,9 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
             raise
 
     def _reset_postgres_schema() -> None:
-        from atlas.models import Base
         from sqlalchemy import text
+
+        from atlas.models import Base
 
         with engine.begin() as conn:
             if conn.dialect.name == "postgresql":

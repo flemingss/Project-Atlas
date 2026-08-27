@@ -12,7 +12,6 @@ from atlas.config_manager import ConfigManager
 from atlas.retry import load_retry_configs
 from atlas.settings import Settings
 
-
 _DEV_ENVS = {"dev", "development", "local", "test"}
 _log = logging.getLogger("atlas.startup")
 
@@ -326,7 +325,7 @@ def _validate_db_connection(*, settings: Settings, engine: Engine) -> None:
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         raise RuntimeError(f"Database connection failed for ATLAS_DB_URL: {settings.atlas_db_url} ({e})") from e
 
 
@@ -337,7 +336,7 @@ def _validate_qdrant(*, settings: Settings) -> None:
             # Qdrant exposes /collections on all modern versions.
             r = client.get(f"{base}/collections")
             r.raise_for_status()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         raise RuntimeError(f"Qdrant unreachable at ATLAS_QDRANT_URL: {settings.atlas_qdrant_url} ({e})") from e
 
 
@@ -351,9 +350,10 @@ def _warn_deterministic_config(*, settings: Settings, engine: Engine) -> None:
     In non-dev environments this is promoted to an ERROR-level log.
     """
     try:
-        from sqlalchemy.orm import Session
-        from atlas.models import ConfigVersion
         from sqlalchemy import select
+        from sqlalchemy.orm import Session
+
+        from atlas.models import ConfigVersion
 
         with Session(engine) as session:
             active = session.execute(
@@ -384,6 +384,6 @@ def _warn_deterministic_config(*, settings: Settings, engine: Engine) -> None:
                 _log.error(msg)
             else:
                 _log.warning(msg)
-    except Exception:  # noqa: BLE001
+    except Exception:
         # Best-effort check; don't block startup if the table doesn't exist yet.
         pass

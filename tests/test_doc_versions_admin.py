@@ -10,7 +10,12 @@ from fastapi.testclient import TestClient
 from qdrant_client.http import models as qm
 
 from atlas.artifacts import write_text
-from atlas.workflow_ledger import ArtifactRefCreateRequest, WorkflowRunCreateRequest, add_artifact_ref, create_workflow_run
+from atlas.workflow_ledger import (
+    ArtifactRefCreateRequest,
+    WorkflowRunCreateRequest,
+    add_artifact_ref,
+    create_workflow_run,
+)
 from tests.helpers import FakeQdrantStore, make_test_app
 
 

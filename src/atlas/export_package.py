@@ -58,7 +58,9 @@ def build_index_md(
     parts.append("| # | Doc ID | Version | Workspace | Project | Collection | Chunks | File |")
     parts.append("|---|--------|---------|-----------|---------|------------|--------|------|")
     for i, d in enumerate(docs, start=1):
-        def _cell(key: str) -> str:
+        # Bind d explicitly: a closure over the loop variable would silently
+        # read the wrong row if this were ever called after the iteration.
+        def _cell(key: str, d: dict[str, Any] = d) -> str:
             v = d.get(key)
             return str(v) if v is not None else ""
         row = (
@@ -216,7 +218,7 @@ async def export_doc_package(
         )
     chunks.sort(key=lambda x: (x.get("chunk_index") is None, int(x.get("chunk_index") or 0)))
 
-    exported_at = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    exported_at = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
 
     manifest: dict[str, Any] = {
         "schema_version": 1,
@@ -446,7 +448,7 @@ async def export_doc_lean(
         doc_version=doc_version,
     )
 
-    exported_at = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    exported_at = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
     frontmatter = build_frontmatter(
         {
             "exported_at": exported_at,

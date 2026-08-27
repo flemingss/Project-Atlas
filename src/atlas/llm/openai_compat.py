@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import logging
-import re
-from typing import Any
-
 import os
+import re
 import sys
+from typing import Any
 
 import httpx
 
@@ -233,7 +232,7 @@ class OpenAICompatibleProvider(ILlmProvider):
         try:
             message = data["choices"][0]["message"]
             raw_content = message.get("content")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             raise ValueError(f"Unexpected chat response shape: {data}") from e
 
         # Token accounting. Gateways return a usage block, and OpenRouter adds
@@ -351,7 +350,7 @@ class OpenAICompatibleProvider(ILlmProvider):
 
         try:
             return [row["embedding"] for row in data["data"]]
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             raise ValueError(f"Unexpected embeddings response shape: {data}") from e
 
     # ------------------------------------------------------------------

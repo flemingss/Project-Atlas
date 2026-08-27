@@ -80,10 +80,7 @@ def fits_in_context(
     if total_needed > max_context_tokens:
         return False
 
-    if max_output_tokens is not None and expected_output > max_output_tokens:
-        return False
-
-    return True
+    return not (max_output_tokens is not None and expected_output > max_output_tokens)
 
 
 def split_into_sections(text: str, max_section_tokens: int = 6000) -> list[str]:

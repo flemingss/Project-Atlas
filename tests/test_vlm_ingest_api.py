@@ -19,13 +19,12 @@ from atlas.db import make_engine, make_sessionmaker
 from atlas.db_init import ensure_schema
 from atlas.vlm_ingest.session import (
     PageStatus,
+    SessionRegistry,
     SessionStatus,
     VlmIngestConfig,
-    SessionRegistry,
 )
-from atlas.vlm_ingest.stitcher import PageResult, StitchResult
+from atlas.vlm_ingest.stitcher import PageResult
 from tests.helpers import write_minimal_yaml_config
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -85,7 +84,7 @@ class TestVlmParseHeadless:
     async def test_vlm_parse_no_vision_model(self, monkeypatch):
         """When vision_model is not configured, return an error IngestResult."""
         from atlas.pipeline.ingest import IngestNode
-        from atlas.pipeline.parsers import VisionParser, ParserContext
+        from atlas.pipeline.parsers import ParserContext, VisionParser
 
         # Ensure config dir has no vision_model
         monkeypatch.setenv("ATLAS_CONFIG_DIR", ".")
@@ -111,7 +110,7 @@ class TestVlmParseHeadless:
     async def test_vlm_parse_success(self, monkeypatch):
         """With a mocked vision model, VisionParser should produce stitched markdown."""
         from atlas.pipeline.ingest import IngestNode
-        from atlas.pipeline.parsers import VisionParser, ParserContext
+        from atlas.pipeline.parsers import ParserContext, VisionParser
 
         monkeypatch.setenv("ATLAS_CONFIG_DIR", ".")
         monkeypatch.setenv("ATLAS_MODELS_DIR", ".")

@@ -18,7 +18,6 @@ from typing import Any
 
 from atlas.pipeline.tokens import estimate_tokens, fits_in_context
 
-
 # ---------------------------------------------------------------------------
 # Routing decision dataclass
 # ---------------------------------------------------------------------------

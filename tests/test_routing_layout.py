@@ -6,7 +6,7 @@ layout parser when making ingest→cleanup routing decisions.
 
 from __future__ import annotations
 
-from atlas.pipeline.routing import RoutingDecision, decide_next_step
+from atlas.pipeline.routing import decide_next_step
 
 
 def _cfg(**overrides) -> dict:

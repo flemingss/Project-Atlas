@@ -31,8 +31,8 @@ from .table_recognizer import TableStructureRecognizer
 from .text_extractor import HybridTextExtractor
 from .types import (
     LayoutType,
-    PDFParseResult,
     ParsedRegion,
+    PDFParseResult,
     TableResult,
 )
 
@@ -598,10 +598,9 @@ class LayoutPdfParser:
 
             # Insert blank line between non-adjacent regions
             curr_top = b.get("top", 0)
-            if prev_page >= 0:
-                if pn != prev_page or curr_top - prev_bottom > 5:
-                    if parts and parts[-1] != "":
-                        parts.append("")
+            if prev_page >= 0 and (pn != prev_page or curr_top - prev_bottom > 5):
+                if parts and parts[-1] != "":
+                    parts.append("")
 
             prev_bottom = b.get("bottom", 0)
             prev_page = pn

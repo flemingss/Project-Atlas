@@ -3,6 +3,7 @@
 Ported from RAGFlow's deepdoc engine (Apache 2.0, InfiniFlow/ragflow).
 """
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any

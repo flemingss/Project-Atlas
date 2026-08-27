@@ -15,7 +15,6 @@ from httpx import ASGITransport, AsyncClient
 
 from tests.helpers import make_test_app
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

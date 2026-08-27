@@ -6,16 +6,15 @@ Uses vision model to improve document quality when judge score is low.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from atlas.diagnostics import ErrorCode, get_diagnostics
 from atlas.llm.openai_compat import strip_reasoning_tags
-from atlas.llm.provider import ILlmProvider
-from atlas.llm.provider import ChatMessage
+from atlas.llm.provider import ChatMessage, ILlmProvider
 from atlas.pipeline.guardrails import strip_llm_artifacts
 from atlas.pipeline.tokens import count_headings, estimate_tokens, split_into_sections
-from atlas.schemas import FidelityFlag, RefineResult
+from atlas.schemas import RefineResult
 
 _log = logging.getLogger(__name__)
 
@@ -147,7 +146,7 @@ class RefineNode:
                     improvements_made=["Max retries exceeded"],
                     refine_version=self.refine_version,
                     success=False,
-                    timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    timestamp=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 )
 
             try:
@@ -193,7 +192,7 @@ class RefineNode:
                         improvements_made=["refinement_rejected:output_too_short"],
                         refine_version=self.refine_version,
                         success=False,
-                        timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                        timestamp=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                     )
 
                 # ----------------------------------------------------------
@@ -221,7 +220,7 @@ class RefineNode:
                         improvements_made=["refinement_rejected:sections_dropped"],
                         refine_version=self.refine_version,
                         success=False,
-                        timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                        timestamp=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                     )
 
                 # Analyze improvements
@@ -232,7 +231,7 @@ class RefineNode:
                     improvements_made=improvements,
                     refine_version=self.refine_version,
                     success=True,
-                    timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    timestamp=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 )
 
                 self.diagnostics.log_info(
@@ -255,7 +254,7 @@ class RefineNode:
                     improvements_made=[],
                     refine_version=self.refine_version,
                     success=False,
-                    timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    timestamp=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 )
 
     async def refine_document_sectional(
@@ -333,7 +332,7 @@ class RefineNode:
                 improvements_made=["refinement_rejected:sectional_output_too_short"],
                 refine_version=self.refine_version,
                 success=False,
-                timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                timestamp=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             )
 
         input_headings = count_headings(markdown)
@@ -354,7 +353,7 @@ class RefineNode:
                 improvements_made=["refinement_rejected:sectional_sections_dropped"],
                 refine_version=self.refine_version,
                 success=False,
-                timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                timestamp=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             )
 
         improvements = self._analyze_improvements(markdown, reassembled)
@@ -374,7 +373,7 @@ class RefineNode:
             improvements_made=improvements,
             refine_version=self.refine_version,
             success=any_success,
-            timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            timestamp=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         )
 
     def _build_prompt(

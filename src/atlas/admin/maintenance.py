@@ -237,7 +237,7 @@ def register_maintenance_routes(
                 },
                 must=must,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             qdrant_updated = False
             qdrant_error = str(exc)
 
@@ -335,7 +335,7 @@ def register_maintenance_routes(
 
         deleted_groups = 0
         if not req.dry_run and orphan_groups:
-            for tenant_id, project_id, doc_id, doc_version in orphan_groups.keys():
+            for tenant_id, project_id, doc_id, doc_version in orphan_groups:
                 must = [
                     qm.FieldCondition(key="tenant_id", match=qm.MatchValue(value=tenant_id)),
                     qm.FieldCondition(key="project_id", match=qm.MatchValue(value=project_id)),
@@ -395,7 +395,7 @@ def register_maintenance_routes(
             "dry_run": bool(req.dry_run),
             "scanned_points": int(scanned),
             "max_points": int(max_points),
-            "orphan_groups": int(len(orphan_groups)),
+            "orphan_groups": len(orphan_groups),
             "orphan_points_estimated": int(orphan_points),
             "deleted_groups": int(deleted_groups),
             "sample_orphans": [
@@ -485,7 +485,7 @@ def register_maintenance_routes(
                 },
                 must=old_must,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             qdrant_updated = False
             qdrant_error = str(exc)
 
@@ -588,7 +588,7 @@ def register_maintenance_routes(
                     session.delete(row)
                 session.commit()
                 rows_deleted = len(rows)
-        except Exception:  # noqa: BLE001
+        except Exception:
             rows_deleted = 0
 
         return {

@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from atlas.pipeline.tokens import count_headings, estimate_tokens, fits_in_context, split_into_sections
+from atlas.pipeline.tokens import (
+    count_headings,
+    estimate_tokens,
+    fits_in_context,
+    split_into_sections,
+)
 
 
 class TestEstimateTokens:

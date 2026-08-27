@@ -10,7 +10,11 @@ from __future__ import annotations
 import pytest
 
 from atlas.settings import Settings
-from atlas.startup_validation import _validate_admin_token
+from atlas.startup_validation import (
+    _validate_admin_token,
+    _validate_builtin_cleanup,
+    validate_cleanup_rules,
+)
 
 
 def _settings(**kwargs: str) -> Settings:
@@ -80,8 +84,6 @@ def test_validate_config_shapes_missing_version(tmp_path) -> None:
 # Builtin cleanup validation
 # ---------------------------------------------------------------------------
 
-from atlas.startup_validation import _validate_builtin_cleanup
-
 
 class TestValidateBuiltinCleanup:
     def test_none_is_valid(self) -> None:
@@ -105,8 +107,6 @@ class TestValidateBuiltinCleanup:
 # ---------------------------------------------------------------------------
 # Cleanup-rules schema validation
 # ---------------------------------------------------------------------------
-
-from atlas.startup_validation import validate_cleanup_rules
 
 
 class TestValidateCleanupRules:

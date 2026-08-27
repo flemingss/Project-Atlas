@@ -43,7 +43,7 @@ def build_post_process(config: dict, global_config: dict | None = None):
     module_class = support_dict.get(module_name)
     if module_class is None:
         raise ValueError(
-            "post process only support {}".format(list(support_dict))
+            f"post process only support {list(support_dict)}"
         )
     return module_class(**config)
 
@@ -81,7 +81,7 @@ class DBPostProcess:
         assert score_mode in [
             "slow",
             "fast",
-        ], "Score mode must be in [slow, fast] but got: {}".format(score_mode)
+        ], f"Score mode must be in [slow, fast] but got: {score_mode}"
 
         self.dilation_kernel = (
             None if not use_dilation else np.array([[1, 1], [1, 1]])
@@ -220,7 +220,7 @@ class DBPostProcess:
         and its shortest side length.
         """
         bounding_box = cv2.minAreaRect(contour)
-        points = sorted(list(cv2.boxPoints(bounding_box)), key=lambda x: x[0])
+        points = sorted(cv2.boxPoints(bounding_box), key=lambda x: x[0])
 
         index_1, index_2, index_3, index_4 = 0, 1, 2, 3
         if points[1][1] > points[0][1]:

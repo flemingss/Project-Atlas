@@ -11,10 +11,7 @@ Covers ``strip_llm_artifacts()`` in ``atlas.pipeline.refine``:
 
 from __future__ import annotations
 
-import pytest
-
 from atlas.pipeline.guardrails import strip_llm_artifacts
-
 
 # ---------------------------------------------------------------------------
 # Code-fence stripping

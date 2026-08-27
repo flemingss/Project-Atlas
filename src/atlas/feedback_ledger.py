@@ -16,7 +16,6 @@ from sqlalchemy.orm import Session
 
 from atlas.models import CleanupFeedback
 
-
 # ---------------------------------------------------------------------------
 # Request / Response schemas (Pydantic)
 # ---------------------------------------------------------------------------

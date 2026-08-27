@@ -23,7 +23,6 @@ from __future__ import annotations
 import base64
 import logging
 from dataclasses import dataclass
-from typing import Optional
 
 import fitz  # PyMuPDF
 
@@ -123,7 +122,7 @@ def render_page(
     page_num: int = 0,
     *,
     dpi: int = 200,
-    crop: Optional[CropMargins] = None,
+    crop: CropMargins | None = None,
     mask_regions: list[dict] | None = None,
 ) -> bytes:
     """Render a single PDF page to PNG bytes.
@@ -197,7 +196,7 @@ def render_page_base64(
     page_num: int = 0,
     *,
     dpi: int = 200,
-    crop: Optional[CropMargins] = None,
+    crop: CropMargins | None = None,
     mask_regions: list[dict] | None = None,
 ) -> str:
     """Render a page and return a ``data:image/png;base64,...`` URI.

@@ -88,7 +88,7 @@ def create_config_version(
             **merged,
             "_meta": {
                 "created_from": base_source,
-                "created_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+                "created_at": dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z"),
             },
         },
     )

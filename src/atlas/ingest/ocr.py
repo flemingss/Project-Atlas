@@ -71,12 +71,12 @@ def load_model(
         return cached
 
     if not os.path.exists(model_file_path):
-        raise ValueError("Model file not found: {}".format(model_file_path))
+        raise ValueError(f"Model file not found: {model_file_path}")
 
     # Detect CUDA availability via torch (best-effort).
     def _cuda_is_available() -> bool:
         try:
-            import torch  # noqa: F401
+            import torch
             return torch.cuda.is_available()
         except Exception:
             return False
@@ -431,7 +431,7 @@ class TextRecognizer:
         if math.ceil(imgH * ratio) > imgW:
             resized_w = imgW
         else:
-            resized_w = int(math.ceil(imgH * ratio))
+            resized_w = math.ceil(imgH * ratio)
 
         resized_image = cv2.resize(img, (resized_w, imgH))
         resized_image = resized_image.astype("float32")

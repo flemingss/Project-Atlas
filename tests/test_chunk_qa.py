@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from atlas.rag.chunk_qa import ChunkQAResult, chunk_with_fallback, validate_chunks
+from atlas.rag.chunk_qa import chunk_with_fallback, validate_chunks
 from atlas.rag.chunking import TextChunk
-
 
 # ---------------------------------------------------------------------------
 # validate_chunks

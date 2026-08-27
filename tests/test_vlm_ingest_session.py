@@ -7,14 +7,12 @@ import pytest
 
 from atlas.vlm_ingest.session import (
     PageStatus,
+    SessionRegistry,
     SessionStatus,
-    PageSettings,
     VlmIngestConfig,
     VlmIngestSession,
-    SessionRegistry,
 )
 from atlas.vlm_ingest.stitcher import PageResult
-
 
 # ---------------------------------------------------------------------------
 # VlmIngestConfig

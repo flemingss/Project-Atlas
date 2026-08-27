@@ -65,7 +65,34 @@ line-length = 100
 # the tree is bind-mounted from Windows/macOS into a container: Docker Desktop
 # presents every file as 0777, so all 139 .py files look executable. Git's
 # recorded mode (100644) is the real source of truth here.
-ignore = ["EXE002"]
+#
+# ── Registered debt (2026-08-28) ─────────────────────────────────────────
+# Every rule below EXE002 is pre-existing debt registered so CI can enforce
+# a clean `ruff check` and hold the line on everything else. Each needs
+# case-by-case judgment (most BLE001/S110 sites are deliberate best-effort
+# guards). Remove a code from this list when its findings are fixed —
+# never add one to silence a new finding.
+ignore = [
+  "EXE002",
+  "B008",    # 3× function-call-in-default (FastAPI File(...) idiom)
+  "B017",    # 1× assert-raises-Exception in a test
+  "BLE001",  # 47× blind except — mostly deliberate best-effort guards
+  "G201",    # 2× logging.error(exc_info=True) vs .exception()
+  "PLC0206", # 1× dict-index-missing-items
+  "RUF012",  # 4× mutable-class-default
+  "RUF059",  # 16× unused unpacked variable
+  "S110",    # 12× try-except-pass
+  "S112",    # 3× try-except-continue
+  "SIM102",  # 3× collapsible-if (readability judgment)
+  "TRY004",  # 8× raise-TypeError-for-type-checks
+  "TRY201",  # 2× verbose raise
+]
+
+[tool.ruff.lint.per-file-ignores]
+# _find_and_tag closes over per-page loop state but is only ever called
+# within the same iteration (verified 2026-08-28); binding explicitly would
+# mean refactoring dense vendored OCR logic for no behavioral gain.
+"src/atlas/ingest/layout_recognizer.py" = ["B023"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

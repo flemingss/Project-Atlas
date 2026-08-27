@@ -287,7 +287,7 @@ def _step_merge_hardwrapped(text: str, _params: dict[str, Any]) -> tuple[str, in
     for line in lines:
         stripped = line.strip()
         # Structural lines break the buffer
-        if not stripped or stripped.startswith("#") or re.match(r"^[-*+] ", stripped) or stripped.startswith("```"):
+        if not stripped or stripped.startswith(("#", "```")) or re.match(r"^[-*+] ", stripped):
             _flush()
             merged.append(line)
         else:

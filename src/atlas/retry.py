@@ -11,8 +11,9 @@ import asyncio
 import logging
 import random
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, Type
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -29,13 +30,13 @@ class RetryConfig:
     base_delay_s: float = 1.0
     max_delay_s: float = 30.0
     jitter: bool = True
-    retryable_exceptions: tuple[Type[BaseException], ...] = (Exception,)
+    retryable_exceptions: tuple[type[BaseException], ...] = (Exception,)
 
     def delay_for(self, attempt: int) -> float:
         """Exponential backoff with optional jitter."""
         d = min(self.base_delay_s * (2 ** attempt), self.max_delay_s)
         if self.jitter:
-            d = d * (0.5 + random.random() * 0.5)  # noqa: S311
+            d = d * (0.5 + random.random() * 0.5)
         return d
 
 

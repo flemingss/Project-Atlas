@@ -1,19 +1,16 @@
 """Tests for atlas.vlm_ingest.stitcher — deterministic page stitching."""
 from __future__ import annotations
 
-import pytest
-
 from atlas.vlm_ingest.stitcher import (
     PageResult,
     StitchResult,
-    stitch_pages,
-    _strip_duplicate_lines,
     _ends_with_table,
-    _starts_with_table_continuation,
-    _merge_table_continuation,
     _merge_heading_continuity,
+    _merge_table_continuation,
+    _starts_with_table_continuation,
+    _strip_duplicate_lines,
+    stitch_pages,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

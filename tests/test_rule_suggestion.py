@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -20,7 +19,6 @@ from atlas.llm.deterministic import DeterministicProvider
 from atlas.llm.provider import ChatMessage
 from atlas.rule_suggester import _heuristic_suggestion, suggest_cleanup_rule
 from tests.helpers import make_test_app
-
 
 # ---------------------------------------------------------------------------
 # Unit tests — suggest_cleanup_rule with DeterministicProvider

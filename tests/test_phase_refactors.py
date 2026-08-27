@@ -16,12 +16,11 @@ from atlas.pipeline.cleanup import (
     _builtin_strip_zero_width,
 )
 from atlas.pipeline.refine import (
+    _DEFAULT_MIN_PRESERVATION_RATIO,
     REFINE_SYSTEM_PROMPT,
     RefineNode,
-    _DEFAULT_MIN_PRESERVATION_RATIO,
 )
 from atlas.rag.normalize import normalize_markdown
-
 
 # ---------------------------------------------------------------------------
 # Helpers

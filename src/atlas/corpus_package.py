@@ -10,7 +10,12 @@ from sqlalchemy.orm import Session, sessionmaker
 from starlette.concurrency import run_in_threadpool
 
 from atlas.config_manager import ConfigManager
-from atlas.export_package import export_doc_package, get_doc_markdown, build_frontmatter, build_index_md
+from atlas.export_package import (
+    build_frontmatter,
+    build_index_md,
+    export_doc_package,
+    get_doc_markdown,
+)
 from atlas.pipeline.runner import ingest_text_via_pipeline
 from atlas.settings import Settings
 from atlas.vectorstore.qdrant_store import QdrantStore
@@ -86,7 +91,7 @@ async def export_corpus_package(
             break
 
     import datetime as _dt
-    exported_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    exported_at = _dt.datetime.now(_dt.UTC).isoformat().replace("+00:00", "Z")
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as z:
@@ -182,7 +187,7 @@ async def export_corpus_lean(
             break
 
     import datetime as _dt
-    exported_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    exported_at = _dt.datetime.now(_dt.UTC).isoformat().replace("+00:00", "Z")
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as z:
@@ -217,7 +222,7 @@ async def export_corpus_lean(
                     doc_id=doc_id,
                     doc_version=doc_version,
                 )
-            except Exception:  # noqa: BLE001
+            except Exception:
                 content = ""
             arcname = f"{_safe_filename(doc_id)}.md"
             # Add YAML frontmatter to each MD file
@@ -292,7 +297,7 @@ async def export_project_package(
         )
 
         import datetime as _dt
-        _exported_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
+        _exported_at = _dt.datetime.now(_dt.UTC).isoformat().replace("+00:00", "Z")
         _index_entries: list[dict[str, Any]] = []
         for cid in ordered_corpora:
             blob = await export_corpus_package(
@@ -366,7 +371,7 @@ async def export_project_lean(
         )
 
         import datetime as _dt
-        _exported_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
+        _exported_at = _dt.datetime.now(_dt.UTC).isoformat().replace("+00:00", "Z")
         _index_entries: list[dict[str, Any]] = []
         for cid in ordered_corpora:
             blob = await export_corpus_lean(
@@ -441,7 +446,7 @@ async def export_tenant_package(
         )
 
         import datetime as _dt
-        _exported_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
+        _exported_at = _dt.datetime.now(_dt.UTC).isoformat().replace("+00:00", "Z")
         _index_entries: list[dict[str, Any]] = []
         for pid in ordered_projects:
             for cid in sorted(projects[pid]):
@@ -518,7 +523,7 @@ async def export_tenant_lean(
         )
 
         import datetime as _dt
-        _exported_at = _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
+        _exported_at = _dt.datetime.now(_dt.UTC).isoformat().replace("+00:00", "Z")
         _index_entries: list[dict[str, Any]] = []
         for pid in ordered_projects:
             for cid in sorted(projects[pid]):
@@ -573,7 +578,7 @@ async def import_corpus_package(
         for name in names:
             try:
                 doc_zip_bytes = z.read(name)
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 errors.append({"file": name, "error": f"read_failed: {e}"})
                 continue
 
@@ -612,7 +617,7 @@ async def import_corpus_package(
                         "chunks_upserted": int(result.get("chunks_upserted", 0)),
                     }
                 )
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 errors.append({"file": name, "error": repr(e)})
 
     return {

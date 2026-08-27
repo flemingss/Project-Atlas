@@ -9,7 +9,6 @@ from sqlalchemy.orm import Session
 
 from atlas.models import HitlTaskRow
 
-
 HitlStatus = Literal["pending", "in_progress", "completed", "skipped", "rejected"]
 
 
@@ -159,7 +158,7 @@ def complete_task(session: Session, *, task_id: int, req: HitlTaskCompleteReques
     row.status = "completed"
     row.after_md = req.after_md
     row.reason_for_edit = req.reason_for_edit
-    row.completed_at = dt.datetime.now(dt.timezone.utc)
+    row.completed_at = dt.datetime.now(dt.UTC)
     session.commit()
     session.refresh(row)
     return row
@@ -174,7 +173,7 @@ def skip_task(session: Session, *, task_id: int, req: HitlTaskSkipRequest) -> Hi
 
     row.status = "skipped"
     row.reason_for_edit = req.reason
-    row.completed_at = dt.datetime.now(dt.timezone.utc)
+    row.completed_at = dt.datetime.now(dt.UTC)
     session.commit()
     session.refresh(row)
     return row
@@ -189,7 +188,7 @@ def reject_task(session: Session, *, task_id: int, req: HitlTaskRejectRequest) -
 
     row.status = "rejected"
     row.reason_for_edit = req.reason
-    row.completed_at = dt.datetime.now(dt.timezone.utc)
+    row.completed_at = dt.datetime.now(dt.UTC)
     session.commit()
     session.refresh(row)
     return row

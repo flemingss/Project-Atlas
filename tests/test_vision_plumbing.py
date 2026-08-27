@@ -3,9 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-from atlas.llm.provider import ChatMessage
 from atlas.llm.openai_compat import strip_reasoning_tags
-
+from atlas.llm.provider import ChatMessage
 
 # ===================================================================
 # ChatMessage — multimodal content support

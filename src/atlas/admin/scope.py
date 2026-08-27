@@ -15,7 +15,6 @@ from atlas.settings import Settings
 
 from ._helpers import clean_scope_id
 
-
 # ── Request models ───────────────────────────────────────────────────
 
 class TenantCreateRequest(BaseModel):

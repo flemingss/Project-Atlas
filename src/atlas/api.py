@@ -5,9 +5,9 @@ import importlib.metadata
 import logging
 import shutil
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -36,8 +36,8 @@ _MAINTENANCE_INTERVAL_S = 300  # 5 minutes
 
 async def _maintenance_loop(
     settings: Settings,
-    engine,  # noqa: ANN001 – sqlalchemy Engine
-    vlm_registry,  # noqa: ANN001 – SessionRegistry (imported lazily)
+    engine,
+    vlm_registry,
 ) -> None:
     """Periodic background loop for lightweight self-maintenance.
 
@@ -205,7 +205,7 @@ async def _maintenance_loop(
 # ---------------------------------------------------------------------------
 
 
-def _check_postgres(engine) -> tuple[bool, str]:  # noqa: ANN001
+def _check_postgres(engine) -> tuple[bool, str]:
     """Quick SELECT 1 against Postgres. Returns (ok, detail)."""
     try:
         with engine.connect() as conn:

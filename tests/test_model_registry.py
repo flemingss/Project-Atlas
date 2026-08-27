@@ -6,7 +6,6 @@ from atlas.llm.openai_compat import OpenAICompatibleProvider, strip_reasoning_ta
 from atlas.llm.registry import ModelRegistry
 from atlas.settings import Settings
 
-
 # ---------------------------------------------------------------------------
 # strip_reasoning_tags tests
 # ---------------------------------------------------------------------------

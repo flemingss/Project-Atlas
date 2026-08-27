@@ -9,7 +9,6 @@ from fastapi.testclient import TestClient
 
 from tests.helpers import FakeQdrantStore, make_test_app
 
-
 # Test markers for triggering pipeline behaviors
 HITL_ESCALATION_MARKER = "[UNFIXABLE]"
 HITL_ESCALATION_CONTENT = "\uFFFD\uFFFD\uFFFD"  # Replacement characters that trigger HITL

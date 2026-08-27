@@ -559,7 +559,7 @@ def make_editor_router(
         sha = hashlib.sha256(req.markdown.encode("utf-8")).hexdigest()
 
         # Record artifact ref
-        from atlas.workflow_ledger import add_artifact_ref, ArtifactRefCreateRequest
+        from atlas.workflow_ledger import ArtifactRefCreateRequest, add_artifact_ref
 
         with session_factory() as session:
             add_artifact_ref(

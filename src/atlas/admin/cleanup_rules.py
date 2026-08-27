@@ -29,7 +29,6 @@ from atlas.feedback_ledger import (
 from atlas.rule_suggester import suggest_cleanup_rule
 from atlas.settings import Settings
 
-
 # ── Request models ───────────────────────────────────────────────────
 
 class RuleSuggestionRequest(BaseModel):
@@ -173,6 +172,7 @@ def register_cleanup_routes(
         """Validate and apply a cleanup rule by creating a new DB config version."""
         import yaml as _yaml
         from fastapi import HTTPException
+
         from atlas.startup_validation import validate_cleanup_rules
 
         try:
@@ -238,7 +238,7 @@ def register_cleanup_routes(
             pipeline_cfg = yaml_defaults.pipeline
             source = "yaml-defaults"
 
-        raw_rules = list((pipeline_cfg.get("cleanup_rules", []) or []))
+        raw_rules = list(pipeline_cfg.get("cleanup_rules", []) or [])
         parsed_rules = parse_rules(raw_rules)
 
         doc_ctx = DocContext(
@@ -314,6 +314,7 @@ def register_cleanup_routes(
         """Import cleanup rules from YAML."""
         import yaml as _yaml
         from fastapi import HTTPException
+
         from atlas.startup_validation import validate_cleanup_rules
 
         if req.mode not in ("replace", "merge"):

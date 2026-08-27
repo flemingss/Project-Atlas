@@ -6,12 +6,12 @@ import pytest
 
 from atlas.llm.deterministic import DeterministicProvider
 from atlas.pipeline.cleanup import CleanupNode
-from atlas.pipeline.judge import JudgeNode
 from atlas.pipeline.ingest import IngestNode
+from atlas.pipeline.judge import JudgeNode
 from atlas.pipeline.metadata import MetadataNode
 from atlas.pipeline.orchestrator import PipelineOrchestrator
 from atlas.pipeline.refine import RefineNode
-from atlas.pipeline.state import PipelineContext, PipelineNode, create_pipeline_context
+from atlas.pipeline.state import PipelineContext, create_pipeline_context
 
 
 def _build_orchestrator(*, judge_cutoff: int = 4) -> PipelineOrchestrator:

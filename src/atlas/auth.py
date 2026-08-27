@@ -4,7 +4,6 @@ from fastapi import Header, HTTPException
 
 from atlas.settings import Settings
 
-
 ADMIN_TOKEN_HEADER = "X-Atlas-Admin-Token"
 
 

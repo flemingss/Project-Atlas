@@ -5,19 +5,17 @@ Handles document ingestion and conversion to DoclingDocument format.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any
-
+import logging as _logging
 import re
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any
 
 from atlas.diagnostics import ErrorCode, get_diagnostics
 from atlas.ingest.docling_adapter import parse_html_string
 from atlas.pipeline.parsers import ParserContext, build_parser
 from atlas.schemas import ParseProfile
 from atlas.settings import Settings
-
-import logging as _logging
 
 _logger = _logging.getLogger(__name__)
 
@@ -67,7 +65,7 @@ class IngestNode:
         docling_json = {
             "content": text,
             "mime_type": mime_type,
-            "parsed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "parsed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         }
 
         return IngestResult(
@@ -190,10 +188,10 @@ class IngestNode:
             if isinstance(content, (bytes, bytearray)) and mime_type in {"text/plain", "text/markdown"}:
                 try:
                     text = bytes(content).decode("utf-8")
-                except Exception:  # noqa: BLE001
+                except Exception:
                     text = bytes(content).decode("utf-8", errors="replace")
 
-                parsed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                parsed_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
                 docling_json = {"content": text, "mime_type": mime_type, "parsed_at": parsed_at}
                 return IngestResult(
                     success=True,
@@ -206,7 +204,7 @@ class IngestNode:
             if isinstance(content, (bytes, bytearray)) and mime_type == "text/html":
                 try:
                     html = bytes(content).decode("utf-8")
-                except Exception:  # noqa: BLE001
+                except Exception:
                     html = bytes(content).decode("utf-8", errors="replace")
 
                 markdown: str
@@ -220,14 +218,16 @@ class IngestNode:
                 except Exception:
                     markdown = ""
                     try:
-                        from markdownify import markdownify as _markdownify  # type: ignore[import-not-found]
+                        from markdownify import (
+                            markdownify as _markdownify,  # type: ignore[import-not-found]
+                        )
 
                         markdown = _markdownify(html)
                     except Exception:
                         markdown = re.sub(r"<[^>]+>", " ", html)
                         markdown = re.sub(r"\s+", " ", markdown).strip() + "\n"
 
-                    parsed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                    parsed_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
                     docling_json = {"content": html, "mime_type": mime_type, "parsed_at": parsed_at}
                     profile = ParseProfile.TEXT
                     schema_ver = "1.0"

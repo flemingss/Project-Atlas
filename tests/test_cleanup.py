@@ -2,20 +2,17 @@
 
 from __future__ import annotations
 
-import pytest
-
 from atlas.pipeline.cleanup import (
     CleanupNode,
+    _builtin_fix_ligatures,
+    _builtin_html_unescape,
+    _builtin_strip_zero_width,
     _normalise_whitespace,
     _repair_heading_hierarchy,
     _static_checks,
     _strip_broken_links,
     _strip_trailing_whitespace,
-    _builtin_html_unescape,
-    _builtin_fix_ligatures,
-    _builtin_strip_zero_width,
 )
-
 
 # ---------------------------------------------------------------------------
 # Individual transforms

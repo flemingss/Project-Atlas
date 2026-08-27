@@ -15,10 +15,7 @@ from typing import Any
 from fastapi import FastAPI
 from sqlalchemy.orm import sessionmaker
 
-import atlas.api_admin as api_admin
-import atlas.api_rag as api_rag
-import atlas.corpus_package as corpus_package
-import atlas.export_package as export_package
+from atlas import api_admin, api_rag, corpus_package, export_package
 from atlas.api_admin import make_admin_router
 from atlas.api_rag import make_rag_router
 from atlas.config_manager import ConfigManager
@@ -117,12 +114,12 @@ class FakeQdrantStore:
     def _matches(self, payload: dict[str, Any], must: list[Any]) -> bool:
         for m in must or []:
             try:
-                key = str(getattr(m, "key"))
+                key = str(m.key)
                 match_obj = getattr(m, "match", None)
                 value = getattr(match_obj, "value", None)
                 # Support MatchAny (e.g. fidelity_mode = "verified+partial").
                 any_values = getattr(match_obj, "any", None)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 continue
             if any_values is not None:
                 if payload.get(key) not in any_values:

@@ -87,9 +87,8 @@ def test_trace_operation_failure():
     """Test trace operation context manager on failure."""
     diag = DiagnosticsManager()
 
-    with pytest.raises(ValueError):
-        with diag.trace_operation("test_op"):
-            raise ValueError("Test error")
+    with pytest.raises(ValueError), diag.trace_operation("test_op"):
+        raise ValueError("Test error")
 
     assert len(diag.metrics) == 1
     metric = diag.metrics[0]

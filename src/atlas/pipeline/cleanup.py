@@ -24,9 +24,9 @@ Transforms (executed in order):
 from __future__ import annotations
 
 import html
-import re
 import logging
-from datetime import datetime, timezone
+import re
+from datetime import UTC, datetime
 from typing import Any
 
 from atlas.pipeline.cleanup_rules import (
@@ -357,7 +357,7 @@ class CleanupNode:
             warnings=warnings,
             chars_before=chars_before,
             chars_after=len(cleaned),
-            timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            timestamp=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             rules_applied=rules_applied,
             rules_failed=rules_failed,
             fix_counts=fix_counts,

@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import time
-from typing import Any
-
 import pytest
 
 from atlas.retry import (
@@ -15,7 +11,6 @@ from atlas.retry import (
     load_retry_configs,
     sync_retry,
 )
-
 
 # ---------------------------------------------------------------------------
 # RetryConfig.delay_for

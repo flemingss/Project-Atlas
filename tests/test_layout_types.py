@@ -5,11 +5,10 @@ from __future__ import annotations
 from atlas.ingest.types import (
     GARBAGE_LAYOUT_TYPES,
     LayoutType,
-    PDFParseResult,
     ParsedRegion,
+    PDFParseResult,
     TableResult,
 )
-
 
 # ---------------------------------------------------------------------------
 # LayoutType enum

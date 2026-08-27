@@ -71,7 +71,7 @@ class QdrantStore:
             try:
                 info = self._client.get_collection(self._collection)
                 existing_size = int(info.config.params.vectors.size)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 # If we cannot introspect (older client/server), skip validation.
                 return
 

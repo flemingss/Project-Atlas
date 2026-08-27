@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
-import concurrent.futures
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -63,7 +63,7 @@ def _pdf_preflight(*, pdf_path: Path) -> dict[str, Any]:
     diagnostics = get_diagnostics()
     try:
         import fitz  # PyMuPDF
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         diagnostics.log_warning(
             component="ingest",
             message="PyMuPDF not available; skipping PDF preflight",
@@ -216,7 +216,7 @@ def parse_document_path(*, doc_path: Path, source_mime_type: str) -> DoclingPars
 
     try:
         from docling.document_converter import DocumentConverter  # type: ignore[import-not-found]
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         diagnostics.log_error(
             component="ingest",
             error_code=ErrorCode.DOC_PARSE_DEPENDENCY_MISSING,
@@ -230,7 +230,7 @@ def parse_document_path(*, doc_path: Path, source_mime_type: str) -> DoclingPars
     if source_mime_type == "application/pdf":
         try:
             preflight = _pdf_preflight(pdf_path=doc_path)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             diagnostics.log_warning(
                 component="ingest",
                 message="PDF preflight failed; continuing without it",
@@ -263,9 +263,15 @@ def parse_document_path(*, doc_path: Path, source_mime_type: str) -> DoclingPars
         # This avoids OCR-detection quirks for PDFs that have selectable text.
         if source_mime_type == "application/pdf":
             try:
-                from docling.datamodel.base_models import InputFormat  # type: ignore[import-not-found]
-                from docling.datamodel.pipeline_options import PdfPipelineOptions  # type: ignore[import-not-found]
-                from docling.document_converter import PdfFormatOption  # type: ignore[import-not-found]
+                from docling.datamodel.base_models import (
+                    InputFormat,  # type: ignore[import-not-found]
+                )
+                from docling.datamodel.pipeline_options import (
+                    PdfPipelineOptions,  # type: ignore[import-not-found]
+                )
+                from docling.document_converter import (
+                    PdfFormatOption,  # type: ignore[import-not-found]
+                )
 
                 prefer_embedded = bool((preflight.get("sample_text_chars") or 0) >= 20)
                 prefer_ocr = bool(preflight.get("text_as_shapes_suspected"))
@@ -327,7 +333,7 @@ def parse_document_path(*, doc_path: Path, source_mime_type: str) -> DoclingPars
 
     except DoclingIngestError:
         raise
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         diagnostics.log_error(
             component="ingest",
             error_code=ErrorCode.DOC_PARSE_FAILED,
@@ -377,9 +383,9 @@ def parse_html_string(*, html: str, name: str | None = None) -> DoclingParseResu
     diagnostics = get_diagnostics()
 
     try:
-        from docling.document_converter import DocumentConverter  # type: ignore[import-not-found]
         from docling.datamodel.base_models import InputFormat  # type: ignore[import-not-found]
-    except Exception as e:  # noqa: BLE001
+        from docling.document_converter import DocumentConverter  # type: ignore[import-not-found]
+    except Exception as e:
         diagnostics.log_error(
             component="ingest",
             error_code=ErrorCode.DOC_PARSE_DEPENDENCY_MISSING,
@@ -392,7 +398,7 @@ def parse_html_string(*, html: str, name: str | None = None) -> DoclingParseResu
     try:
         converter = DocumentConverter()
         conversion = converter.convert_string(html, format=InputFormat.HTML, name=name)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         diagnostics.log_error(
             component="ingest",
             error_code=ErrorCode.DOC_PARSE_FAILED,

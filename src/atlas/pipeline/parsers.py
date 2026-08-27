@@ -13,7 +13,7 @@ import asyncio
 import logging as _logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import TYPE_CHECKING, Any
@@ -51,7 +51,7 @@ class DocumentParser(ABC):
         doc_bytes: bytes,
         source_mime_type: str,
         filename: str | None,
-    ) -> "IngestResult | None":
+    ) -> IngestResult | None:
         """Parse document bytes.
 
         Returns an ``IngestResult`` on success or handled failure,
@@ -68,7 +68,7 @@ class DoclingParser(DocumentParser):
         doc_bytes: bytes,
         source_mime_type: str,
         filename: str | None,
-    ) -> "IngestResult":
+    ) -> IngestResult:
         from atlas.pipeline.ingest import IngestResult
 
         try:
@@ -135,7 +135,7 @@ class DoclingParser(DocumentParser):
                 error_code=e.error_code,
                 error_message=str(e),
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             self.ctx.diagnostics.log_error(
                 component="ingest",
                 error_code=ErrorCode.DOC_PARSE_FAILED,
@@ -171,7 +171,7 @@ class LayoutParser(DocumentParser):
         doc_bytes: bytes,
         source_mime_type: str,
         filename: str | None,
-    ) -> "IngestResult | None":
+    ) -> IngestResult | None:
         from atlas.pipeline.ingest import IngestResult
 
         try:
@@ -220,7 +220,7 @@ class LayoutParser(DocumentParser):
             docling_json = {
                 "content": markdown,
                 "mime_type": "application/pdf",
-                "parsed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "parsed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 "parser": "layout",
                 "metadata": result.metadata,
             }
@@ -251,16 +251,18 @@ class VisionParser(DocumentParser):
         doc_bytes: bytes,
         source_mime_type: str,
         filename: str | None,
-    ) -> "IngestResult":
-        from atlas.pipeline.ingest import IngestResult
+    ) -> IngestResult:
         from atlas.ingest.page_renderer import (
             CropMargins,
             build_vision_messages,
-            page_count as pdf_page_count,
             render_page_base64,
+        )
+        from atlas.ingest.page_renderer import (
+            page_count as pdf_page_count,
         )
         from atlas.llm.provider import ChatMessage
         from atlas.llm.registry import ModelRegistry
+        from atlas.pipeline.ingest import IngestResult
         from atlas.vlm_ingest.stitcher import PageResult, stitch_pages
 
         try:
@@ -377,7 +379,7 @@ class VisionParser(DocumentParser):
         docling_json = {
             "content": stitched.markdown,
             "mime_type": "application/pdf",
-            "parsed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "parsed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             "parser": "vision",
             "metadata": meta,
         }
@@ -408,7 +410,7 @@ class FallbackParser(DocumentParser):
         doc_bytes: bytes,
         source_mime_type: str,
         filename: str | None,
-    ) -> "IngestResult | None":
+    ) -> IngestResult | None:
         first_result = None
         for parser in self._parsers:
             result = await parser.parse(doc_bytes, source_mime_type, filename)

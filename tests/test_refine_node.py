@@ -16,9 +16,7 @@ import pytest
 
 from atlas.llm.deterministic import DeterministicProvider
 from atlas.llm.provider import ChatMessage, ILlmProvider
-from atlas.pipeline.refine import RefineNode, REFINE_SYSTEM_PROMPT
-from atlas.schemas import FidelityFlag
-
+from atlas.pipeline.refine import RefineNode
 
 # ---------------------------------------------------------------------------
 # Helpers

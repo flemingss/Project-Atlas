@@ -11,13 +11,9 @@ Uses monkeypatching to avoid importing heavyweight deps (onnxruntime, etc.).
 
 from __future__ import annotations
 
-import pytest
-from unittest.mock import MagicMock
-
 from atlas.pipeline.ingest import IngestNode, IngestResult
 from atlas.pipeline.parsers import LayoutParser
 from atlas.schemas import ParseProfile
-
 
 # ---------------------------------------------------------------------------
 # Helpers

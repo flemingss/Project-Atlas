@@ -7,10 +7,7 @@ since the layout parser already handles this during extraction.
 
 from __future__ import annotations
 
-import pytest
-
 from atlas.pipeline.cleanup import CleanupNode
-
 
 # ---------------------------------------------------------------------------
 # Layout profile: skip page-number stripping

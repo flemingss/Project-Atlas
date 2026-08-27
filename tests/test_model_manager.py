@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from atlas.ingest.model_manager import ModelManager, REQUIRED_MODELS
-
+from atlas.ingest.model_manager import REQUIRED_MODELS, ModelManager
 
 # ---------------------------------------------------------------------------
 # REQUIRED_MODELS constant

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from atlas.ingest.docling_health import DoclingHealthResult, compute_health
 
-
 # ---------------------------------------------------------------------------
 # Basic sanity
 # ---------------------------------------------------------------------------

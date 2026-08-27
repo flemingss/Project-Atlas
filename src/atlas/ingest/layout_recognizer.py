@@ -38,10 +38,11 @@ from __future__ import annotations
 import logging
 import math
 from collections import Counter
+from collections.abc import Sequence
 from copy import deepcopy
 from functools import cmp_to_key
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 import numpy as np
 
@@ -56,8 +57,6 @@ except ImportError:
     _layout_recognizer_available = False
 
 from .model_manager import ModelManager
-from .types import GARBAGE_LAYOUT_TYPES as GARBAGE_LAYOUT_TYPES  # noqa: F401 — re-export
-from .types import LayoutType as LayoutType  # noqa: F401 — re-export
 
 logger = logging.getLogger(__name__)
 
@@ -194,7 +193,7 @@ class LayoutRecognizer:
 
         providers = ["CPUExecutionProvider"]
         try:
-            import torch  # noqa: F401 — only to check CUDA availability
+            import torch
             if torch.cuda.is_available():
                 providers.insert(0, "CUDAExecutionProvider")
         except ImportError:
@@ -507,8 +506,8 @@ class LayoutRecognizer:
 
             # Scale ratio – fit inside model input keeping aspect ratio
             r = min(new_h / h, new_w / w)
-            new_unpad_w = int(round(w * r))
-            new_unpad_h = int(round(h * r))
+            new_unpad_w = round(w * r)
+            new_unpad_h = round(h * r)
 
             dw = (new_w - new_unpad_w) / 2.0
             dh = (new_h - new_unpad_h) / 2.0
@@ -516,10 +515,10 @@ class LayoutRecognizer:
             im = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32)
             im = cv2.resize(im, (new_unpad_w, new_unpad_h), interpolation=cv2.INTER_LINEAR)
 
-            top = int(round(dh - 0.1)) if self._center else 0
-            bottom = int(round(dh + 0.1))
-            left = int(round(dw - 0.1)) if self._center else 0
-            right = int(round(dw + 0.1))
+            top = round(dh - 0.1) if self._center else 0
+            bottom = round(dh + 0.1)
+            left = round(dw - 0.1) if self._center else 0
+            right = round(dw + 0.1)
             im = cv2.copyMakeBorder(
                 im, top, bottom, left, right,
                 cv2.BORDER_CONSTANT, value=(114, 114, 114),
@@ -815,7 +814,7 @@ class LayoutRecognizer:
 
         # -- Cross-page Counter dedup for repeating garbage text ------------
         garbage_set: set[str] = set()
-        for _key, texts in garbages.items():
+        for texts in garbages.values():
             counts = Counter(texts)
             for text, count in counts.items():
                 if count > 1:

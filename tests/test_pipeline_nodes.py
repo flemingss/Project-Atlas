@@ -8,8 +8,6 @@ from atlas.llm.deterministic import DeterministicProvider
 from atlas.pipeline.judge import JUDGE_DIMENSIONS, JudgeNode, _prompt_hash
 from atlas.pipeline.metadata import MetadataNode
 from atlas.pipeline.refine import RefineNode
-from atlas.schemas import FidelityFlag
-
 
 # ---------------------------------------------------------------------------
 # Helpers

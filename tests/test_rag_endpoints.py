@@ -96,7 +96,7 @@ def test_search_fidelity_default_is_verified(tmp_path: Path, monkeypatch: Any) -
     # 5 standard filters + 1 fidelity_flag == "verified"
     assert len(FakeQdrantStore.last_search_must) == 6
     fidelity_cond = FakeQdrantStore.last_search_must[-1]
-    assert getattr(fidelity_cond, "key") == "fidelity_flag"
+    assert fidelity_cond.key == "fidelity_flag"
     assert getattr(fidelity_cond.match, "value", None) == "verified"
 
 
@@ -119,6 +119,6 @@ def test_search_fidelity_verified_partial(tmp_path: Path, monkeypatch: Any) -> N
     assert res.status_code == 200
     assert len(FakeQdrantStore.last_search_must) == 6
     fidelity_cond = FakeQdrantStore.last_search_must[-1]
-    assert getattr(fidelity_cond, "key") == "fidelity_flag"
+    assert fidelity_cond.key == "fidelity_flag"
     any_vals = getattr(fidelity_cond.match, "any", None)
     assert set(any_vals) == {"verified", "partial"}

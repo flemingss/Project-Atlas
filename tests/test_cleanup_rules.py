@@ -4,26 +4,25 @@ from __future__ import annotations
 
 import pytest
 
+from atlas.pipeline.cleanup import CleanupNode
 from atlas.pipeline.cleanup_rules import (
     CleanupRule,
     DocContext,
+    RuleApplicationResult,
     RuleMatch,
     RuleStep,
-    RuleApplicationResult,
+    _step_fix_bullets,
+    _step_fix_numbered_headings,
+    _step_html_unescape,
+    _step_merge_hardwrapped,
+    _step_normalize_headings,
+    _step_rewrite_pattern,
+    _step_strip_headers_footers,
+    _step_strip_lines_matching,
     apply_rule,
     find_matching_rule,
     parse_rules,
-    _step_strip_lines_matching,
-    _step_rewrite_pattern,
-    _step_strip_headers_footers,
-    _step_normalize_headings,
-    _step_fix_numbered_headings,
-    _step_merge_hardwrapped,
-    _step_fix_bullets,
-    _step_html_unescape,
 )
-from atlas.pipeline.cleanup import CleanupNode
-
 
 # ---------------------------------------------------------------------------
 # parse_rules

@@ -17,7 +17,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import sessionmaker
@@ -35,24 +35,24 @@ from atlas.ingest.page_renderer import (
 )
 from atlas.llm.provider import ChatMessage
 from atlas.llm.registry import ModelRegistry
+from atlas.pipeline.runner import ingest_text_via_pipeline
 from atlas.settings import Settings
 from atlas.vlm_ingest.session import (
     PageStatus,
+    SessionRegistry,
     SessionStatus,
     VlmIngestConfig,
     VlmIngestSession,
-    SessionRegistry,
 )
 from atlas.vlm_ingest.stitcher import PageResult
 from atlas.workflow_ledger import (
-    add_artifact_ref,
     ArtifactRefCreateRequest,
+    WorkflowRunCreateRequest,
+    add_artifact_ref,
     create_workflow_run,
     get_workflow_run,
     list_artifact_refs,
-    WorkflowRunCreateRequest,
 )
-from atlas.pipeline.runner import ingest_text_via_pipeline
 
 log = logging.getLogger(__name__)
 diag_log = logging.getLogger("uvicorn.error")

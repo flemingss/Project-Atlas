@@ -237,6 +237,7 @@ def _sanitize_suggestion(result: dict[str, Any]) -> dict[str, Any]:
         return result
 
     import yaml as _yaml
+
     from atlas.startup_validation import validate_cleanup_rules
 
     try:

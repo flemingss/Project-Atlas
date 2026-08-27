@@ -31,7 +31,7 @@ def _require_ok(resp: httpx.Response, *, label: str) -> dict[str, Any]:
         raise RuntimeError(f"{label} failed: {resp.status_code} {resp.text}")
     try:
         return resp.json()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         raise RuntimeError(f"{label} returned non-JSON: {resp.text}") from e
 
 
@@ -65,7 +65,7 @@ def qdrant_count_points(client: httpx.Client, *, qdrant_url: str, collection: st
     data = _require_ok(r, label="qdrant count")
     try:
         return int(data["result"]["count"])
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         raise RuntimeError(f"Unexpected qdrant count shape: {data}") from e
 
 
@@ -759,7 +759,7 @@ def run_scenarios(
         try:
             fn()
             results.append(ScenarioResult(name=name, ok=True))
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             results.append(ScenarioResult(name=name, ok=False, detail=str(e)))
 
     with httpx.Client(timeout=180.0, headers=headers) as client:
@@ -865,7 +865,7 @@ def run_scenarios(
         try:
             with httpx.Client(timeout=120.0, headers=headers) as teardown_client:
                 restore_yaml_default_config(teardown_client, api_url=api)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             print(f"[{_now()}] [e2e] WARNING: failed to restore default config on teardown: {exc}")
 
     ok = all(r.ok for r in results)

@@ -13,11 +13,10 @@ from atlas.db import make_engine, make_sessionmaker
 from atlas.db_init import ensure_schema
 from atlas.ingest.docling_adapter import DoclingParseResult
 from atlas.schemas import ParseProfile
-
 from tests.helpers import FakeQdrantStore, make_test_app
 
 
-def _fake_parse_document_path(*, doc_path: Path, source_mime_type: str) -> DoclingParseResult:  # noqa: ARG001
+def _fake_parse_document_path(*, doc_path: Path, source_mime_type: str) -> DoclingParseResult:
     if source_mime_type.endswith("wordprocessingml.document"):
         return DoclingParseResult(
             markdown_projection="# Sample DOCX\n\nHello from DOCX.\n",
@@ -179,7 +178,7 @@ def test_rag_ingest_pdf_ocr_empty_returns_error_code(tmp_path: Path, monkeypatch
     monkeypatch.setenv("ATLAS_PDF_PARSER_BACKEND", "docling")
 
     # Override the patched parser to simulate an OCR-empty PDF.
-    def _fake_parse_document_path_empty(*, doc_path: Path, source_mime_type: str) -> DoclingParseResult:  # noqa: ARG001
+    def _fake_parse_document_path_empty(*, doc_path: Path, source_mime_type: str) -> DoclingParseResult:
         return DoclingParseResult(
             markdown_projection="\n\n   \n",
             docling_json={"schema_version": "test", "pages": 1, "text": ""},
@@ -212,7 +211,7 @@ def test_rag_ingest_pdf_low_quality_returns_error_code(tmp_path: Path, monkeypat
     monkeypatch.setenv("ATLAS_PDF_QUALITY_MIN_WORDS", "5")
     monkeypatch.setenv("ATLAS_PDF_QUALITY_ALPHA_RATIO_MIN", "0.90")
 
-    def _fake_parse_document_path_low_quality(*, doc_path: Path, source_mime_type: str) -> DoclingParseResult:  # noqa: ARG001
+    def _fake_parse_document_path_low_quality(*, doc_path: Path, source_mime_type: str) -> DoclingParseResult:
         return DoclingParseResult(
             markdown_projection="@@@@@@ !!!! $$$$$ ######",  # mostly symbols
             docling_json={"schema_version": "test", "pages": 1, "text": ""},
@@ -246,7 +245,7 @@ def test_rag_ingest_docling_unavailable_returns_error_code(tmp_path: Path, monke
     # Force backend=docling so auto-fallback to layout parser doesn't mask the error.
     monkeypatch.setenv("ATLAS_PDF_PARSER_BACKEND", "docling")
 
-    def _raise_unavailable(*, doc_path: Path, source_mime_type: str) -> None:  # noqa: ARG001
+    def _raise_unavailable(*, doc_path: Path, source_mime_type: str) -> None:
         raise DoclingUnavailableError()
 
     monkeypatch.setattr(pipeline_parsers, "parse_document_path", _raise_unavailable)

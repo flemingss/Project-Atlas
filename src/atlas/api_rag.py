@@ -1,10 +1,9 @@
 from __future__ import annotations
-import mimetypes
 
+import mimetypes
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
-from fastapi import HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from qdrant_client.http import models as qm
 from sqlalchemy.orm import Session, sessionmaker
@@ -128,7 +127,7 @@ def make_rag_router(*, config_manager: ConfigManager, session_factory: sessionma
                 is_sensitive=bool(req.is_sensitive),
                 metadata=req.metadata or {},
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             raise HTTPException(status_code=502, detail=str(e)) from e
 
         return IngestTextResponse(
@@ -188,7 +187,7 @@ def make_rag_router(*, config_manager: ConfigManager, session_factory: sessionma
             )
         except HTTPException:
             raise
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             raise HTTPException(status_code=502, detail=str(e)) from e
 
         return IngestTextResponse(
@@ -215,7 +214,7 @@ def make_rag_router(*, config_manager: ConfigManager, session_factory: sessionma
 
         try:
             vectors = await provider.embed(model=resolved.model_name, texts=[req.query], params=resolved.params)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             raise HTTPException(status_code=502, detail=str(e)) from e
         if not vectors:
             return SearchResponse(ok=False, collection="", hits=[])

@@ -102,7 +102,7 @@ def register_hitl_routes(
             from fastapi import HTTPException
 
             raise HTTPException(status_code=409, detail=str(e)) from e
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             from fastapi import HTTPException
 
             raise HTTPException(status_code=502, detail=str(e)) from e

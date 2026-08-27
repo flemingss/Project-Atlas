@@ -5,15 +5,13 @@ Implements tiered metadata generation with cost-aware routing.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import json
+from datetime import UTC, datetime
 from typing import Any
 
 from atlas.diagnostics import ErrorCode, get_diagnostics
-from atlas.llm.provider import ILlmProvider
-from atlas.llm.provider import ChatMessage
+from atlas.llm.provider import ChatMessage, ILlmProvider
 from atlas.schemas import MetadataResult
-
 
 METADATA_TIER1_PROMPT = """Extract structured metadata from this document chunk:
 
@@ -146,7 +144,7 @@ class MetadataNode:
                 tags=tags,
                 tier=1,
                 model_used=self.tier1_model,
-                timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                timestamp=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             )
 
         except Exception as e:
@@ -160,7 +158,7 @@ class MetadataNode:
                 tags={"error": str(e)},
                 tier=1,
                 model_used=self.tier1_model,
-                timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                timestamp=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             )
 
     async def _generate_tier2(self, content: str) -> MetadataResult:
@@ -189,7 +187,7 @@ class MetadataNode:
                 tags=tags,
                 tier=2,
                 model_used=self.tier2_model,
-                timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                timestamp=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             )
 
         except Exception as e:
@@ -215,7 +213,7 @@ class MetadataNode:
             data = json.loads(raw)
             if isinstance(data, dict):
                 return data
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             self.diagnostics.log_warning(
                 component="metadata",
                 message=f"Failed to parse metadata JSON, returning fallback tags: {e}",

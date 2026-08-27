@@ -7,15 +7,13 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from atlas.diagnostics import ErrorCode, get_diagnostics
 from atlas.llm.openai_compat import strip_reasoning_tags
-from atlas.llm.provider import ILlmProvider
-from atlas.llm.provider import ChatMessage
+from atlas.llm.provider import ChatMessage, ILlmProvider
 from atlas.schemas import JudgeResult
-
 
 # Scoring dimensions evaluated by the judge rubric.
 JUDGE_DIMENSIONS = ("faithfulness", "formatting", "cohesion", "hallucination_risk")
@@ -132,7 +130,7 @@ class JudgeNode:
                     confidence_rationale=rationale,
                     judge_version=self.judge_version,
                     needs_refinement=needs_refinement,
-                    timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    timestamp=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                     sub_scores=sub_scores,
                 )
 
@@ -159,7 +157,7 @@ class JudgeNode:
                     confidence_rationale=f"Error during grading (returning neutral score): {e}",
                     judge_version=self.judge_version,
                     needs_refinement=False,
-                    timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    timestamp=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                     sub_scores={d: 3 for d in JUDGE_DIMENSIONS},
                 )
 

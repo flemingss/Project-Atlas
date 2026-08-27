@@ -12,8 +12,9 @@ import logging
 import math
 import re
 from collections import Counter
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 import numpy as np
 
@@ -314,10 +315,8 @@ class TableStructureRecognizer:
                 right = float(np.mean(right_vals)) if len(right_vals) > 4 else float(np.max(right_vals))
                 for b in lts:
                     if "row" in b["label"] or "header" in b["label"]:
-                        if b["x0"] > left:
-                            b["x0"] = left
-                        if b["x1"] < right:
-                            b["x1"] = right
+                        b["x0"] = min(b["x0"], left)
+                        b["x1"] = max(b["x1"], right)
 
             # Align top/bottom for columns
             top_vals = [b["top"] for b in lts if b["label"] == "table column"]
@@ -327,10 +326,8 @@ class TableStructureRecognizer:
                 bottom = float(np.median(bottom_vals)) if len(bottom_vals) > 4 else float(np.max(bottom_vals))
                 for b in lts:
                     if b["label"] == "table column":
-                        if b["top"] > top:
-                            b["top"] = top
-                        if b["bottom"] < bottom:
-                            b["bottom"] = bottom
+                        b["top"] = min(b["top"], top)
+                        b["bottom"] = max(b["bottom"], bottom)
 
             aligned.append(lts)
         return aligned
@@ -346,9 +343,7 @@ class TableStructureRecognizer:
         text = bx.get("text", "").strip()
         if any(re.match(p, text) for p in patt):
             return True
-        if bx.get("layout_type", "").find("caption") >= 0:
-            return True
-        return False
+        return bx.get("layout_type", "").find("caption") >= 0
 
     @staticmethod
     def blockType(b: dict) -> str:
@@ -464,7 +459,7 @@ class TableStructureRecognizer:
         # Sort by column
         colwm = [b["C_right"] - b["C_left"] for b in boxes if "C" in b]
         colwm_val = float(np.min(colwm)) if colwm else 0
-        crosspage = len(set(b["page_number"] for b in boxes)) > 1
+        crosspage = len({b["page_number"] for b in boxes}) > 1
         if crosspage:
             boxes = LayoutRecognizer.sort_X_firstly(boxes, colwm_val / 2)
         else:
@@ -575,12 +570,11 @@ class TableStructureRecognizer:
                         tbl[i_row].pop(j)
                 cols.pop(j)
 
-        if cols and tbl and tbl[0]:
-            if len(cols) != len(tbl[0]):
-                logger.warning(
-                    "Column count mismatch after cleanup: %d vs %d",
-                    len(cols), len(tbl[0]),
-                )
+        if cols and tbl and tbl[0] and len(cols) != len(tbl[0]):
+            logger.warning(
+                "Column count mismatch after cleanup: %d vs %d",
+                len(cols), len(tbl[0]),
+            )
 
         # Remove single-occupancy rows
         if len(cols) >= 4:

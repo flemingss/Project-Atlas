@@ -8,14 +8,16 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Iterator
+from typing import Any
+
 
 def _utc_now_iso_z() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 class ErrorCode(str, Enum):
     """Structured error codes (HLD section 5: Diagnostics)."""

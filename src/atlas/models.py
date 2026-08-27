@@ -16,7 +16,7 @@ class ConfigVersion(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: dt.datetime.now(dt.timezone.utc),
+        default=lambda: dt.datetime.now(dt.UTC),
     )
 
     name: Mapped[str] = mapped_column(String(120), default="")
@@ -35,12 +35,12 @@ class WorkflowRun(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: dt.datetime.now(dt.timezone.utc),
+        default=lambda: dt.datetime.now(dt.UTC),
     )
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: dt.datetime.now(dt.timezone.utc),
-        onupdate=lambda: dt.datetime.now(dt.timezone.utc),
+        default=lambda: dt.datetime.now(dt.UTC),
+        onupdate=lambda: dt.datetime.now(dt.UTC),
     )
 
     tenant_id: Mapped[str] = mapped_column(String(120), index=True)
@@ -65,7 +65,7 @@ class NodeRun(Base):
 
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: dt.datetime.now(dt.timezone.utc),
+        default=lambda: dt.datetime.now(dt.UTC),
     )
 
     node_name: Mapped[str] = mapped_column(String(64), index=True)
@@ -73,7 +73,7 @@ class NodeRun(Base):
 
     started_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: dt.datetime.now(dt.timezone.utc),
+        default=lambda: dt.datetime.now(dt.UTC),
     )
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     duration_ms: Mapped[float | None] = mapped_column(default=None)
@@ -98,7 +98,7 @@ class ArtifactRef(Base):
 
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: dt.datetime.now(dt.timezone.utc),
+        default=lambda: dt.datetime.now(dt.UTC),
     )
 
     kind: Mapped[str] = mapped_column(String(64), index=True)
@@ -115,12 +115,12 @@ class HitlTaskRow(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: dt.datetime.now(dt.timezone.utc),
+        default=lambda: dt.datetime.now(dt.UTC),
     )
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: dt.datetime.now(dt.timezone.utc),
-        onupdate=lambda: dt.datetime.now(dt.timezone.utc),
+        default=lambda: dt.datetime.now(dt.UTC),
+        onupdate=lambda: dt.datetime.now(dt.UTC),
     )
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
@@ -156,12 +156,12 @@ class ActiveDocVersion(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: dt.datetime.now(dt.timezone.utc),
+        default=lambda: dt.datetime.now(dt.UTC),
     )
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: dt.datetime.now(dt.timezone.utc),
-        onupdate=lambda: dt.datetime.now(dt.timezone.utc),
+        default=lambda: dt.datetime.now(dt.UTC),
+        onupdate=lambda: dt.datetime.now(dt.UTC),
     )
 
     tenant_id: Mapped[str] = mapped_column(String(120), index=True)
@@ -177,12 +177,12 @@ class Tenant(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: dt.datetime.now(dt.timezone.utc),
+        default=lambda: dt.datetime.now(dt.UTC),
     )
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: dt.datetime.now(dt.timezone.utc),
-        onupdate=lambda: dt.datetime.now(dt.timezone.utc),
+        default=lambda: dt.datetime.now(dt.UTC),
+        onupdate=lambda: dt.datetime.now(dt.UTC),
     )
 
     tenant_id: Mapped[str] = mapped_column(String(120), unique=True, index=True)
@@ -200,12 +200,12 @@ class Project(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: dt.datetime.now(dt.timezone.utc),
+        default=lambda: dt.datetime.now(dt.UTC),
     )
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: dt.datetime.now(dt.timezone.utc),
-        onupdate=lambda: dt.datetime.now(dt.timezone.utc),
+        default=lambda: dt.datetime.now(dt.UTC),
+        onupdate=lambda: dt.datetime.now(dt.UTC),
     )
 
     tenant_id: Mapped[str] = mapped_column(String(120), index=True)
@@ -224,12 +224,12 @@ class Corpus(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: dt.datetime.now(dt.timezone.utc),
+        default=lambda: dt.datetime.now(dt.UTC),
     )
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: dt.datetime.now(dt.timezone.utc),
-        onupdate=lambda: dt.datetime.now(dt.timezone.utc),
+        default=lambda: dt.datetime.now(dt.UTC),
+        onupdate=lambda: dt.datetime.now(dt.UTC),
     )
 
     tenant_id: Mapped[str] = mapped_column(String(120), index=True)
@@ -252,7 +252,7 @@ class CleanupFeedback(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: dt.datetime.now(dt.timezone.utc),
+        default=lambda: dt.datetime.now(dt.UTC),
     )
 
     # Scoping — at least doc_id should be set

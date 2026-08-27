@@ -8,8 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from atlas.ingest.postprocess import build_post_process, DBPostProcess, CTCLabelDecode
-
+from atlas.ingest.postprocess import CTCLabelDecode, DBPostProcess, build_post_process
 
 # ---------------------------------------------------------------------------
 # build_post_process factory
