@@ -69,8 +69,16 @@ contaminate the final knowledge base:
 | 2d. Repeated headers/footers | `strip_headers_footers` rule + `strip_repetitive_lines` builtin | ✅ |
 | 2e. Tests | Verify rules fire correctly | ✅ (existing cleanup rule tests) |
 
-**Implementation**: Add entries to `cleanup_rules: []` in `pipeline.yaml`. No code changes
-needed — the rules engine already supports all required step kinds.
+**Implementation**: Add entries to `cleanup_rules: []` in the operator-local
+`config/pipeline.yaml`. No code changes needed — the rules engine's 8 step handlers
+(`strip_lines_matching`, `rewrite_pattern`, `strip_headers_footers`,
+`normalize_headings`, `fix_numbered_headings`, `merge_hardwrapped_paragraphs`,
+`fix_bullets`, `html_unescape`) already cover all required step kinds.
+
+Stock config ships `cleanup_rules: []` deliberately — these patterns are
+corpus-specific and would be wrong for someone else's documents. The worked
+reference set lives in `personal_configs/`, which is where the "✅ (in personal
+rules)" entries above point.
 
 ---
 
@@ -100,6 +108,10 @@ concept with a concrete architecture.
 HTML/JS page served by FastAPI at `/editor` (Path A — no build toolchain, designed for
 future React migration). See Phase 12A-12D for sub-tasks.
 
+**Superseded**: the React migration happened in v0.8.0. The editor is now a page in
+the React SPA at `/app/doc/:docId` (and `/app/run/:runId`); the standalone `/editor`
+mount no longer exists.
+
 ---
 
 ## Decision Log
@@ -107,8 +119,10 @@ future React migration). See Phase 12A-12D for sub-tasks.
 | Date | Decision | Rationale |
 |------|----------|-----------|
 | 2026-03-01 | Start with Layer 1 | Highest ROI, lowest risk. Directly addresses the most visible quality issue (LLM artifacts in output). |
-| 2026-03-01 | Defer Layer 3B | Need to see how much Layers 1-2 reduce HITL volume before investing in editor UX. || 2026-03-03 | Layer 2 completed via cleanup rules optimization | Expanded from 7 to 10 rules; `strip_headers_footers` + `strip_repetitive_lines` builtin added. |
+| 2026-03-01 | Defer Layer 3B | Need to see how much Layers 1-2 reduce HITL volume before investing in editor UX. |
+| 2026-03-03 | Layer 2 completed via cleanup rules optimization | Extended the rules engine to **8** step handlers (adding `fix_numbered_headings`, `strip_headers_footers`, `merge_hardwrapped_paragraphs`) and enabled the `strip_repetitive_lines` builtin. This did **not** change the shipped defaults: stock `config/pipeline.yaml` ships `cleanup_rules: []`. The worked ~10-rule reference set lives in `personal_configs/`, applied per operator. |
 | 2026-03-03 | Layer 3B upgraded to Document Editor | VS Code-style concept replaced with concrete Phase 12 architecture (PDF.js + CodeMirror + VLM). |
+
 ---
 
 ## Test Results

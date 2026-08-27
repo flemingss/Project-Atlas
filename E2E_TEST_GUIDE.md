@@ -25,7 +25,6 @@ Located in: `tests/test_*.py`
 | `test_pipeline_nodes.py` | Individual pipeline node logic | Deterministic |
 | `test_chunking.py` | Chunking logic | Pure unit |
 | `test_chunk_qa.py` | Chunk QA validation | Pure unit |
-| `test_hitl.py` | HITL task management | DB-backed |
 | `test_hitl_endpoints.py` | HITL API endpoints | Mock |
 | `test_config_manager.py` | Config versioning | YAML/DB |
 | `test_routing.py` | Pipeline routing decisions | Deterministic |
@@ -51,7 +50,6 @@ Located in: `tests/test_*.py`
 | `test_startup_validation.py` | Startup config validation | Pure unit |
 | `test_deep_merge.py` | Deep merge utility | Pure unit |
 | `test_retry.py` | Retry/backoff logic | Pure unit |
-| `test_concurrency.py` | Concurrent ingest safety | Mock |
 | `test_docling_ingest.py` | Docling PDF ingest | Mock Docling |
 | `test_docling_health.py` | Docling health scoring | Deterministic |
 | `test_llm_artifact_stripping.py` | LLM artifact stripping (`<think>`, fences) | Pure unit |
@@ -62,7 +60,28 @@ Located in: `tests/test_*.py`
 | `test_retrieval_eval.py` | Retrieval eval harness | Pure unit |
 | `test_page_renderer.py` | PDF→PNG rendering, crop margins, VLM messages | Pure unit |
 | `test_vision_plumbing.py` | Multimodal ChatMessage, `<think>` tag stripping | Pure unit |
+| `test_judge.py` | Judge node + rubric parsing | Deterministic |
+| `test_refine_node.py` | Refine node behaviour + guardrails | Deterministic |
+| `test_metadata.py` | Metadata node | Deterministic |
+| `test_orchestrator.py` | Orchestrator dispatch | Deterministic |
+| `test_tokens.py` | Token estimation + section splitting | Pure unit |
+| `test_oversize_guards.py` | Context/output ceilings, judge skip-oversize | Pure unit |
+| `test_llm_profiles.py` | LLM profile patching (`local` / `api`) | Pure unit |
+| `test_qdrant_store.py` | Qdrant store adapter | Mock |
+| `test_vlm_ingest_api.py` | VLM ingest API router | Mock |
+| `test_vlm_ingest_session.py` | VLM ingest session registry | Pure unit |
+| `test_vlm_stitcher.py` | VLM page stitching | Pure unit |
 | `test_integration_qdrant_live.py` | Live Qdrant CRUD | Integration |
+
+There are **698 tests across 54 test files**. Integration tests skip themselves when
+the service they need is unreachable, so a bare `pytest -q` is safe without Docker.
+
+> **Coverage gate:** `pyproject.toml` sets
+> `addopts = "--cov=atlas.pipeline --cov-report=term-missing --cov-fail-under=80"`.
+> Any **partial** run — a single file, a marker filter, a `-k` selection — measures
+> coverage over only what it executed, reports near 0%, and exits **non-zero** even
+> when every selected test passes. Append `--no-cov` whenever you are not running the
+> whole suite.
 
 **Run unit tests:**
 ```bash
@@ -72,12 +91,17 @@ pytest -q
 **Run integration tests (requires Docker):**
 ```bash
 docker compose up -d
-pytest -m integration -q
+pytest -m integration -q --no-cov
 ```
 
 ### E2E Workflow Tests (`test_e2e_workflows.py`)
 
-Comprehensive workflow validation with mocked vector store:
+Comprehensive workflow validation with a mocked vector store.
+
+All nine scenarios run on **deterministic stub providers** — judge, refine, metadata
+and embeddings are all in-process fakes (`atlas.llm.deterministic`). Nothing here
+talks to LM Studio, OpenRouter or the `embeddings` sidecar, and **no LLM needs to be
+loaded** to run them.
 
 #### Scenarios Covered
 
@@ -129,7 +153,7 @@ Comprehensive workflow validation with mocked vector store:
 
 **Run E2E workflow tests:**
 ```bash
-pytest tests/test_e2e_workflows.py -v
+pytest tests/test_e2e_workflows.py -v --no-cov
 ```
 
 ### E2E Scenario Tests (Black-box)
@@ -140,7 +164,9 @@ Black-box scenario runner that exercises a live Atlas API + Qdrant instance.
 
 #### Deterministic Mode Scenarios
 
-These scenarios use deterministic (mock) LLM providers - safe for CI/CD:
+The runner activates a config version that points judge, refine, metadata **and**
+embeddings at the `deterministic` provider, then restores the YAML defaults on
+teardown. No model server is involved, so these are safe for CI/CD:
 
 1. **admin_endpoints** - Health, config, reload validation
 2. **config_version_activation** - Dynamic config changes
@@ -169,12 +195,23 @@ docker compose -f docker-compose.optest.yml --profile deterministic up --abort-o
 
 #### Local LLM Mode Scenarios
 
-These scenarios use real LLM providers (Ollama, LM Studio) - validates actual AI behavior:
+`--mode local_llm` is the **only** mode that needs a real OpenAI-compatible server
+running. It swaps judge/metadata/embeddings onto that server to validate actual AI
+behaviour:
 
-1. **local_llm_preflight** - Verify OpenAI-compatible server connectivity
-2. **activate_local_llm_pipeline_guardrails** - Apply stability configs
+1. **local_llm_preflight** - A smoke check, not a test of Atlas: it reads
+   `ATLAS_OPENAI_BASE_URL`, `ATLAS_E2E_LLM_MODEL` and `ATLAS_E2E_EMBED_MODEL` (all
+   three are required, or the run aborts with a clear message), optionally lists
+   `/v1/models`, then makes **one** `/v1/chat/completions` call and **one**
+   `/v1/embeddings` call. It exists so a missing or unloaded model fails fast
+   instead of surfacing as a confusing scenario failure later.
+2. **activate_local_llm_pipeline_guardrails** - Apply stability configs (refine loop
+   disabled, to avoid vision dependencies)
 3. **activate_local_llm_pipeline_models** - Configure real LLM models
-4. All deterministic scenarios run with actual embeddings + LLM calls
+4. The RAG and workflow scenarios then re-run with actual embeddings + LLM calls.
+   `pipeline_refine_then_pass` and `pipeline_hitl_escalation_and_resume` are
+   **deterministic-only** — they assert on fixed stub judge scores — and are skipped
+   in this mode.
 
 **Run local LLM scenarios (requires Ollama or LM Studio):**
 ```bash
@@ -202,8 +239,9 @@ pytest -q --ignore=tests/test_integration_qdrant_live.py
 
 ### Pre-commit (< 2 minutes)
 ```bash
-# Unit + E2E workflows (mocked)
-pytest -q tests/test_e2e_workflows.py
+# Unit + E2E workflows (mocked). --no-cov on the single-file run: a partial
+# selection cannot meet the 80% coverage gate and would exit non-zero.
+pytest -q tests/test_e2e_workflows.py --no-cov
 pytest -q --ignore=tests/test_integration_qdrant_live.py
 ```
 
@@ -212,7 +250,7 @@ pytest -q --ignore=tests/test_integration_qdrant_live.py
 # All pytest tests including integration
 docker compose up -d
 pytest -q
-pytest -m integration -q
+pytest -m integration -q --no-cov
 ```
 
 ### Full Validation (< 10 minutes)
@@ -228,7 +266,7 @@ python scripts/e2e_runner.py --mode deterministic
 # All tests + local LLM scenarios
 docker compose up -d
 pytest -q
-pytest -m integration -q
+pytest -m integration -q --no-cov
 
 # Deterministic scenarios
 docker compose -f docker-compose.optest.yml --profile deterministic up --abort-on-container-exit
@@ -241,16 +279,20 @@ docker compose -f docker-compose.optest.yml --profile local_llm up --abort-on-co
 
 ### Deterministic Mode
 - **Purpose**: CI/CD validation, fast feedback
-- **LLM Provider**: Mock/deterministic responses
-- **Embeddings**: Deterministic vectors (configurable dimension)
+- **LLM Provider**: Mock/deterministic responses — **no model server required**
+- **Embeddings**: Deterministic vectors (configurable dimension, default 384)
 - **Speed**: Fast (< 1 minute for all scenarios)
 - **Reliability**: 100% reproducible
 - **Use When**: CI/CD, development, regression testing
 
 ### Local LLM Mode
 - **Purpose**: Validate real AI behavior
-- **LLM Provider**: Ollama, LM Studio, or any OpenAI-compatible API
-- **Embeddings**: Real embeddings from model
+- **LLM Provider**: Ollama, LM Studio, or any OpenAI-compatible API — the only mode
+  that requires one, gated behind `local_llm_preflight`
+- **Required env**: `ATLAS_OPENAI_BASE_URL`, `ATLAS_E2E_LLM_MODEL`, `ATLAS_E2E_EMBED_MODEL`
+- **Embeddings**: Real embeddings from the configured model. Note this bypasses the
+  `embeddings` sidecar that normal operation uses; it is a provider-plumbing check,
+  not the production embedding path.
 - **Speed**: Slower (depends on model size)
 - **Reliability**: May vary based on model/temperature
 - **Use When**: Pre-release validation, AI quality checks
@@ -269,7 +311,7 @@ This test suite addresses the following previously identified gaps:
 
 ✅ **LLM Integration Tests**
 - Local LLM mode scenarios exercise real embeddings + LLM calls
-- Deterministic mode provides fast, reliable baseline
+- Deterministic mode provides fast, reliable baseline with no model server
 
 ✅ **Error Recovery Scenarios**
 - `test_e2e_hitl_escalation_workflow` validates HITL error handling
@@ -313,7 +355,9 @@ This test suite addresses the following previously identified gaps:
 ### GitHub Actions / CI Pipeline
 
 ```yaml
-# Fast validation (on every commit)
+# Fast validation (on every commit).
+# Keep whole-suite runs un-flagged so the 80% coverage gate still applies;
+# add --no-cov only to partial selections.
 - run: pytest -q --ignore=tests/test_integration_qdrant_live.py
 
 # Full validation (on PR)

@@ -5,12 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Version numbering note: the last tag is `v0.8.0` and `pyproject.toml` now reads
+`0.8.0` to match it (it had been left at `0.7.2`; the `0.7.3-dev` section below
+was never released under that number). The work in this section has no version
+assigned yet — pick the next version and bump both when it ships.
+
+### Added
+- **LLM profiles** (`src/atlas/llm/profiles.py`, `config/models.yaml`): two generation postures selected by `ATLAS_LLM_PROFILE` or `active_profile` in `models.yaml`.
+  - `local` — LM Studio or any LAN OpenAI-compatible server.
+  - `api` (default) — OpenRouter.
+  - A profile is a patch over **both** `models.yaml` and `pipeline.yaml`: it moves model ids *and* the tuning that has to travel with them (context budget, section size, judge budget). Swapping only the model ids would leave the pipeline sectioning documents that now fit whole. There is deliberately no "hybrid" profile — override a single role instead.
+- **Embeddings sidecar** (`docker-compose.yml`): CPU `ghcr.io/huggingface/text-embeddings-inference:cpu-1.5` service serving `nomic-ai/nomic-embed-text-v1.5` (768-dim), reachable as `http://embeddings:80` on the compose network and published to host port **18090** for debugging (18080 is deliberately avoided — `docker-compose.optest.yml` publishes Atlas there). Weights cache in the `atlas_embeddings_cache` volume; the healthcheck allows a 180s cold start. `ATLAS_EMBEDDINGS_BASE_URL` points Atlas at it.
+  - **Embeddings are pinned across profiles and cannot be profile-switched**, enforced in `profiles.py`. A vector search only returns meaningful results when queries and documents were embedded by the same model; swapping the embedder under an existing corpus corrupts retrieval, and when the replacement has the same dimension it does so *silently*, because Qdrant cannot detect it. Changing the embedding model means re-indexing everything.
+  - Ingest and search no longer depend on LM Studio being up under either profile.
+- **Zero-data-retention enforcement** (`src/atlas/llm/openai_compat.py`, `config/models.yaml`): the `openrouter` provider sets `enforce_zdr: true`, which adds `provider: {"zdr": true}` to every request body, restricting routing to ZDR-compliant endpoints. Redundant with the account-level policy by design, so the guarantee is reviewable in version control and survives someone relaxing the account setting. A 400/404/422 under ZDR enforcement is mapped to an explicit error naming ZDR as the likely cause, instead of a bare 404 that reads like a bad model id.
+- **Per-provider configuration** (`config/models.yaml`): `base_url` / `base_url_env`, `api_key`, custom `headers`, and granular `timeouts.connect_s` / `read_s` / `write_s` per provider.
+- **`limits.judge_max_context_tokens`**: above this budget a document **skips quality grading** rather than failing ingest. It is still chunked, embedded and searchable, just not graded or refined; the skip is logged and recorded on the judge result as `skipped-oversize`.
+
+### Changed
+- **BREAKING (privacy control removed)**: the documented "PrivacyGuard blocks sensitive documents from cloud/frontier APIs" control **never actually ran** — the only implementation lived in `src/atlas/concurrency.py`, which nothing imported. It has been removed by decision rather than repaired. **Privacy now rests entirely on OpenRouter zero-data-retention enforcement.** `is_sensitive` survives as a document flag (Qdrant payloads, HITL priority scoring, exports) but **does not gate provider routing**. Operators who relied on the documented behaviour should treat every ingested document as reaching the configured provider, and use the `local` profile for material that must not leave the network.
+- **Read timeouts are no longer retried** (`src/atlas/llm/openai_compat.py`): a read timeout means the model accepted the request and was still generating, so replaying it identically burns another full timeout window — with `retry.llm.max_retries: 3` that is 4× the wall clock before failing anyway. Connect failures, 429s and 5xx are still retried. Tune `timeouts.read_s` per provider.
+- **`fits_in_context()` checks the output ceiling too** (`src/atlas/pipeline/tokens.py`): the refine model's `roles.refine_model.max_output_tokens` is now checked alongside `limits.max_context_tokens`; exceeding either takes the sectional path. Refine emits a full rewrite, so the response is about as long as the input, and the output cap usually binds first (a model with a 1M context may cap responses at 48k). Checking only the context window was the trap this closes: the request fits, the response silently truncates, and the preservation guard then rejects the result as dropped sections — which reads like a model quality problem rather than a misconfiguration.
+
+### Fixed
+- **`refine_max_section_tokens` and `refine_min_section_ratio` were never passed to `RefineNode`** (`src/atlas/pipeline/runner.py`): both keys were declared in `pipeline.yaml` and documented, but the runner never wired them through, so edits to either had no effect. Both are now passed (defaults 6000 and 0.8).
+- **`refine_min_preservation_ratio` code default corrected `0.6` → `0.85`** (`src/atlas/pipeline/runner.py`), matching `config/pipeline.yaml` and the documentation. Deployments relying on the code default were running a looser guard than the one described.
+- **Reasoning models returning `content: null`** (`src/atlas/llm/openai_compat.py`): when a reasoning model exhausts its token budget on thinking it can return `content: null` with a populated `reasoning` field. This previously surfaced as a `NoneType` regex failure inside tag stripping. It now raises an actionable error naming the exhausted budget and pointing at `max_tokens` for that role.
+
+### Removed
+Dead code — none of the following was reachable from a running pipeline:
+- **`src/atlas/concurrency.py`** — `ConcurrencyGuard`, `ResourceGuard`, and the only `PrivacyGuard` implementation (see the BREAKING note above).
+- **`src/atlas/hitl.py`** — superseded by `hitl_ledger.py`.
+- **`schemas.HITLTask`, `schemas.RAGManifest`, `schemas.ChunkMetadata`**.
+- **`db.session_scope`**, **`docling_adapter.parse_pdf_path`**, **`RefineNode.determine_fidelity_flag`**, **`DiagnosticsManager.get_summary`**.
+- **`ingest/types.LayoutBox`, `ingest/types.OCRBox`**.
+- **Config blocks** `frontier_fallback`, `cache`, `privacy`, and `judge_borderline_*`.
+- **Settings** `atlas_redis_url`, `atlas_layout_table_extraction`.
+
 ## [0.7.3-dev] - unreleased
 
 ### Added
 - **Swappable PDF parser backends** (`src/atlas/pipeline/ingest.py`): `pdf_parser.backend` config key now supports four modes: `auto` (Docling first → layout fallback), `auto_layout` (layout first → Docling fallback), `layout` (layout only), `docling` (Docling only). Default changed from layout-first to **Docling-first** (`auto`).
 - **LLM artifact stripping** (`src/atlas/pipeline/refine.py`): `strip_llm_artifacts()` removes leaked `<think>` blocks, markdown fences, preamble/postamble boilerplate as a post-refine step.
-- **Document Editor (Phase 12A+12B)**: Zero-build-step standalone HTML/JS editor served by FastAPI at `/editor`.
+- **Document Editor (Phase 12A+12B)**: Zero-build-step standalone HTML/JS editor, originally served by FastAPI at `/editor`. Superseded by the React SPA in 0.8.0; the editor now lives at `/app/doc/:docId` and `/app/run/:runId`, and the `/editor` mount no longer exists.
   - **Backend**: `api_editor.py` with 5 endpoints: `page-info`, `render-page`, `source-pdf`, `markdown`, `vision-refine`.
   - **Frontend**: PDF.js viewer (left) + CodeMirror 6 markdown editor (right), Split.js split view, dark theme, tool palette (VLM Fix, Strip Artifacts, Save, Undo), toast notifications.
   - **VLM support**: `page_renderer.py` — PyMuPDF-based PDF→PNG rendering with configurable DPI and header/footer crop margins. `build_vision_messages()` constructs multimodal prompts for vision refinement.
@@ -18,14 +57,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **React SPA Document Editor (Phase 12C)**: Replaces the standalone HTML/JS editor with a full React application.
   - **Stack**: Vite 6 + React 18 + TypeScript + shadcn/ui (Radix + CVA) + Tailwind CSS + TanStack React Query 5 + Zustand 4.
   - **30 source files** in `web/`: 10 shadcn/ui primitives, 5 editor components (PDF viewer, markdown editor, toolbar, VLM settings, status bar), typed API client, Zustand store, React Query hooks.
-  - **Build**: `npm run build` → `static/editor/` (served by FastAPI at `/editor`). Dockerfile multi-stage: Node.js build + Python runtime.
+  - **Build**: `npm run build` → `static/app/` (served by FastAPI at `/app`). Dockerfile multi-stage: Node.js build + Python runtime.
   - **9 API endpoints** (`api_editor.py`): `resolve-doc`, `page-info`, `source-pdf`, `markdown`, `page-markdown`, `vision-refine`, `save-markdown`, `llm-refine`, `re-judge`.
   - **Developer guide**: `web/README.md` with stack reference, directory structure, design tokens, dev/build workflow.
 - **VLM-first parser backend (Phase 12E)**: Full VLM ingestion workflow — interactive wizard + headless reuse.
   - **`backend: vision`** in `pdf_parser.backend`: renders all pages → VLM extracts markdown per page → deterministic stitch.
   - **`vlm_ingest` package** (`src/atlas/vlm_ingest/`): `stitcher.py` (page comment insertion, duplicate header/footer removal, table continuation merge, heading dedup), `session.py` (in-memory session registry with TTL, per-page config overrides, serializable config for headless reuse).
   - **14-endpoint API router** (`api_vlm_ingest.py` at `/api/editor/vlm-ingest`): start session (run ID or upload), configure globals + per-page overrides, thumbnails, preview, process page one-at-a-time, stitch, commit, export/import config.
-  - **React wizard page** (`/editor/vlm-ingest`): 7-step interactive workflow (start → configure → pages → process → review → stitch → commit) with auto-advance, per-page corrections, config export.
+  - **React wizard page** (now `/app/ingest`; `/app/vlm-ingest` redirects to it): 7-step interactive workflow (start → configure → pages → process → review → stitch → commit) with auto-advance, per-page corrections, config export.
   - **Headless mode**: `IngestNode._vlm_parse()` processes pages sequentially with no cross-page context, stitches deterministically, configurable via `pipeline.yaml → pdf_parser.vlm`.
   - **55+ new tests**: stitcher (22), session (25), API-level (8) — all passing.
 - **VLM wizard PDF preview** (`ConfigureStep`): Live PDF page preview with crop guide overlays (red dashed lines), page navigation, zoom controls, and three fit modes (Fit Page, Fit Width, Actual Size) with ResizeObserver-based auto-fit.
@@ -41,7 +80,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **VLM heading formatting rules** (`page_renderer.py`): Default VLM system prompt now includes explicit heading hierarchy guidance — numbered sections (`# 1`, `## 1.1`, `### 1.1.1`) and appendix sections (`# A`, `## A.1`, `### A.1.1`).
 
 ### Changed
-- **Cleanup rules optimized**: Expanded default rule set from 7 to 10 rules, organized into logical sections (heading normalization, content stripping, bullet/list cleanup, paragraph repair). New rules: `fix_numbered_headings`, `strip_headers_footers`, `merge_hardwrapped_paragraphs`.
+- **Cleanup rules optimized**: Added the `fix_numbered_headings`, `strip_headers_footers` and `merge_hardwrapped_paragraphs` step handlers, bringing `_STEP_REGISTRY` to **8** handlers, and organized the reference rule set into logical sections (heading normalization, content stripping, bullet/list cleanup, paragraph repair). This did **not** change the shipped defaults: stock `config/pipeline.yaml` ships `cleanup_rules: []` and always has — the worked ~10-rule reference set lives in `personal_configs/`, not in the stock config.
 - **Builtin cleanup expansion**: `strip_page_numbers` (ON by default) and `strip_repetitive_lines` (OFF by default) now documented in `PIPELINE_REFERENCE.md`.
 - **Refine guardrails tightened**: `min_preservation_ratio` raised from 0.6 → 0.85. Sectional refinement uses section-count guard and dynamic `max_tokens` scaled to input length.
 - **Pipeline config wiring** (`src/atlas/pipeline/runner.py`): `pipeline_cfg.get("pdf_parser")` passed to IngestNode constructor (was hardcoded env var).
@@ -65,12 +104,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Dead page files** — `web/src/pages/upload/` and `web/src/pages/vlm-ingest/` removed (superseded by unified `ingest-page.tsx`).
 
 ### Documentation
-- **E2E_TEST_GUIDE.md**: Test coverage matrix expanded from 7 → 43 test files with mode annotations.
+- **E2E_TEST_GUIDE.md**: Test coverage matrix expanded from 7 test files to the full set with mode annotations (now 54 files / 698 tests).
 - **PIPELINE_REFERENCE.md**: Fixed `normalize` section (formatting-only since v0.6.0, not noise-stripping). Added `strip_page_numbers` and `strip_repetitive_lines` to `builtin_cleanup` table (was 3 entries, now 5).
 - **ARCHITECTURE.md**: Updated parser backend description, refine section, test count (585+), HITL section, Next Steps. Added VLM ingest wizard and session-expired recovery details.
 - **TECHNICAL_DESIGN.md**: Added Phases 10-12, removed deleted doc references, updated §9 (documentation), §10 (capabilities audit removed). Phase 12E completed with all sub-items checked.
 - **README.md**: Removed references to deleted docs, added `pdf_parser:` to config sections, fixed `refine_min_preservation_ratio` default.
 - **web/STYLE_GUIDE.md**: New React page style guide covering layout, preview fit modes, state wiring, and error/recovery UX patterns.
+
+## [0.8.0] - 2026-03-04
+
+Reconstructed from the tagged commit (`5cc60df`, tag `v0.8.0`) — this release
+shipped without a changelog entry. The `0.7.3-dev` section above continues past
+this tag: some of its items landed before it and some after, and `pyproject.toml`
+was never bumped past `0.7.2`.
+
+### Added
+- **React SPA operator console**: 9 pages (Dashboard, Upload, Library, Search, Review, Editor, VLM Ingest, Admin sub-pages) built from 24 shadcn/ui components, 4 layout primitives, 6 API service modules, 4 Zustand stores and 5 React Query hooks.
+
+### Changed
+- **SPA mount moved to `/app`** (router `basename` changed from `/editor`), with build output at `static/app/` (was `static/editor/`). `Dockerfile`, `README.md`, `TECHNICAL_DESIGN.md`, `ARCHITECTURE.md`, `web/README.md`, `OPTEST.md`, `E2E_TEST_GUIDE.md` and `.gitignore` updated to match.
+- Fixed API response shape mismatches, error boundaries, and dark-mode form fields.
+
+### Removed
+- **Streamlit operator console**: the `ui/` package, `.streamlit/`, `Dockerfile.ui`, `build.log`, the `ui` service in every compose file, and the `streamlit` dependency (`pyproject.toml` + `uv.lock`, −14 packages).
+- **Legacy `/editor` SPA mount** in `api.py` (dead code once the SPA moved to `/app`), and the stale `static/editor/` build output.
+
+Test count at the tag: **588 passed**.
 
 ## [0.7.2] - 2026-03-03
 

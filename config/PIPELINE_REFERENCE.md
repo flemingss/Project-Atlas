@@ -15,9 +15,6 @@
   - [`limits`](#limits)
   - [`normalize`](#normalize)
   - [`chunking`](#chunking)
-  - [`frontier_fallback`](#frontier_fallback)
-  - [`cache`](#cache)
-  - [`privacy`](#privacy)
   - [`retry`](#retry)
   - [`builtin_cleanup`](#builtin_cleanup)
   - [`cleanup_rules`](#cleanup_rules)
@@ -111,8 +108,6 @@ Controls quality gating and routing decisions in the agentic loop.
 | `fail_fast_score` | `int` | `0` | Composite score at or below which the document is immediately **failed** (skipping refine entirely). `0` disables fail-fast. |
 | `judge_dim_floors` | `map[str, int]` | `{}` | Per-dimension minimum scores. If **any** dimension falls below its floor, the document routes to Refine regardless of composite score. Set a dimension to `0` to disable its floor. |
 | `cleanup_rejudge` | `bool` | `true` | When `true`, a document whose `formatting` sub-score is below cutoff but whose content dimensions (`faithfulness`, `cohesion`, `hallucination_risk`) are all acceptable is re-routed through **Cleanup** instead of Refine. Cycle-guarded: at most one cleanup-rejudge per document. |
-| `judge_borderline_low` | `int` | `3` | Reserved for future borderline handling logic. Not consumed in current code. |
-| `judge_borderline_high` | `int` | `4` | Reserved for future borderline handling logic. Not consumed in current code. |
 | `refine_max_retries` | `int` | `2` | **Legacy location.** Prefer `limits.refine_max_retries`. Read as fallback. |
 | `refine_min_preservation_ratio` | `float` | `0.85` | Minimum ratio of output length to input length after a refine pass. Outputs shorter than this ratio are rejected and the original text is kept. Prevents summarisation. |
 | `refine_min_section_ratio` | `float` | `0.8` | Minimum ratio of output heading count to input heading count after a refine pass. Outputs with fewer than this fraction of headings are rejected (only triggers when input has ≥ 3 headings). Prevents section dropping. |
@@ -129,6 +124,8 @@ thresholds:
     formatting: 2
     cohesion: 2
     hallucination_risk: 3
+  refine_min_preservation_ratio: 0.85
+  refine_min_section_ratio: 0.8
   cleanup_rejudge: true
 ```
 
@@ -141,10 +138,11 @@ Hard caps on pipeline behaviour.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `refine_max_retries` | `int` | `3` | Maximum Refine→Judge loop iterations before the document escalates to HITL review. Only successful refinements count; failed attempts are tracked separately with a 2× circuit-breaker hard cap. |
-| `tier2_chunk_cap_per_document` | `int` | `25` | Maximum chunks per document that receive Tier-2 (expensive model) metadata enrichment. Also read from legacy key `metadata_tier2_cap_per_doc`. |
+| `tier2_chunk_cap_per_document` | `int` | `25` | Cost guardrail on Tier-2 (expensive model) metadata escalations per document. Metadata is generated **once per document**, not per chunk: the Metadata node is called with the document markdown and prompts on `content[:1000]` only (`src/atlas/pipeline/metadata.py`), and the single resulting tag set is copied onto every chunk payload. Also read from legacy key `metadata_tier2_cap_per_doc`. |
 | `chunk_max_chars` | `int` | `1000` | Safety-valve maximum characters per chunk. Used primarily by the `paragraph` chunking strategy. |
-| `max_context_tokens` | `int` | `16384` | Maximum estimated input tokens for a single full-document refine call. Documents exceeding this budget are refined sectionally. Based on refine model context window minus prompt overhead and output space. |
-| `refine_max_section_tokens` | `int` | `6000` | Target maximum tokens per section when splitting a long document for sectional refinement. Sections are split on `##` headings, with secondary splits on `###` if a section still exceeds this limit. |
+| `max_context_tokens` | `int` | `16384` | Context-window budget for a single full-document refine call — prompt plus expected output. This is only **half** the check: `fits_in_context()` (`src/atlas/pipeline/tokens.py`) *also* rejects when the expected output exceeds the refine model's `max_output_tokens`, declared per-role in `config/models.yaml`. Refine emits a full rewrite, so response length tracks input length and the output ceiling usually binds first. Documents failing **either** ceiling take the sectional path. Patched per LLM profile. |
+| `refine_max_section_tokens` | `int` | `6000` | Target maximum tokens per section when splitting a long document for sectional refinement. Sections are split on `#`/`##` headings, with secondary splits on `###` if a section still exceeds this limit. Patched per LLM profile. |
+| `judge_max_context_tokens` | `int` | `32000` | Context budget for the Judge, whose prompt embeds the entire document with no truncation. Above this budget the document **skips quality grading entirely** rather than failing ingest with an over-length request — it is still cleaned, chunked, embedded and searchable, just not graded or refined. `0` or unset disables the guard (pre-existing behaviour: fail on oversize). Patched per LLM profile. |
 
 ```yaml
 limits:
@@ -153,7 +151,14 @@ limits:
   chunk_max_chars: 1000
   max_context_tokens: 16384
   refine_max_section_tokens: 6000
+  judge_max_context_tokens: 32000
 ```
+
+> **Profiles:** the token budgets above are patched by the active LLM profile
+> (`local` / `api`, selected by `ATLAS_LLM_PROFILE`). A profile in
+> `config/models.yaml` patches **both** `models.yaml` roles and this
+> `pipeline.yaml` `limits` block, so the effective values differ per profile —
+> see `profiles.<name>.pipeline.limits` in `config/models.yaml`.
 
 ---
 
@@ -217,59 +222,6 @@ chunking:
 
 ---
 
-### `frontier_fallback`
-
-Controls automatic failover to cloud/frontier LLM providers when local
-inference is under pressure.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `enabled` | `bool` | `false` | Master toggle. |
-| `vram_percent_threshold` | `float` | `92.0` | VRAM usage % above which fallback triggers. |
-| `queue_depth_threshold` | `int` | `2` | Inference queue depth above which fallback triggers. |
-
-```yaml
-frontier_fallback:
-  enabled: false
-  vram_percent_threshold: 92
-  queue_depth_threshold: 2
-```
-
----
-
-### `cache`
-
-Semantic query caching settings.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `semantic_cache_enabled` | `bool` | `false` | Enable/disable semantic caching of queries. |
-| `similarity_threshold` | `float` | `0.98` | Cosine similarity threshold for cache hits. |
-
-> **Note:** Declared in the configuration schema but not yet wired to any
-> consumer in the current codebase. Reserved for future use.
-
-```yaml
-cache:
-  semantic_cache_enabled: false
-  similarity_threshold: 0.98
-```
-
----
-
-### `privacy`
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `default_is_sensitive` | `bool` | `true` | Default sensitivity flag applied to documents. When `true`, the `PrivacyGuard` blocks routing to cloud/frontier APIs regardless of `frontier_fallback` settings. |
-
-```yaml
-privacy:
-  default_is_sensitive: true
-```
-
----
-
 ### `retry`
 
 Exponential backoff configuration for external service calls. Each subsystem
@@ -304,9 +256,15 @@ retry:
 ### `builtin_cleanup`
 
 Toggles for automatic extraction-artifact fixes that run during the Cleanup
-node **after** the five hardcoded transforms and **before** config-driven
-cleanup rules. All toggles default to `true` (ON) when the section is absent
-or a key is omitted.
+node **after** the hardcoded transforms and **before** config-driven cleanup
+rules. Registered in `src/atlas/pipeline/cleanup.py` and applied in the order
+listed below. Four default to `true` (ON) when the section is absent or a key
+is omitted; `strip_repetitive_lines` defaults to `false` (OFF) for safety.
+
+> **Layout-parsed documents:** when the document was parsed by the layout
+> (deepdoc) backend (`parse_profile == "pdf_layout"`), `strip_page_numbers` is
+> skipped regardless of its toggle — the layout parser already removes page
+> furniture.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -314,7 +272,9 @@ or a key is omitted.
 | `fix_ligatures` | `bool` | `true` | Decompose common Unicode ligatures to ASCII equivalents (ﬁ → fi, ﬂ → fl, ﬀ → ff, ﬃ → ffi, ﬄ → ffl). |
 | `strip_zero_width_chars` | `bool` | `true` | Remove zero-width and invisible Unicode characters (BOM, zero-width space/joiner/non-joiner, soft hyphen, word joiner, etc.). |
 | `strip_page_numbers` | `bool` | `true` | Remove standalone page-number lines (e.g. `Page 3`, `— 12 —`, bare digits). |
-| `strip_repetitive_lines` | `bool` | `false` | Remove lines that repeat ≥4 times in the document (headers/footers carried through from PDF extraction). |
+| `strip_repetitive_lines` | `bool` | `false` | Remove short lines that repeat ≥ `repetitive_line_threshold` times in the document (headers/footers carried through from PDF extraction). **OFF by default.** |
+| `repetitive_line_threshold` | `int` | `8` | Minimum occurrences before a line counts as repetitive. Only read when `strip_repetitive_lines` is ON. |
+| `repetitive_line_max_chars` | `int` | `80` | Only lines of at most this length are candidates for repetitive-line stripping. Only read when `strip_repetitive_lines` is ON. |
 
 ```yaml
 builtin_cleanup:
@@ -323,6 +283,8 @@ builtin_cleanup:
   strip_zero_width_chars: true
   strip_page_numbers: true
   strip_repetitive_lines: false
+  # repetitive_line_threshold: 8   # only read when strip_repetitive_lines is on
+  # repetitive_line_max_chars: 80  # only lines <= this length are candidates
 ```
 
 To disable a specific toggle:
@@ -727,9 +689,9 @@ Ingest → Cleanup → Judge → Refine* → Metadata → Embeddings → Chunkin
 
 - **Ingest** — Document conversion via Docling or layout parser (ONNX) (PDF/DOCX/HTML → Markdown). Backend selected by `pdf_parser.backend` (`auto`/`auto_layout`/`layout`/`docling`; default `auto` tries Docling first, falls back to layout parser). Selection is whole-document, not per-page.
 - **Cleanup** — Built-in transforms + config-driven rule engine.
-- **Judge** — LLM grades quality on 4 dimensions (1–5 each). Per-dimension rationale for scores below 4.
+- **Judge** — LLM grades quality on 4 dimensions (1–5 each). Per-dimension rationale for scores below 4. Documents above `limits.judge_max_context_tokens` skip grading entirely and continue to Metadata (see Routing Decisions).
 - **Refine** — LLM rewrites the document to improve quality (if score < cutoff). Receives judge sub-scores, rationale, and iteration context. For documents exceeding `limits.max_context_tokens`, sectional refinement splits the document on headings and refines each section independently.
-- **Metadata** — LLM generates tiered metadata tags.
+- **Metadata** — LLM generates tiered metadata tags **once per document** (prompted on the first 1000 characters of the markdown); the resulting tag set is copied onto every chunk. Tier-2 escalation is capped by `limits.tier2_chunk_cap_per_document`.
 - **Embeddings** — Vector generation via embedding model.
 - **Chunking** — Split markdown into chunks (with QA checks + fallback).
 - **Commit** — Upsert chunks + vectors to Qdrant.
@@ -752,11 +714,19 @@ HITL→pipeline→HITL loops.
 - **Cleanup-rejudge cycle guard** — at most one cleanup→judge→cleanup
   cycle per document.
 - **Context budget awareness (v0.7.1)** — before refine, the pipeline
-  estimates document token count. Documents exceeding
-  `limits.max_context_tokens` are refined sectionally (split on headings,
-  each section refined independently, then reassembled). Two post-refine
-  guards enforce quality: length preservation (≥85% of input) and
-  section-count preservation (≥80% of headings).
+  estimates document token count and checks **two** ceilings: the context
+  budget `limits.max_context_tokens`, and the refine model's own
+  `max_output_tokens` response ceiling (from `config/models.yaml`). Because
+  refine emits a full rewrite, the output ceiling is usually the one that
+  binds. Documents exceeding either are refined sectionally (split on
+  headings, each section refined independently, then reassembled). Two
+  post-refine guards enforce quality: length preservation
+  (`thresholds.refine_min_preservation_ratio`, ≥85% of input) and
+  section-count preservation (`thresholds.refine_min_section_ratio`, ≥80% of
+  headings, checked only when the input has ≥ 3 headings).
+- **Judge oversize skip** — documents above `limits.judge_max_context_tokens`
+  are not graded at all rather than failing ingest with an over-length
+  request. They pass straight to Metadata and are indexed ungated.
 
 ---
 
@@ -770,14 +740,15 @@ HITL→pipeline→HITL loops.
 | Cleanup | `hard_failure` tag on matched rule | **Failed** | `cleanup_rules[].tags` |
 | Cleanup | `suspicious_content` tag on matched rule | **HITL** | `cleanup_rules[].tags` |
 | Cleanup | Default | Judge | — |
+| Judge | Document exceeds `judge_max_context_tokens` | Metadata (grading **skipped**, not failed) | `limits.judge_max_context_tokens` |
 | Judge | Composite score ≤ `fail_fast_score` | **Failed** | `thresholds.fail_fast_score` |
 | Judge | Any dimension < its floor | Refine | `thresholds.judge_dim_floors` |
 | Judge | Formatting low + content OK + `cleanup_rejudge` (max 1 cycle) | Cleanup | `thresholds.cleanup_rejudge` |
 | Judge | Score regressed after refine + pre-refine score ≥ cutoff | Metadata (with **rollback** to pre-refine markdown) | — |
 | Judge | Score regressed after refine + pre-refine score < cutoff | **HITL** (with **rollback** to pre-refine markdown) | — |
 | Judge | Score unchanged after refine (diminishing returns) | **HITL** | — |
-| Judge | Composite < cutoff + retries left + doc fits context budget | Refine (full) | `thresholds.judge_cutoff_refine` |
-| Judge | Composite < cutoff + retries left + doc exceeds context budget | Refine (sectional) | `limits.max_context_tokens` |
+| Judge | Composite < cutoff + retries left + doc fits context **and** output budget | Refine (full) | `thresholds.judge_cutoff_refine` |
+| Judge | Composite < cutoff + retries left + doc exceeds context **or** output budget | Refine (sectional) | `limits.max_context_tokens`, `models.yaml` `max_output_tokens` |
 | Judge | Composite < cutoff + retries exhausted | **HITL** | `limits.refine_max_retries` |
 | Judge | Score acceptable | Metadata | — |
 | Refine | Always | Judge | — |
@@ -787,7 +758,7 @@ HITL→pipeline→HITL loops.
 
 ### Built-in Cleanup Transforms
 
-These run **unconditionally** before config-driven rules, in this order:
+Steps 1–5 run **unconditionally** before config-driven rules, in this order:
 
 | # | Transform | Description |
 |---|---|---|
@@ -796,9 +767,19 @@ These run **unconditionally** before config-driven rules, in this order:
 | 3 | `repair_heading_hierarchy` | Demote headings that skip levels (e.g. H1 → H4 becomes H1 → H2) |
 | 4 | `strip_trailing_whitespace` | Right-strip every line |
 | 5 | *Static quality warnings* | Log warnings for leftover HTML tags, OCR whitespace artefacts, very short output (<50 chars). No mutations. |
-| 6 | `builtin:html_unescape` | Decode HTML/XML entities. Configurable via `builtin_cleanup.html_unescape` (default: ON). |
-| 7 | `builtin:fix_ligatures` | Decompose Unicode ligatures (ﬁ→fi, ﬂ→fl). Configurable via `builtin_cleanup.fix_ligatures` (default: ON). |
-| 8 | `builtin:strip_zero_width_chars` | Strip invisible Unicode chars. Configurable via `builtin_cleanup.strip_zero_width_chars` (default: ON). |
+
+Steps 6–10 are the **five registered builtins**
+(`_BUILTIN_CLEANUP_REGISTRY` in `src/atlas/pipeline/cleanup.py`). They are
+**not** unconditional — each is gated by its `builtin_cleanup` toggle, and
+`strip_repetitive_lines` is OFF unless explicitly enabled:
+
+| # | Transform | Default | Description |
+|---|---|---|---|
+| 6 | `builtin:html_unescape` | ON | Decode HTML/XML entities (`&amp;` → `&`). Runs first so later passes see decoded characters. |
+| 7 | `builtin:fix_ligatures` | ON | Decompose Unicode ligatures (ﬁ→fi, ﬂ→fl). |
+| 8 | `builtin:strip_zero_width_chars` | ON | Strip invisible/zero-width Unicode chars. |
+| 9 | `builtin:strip_page_numbers` | ON | Remove standalone page-number lines. **Force-skipped** for layout-parsed documents (`parse_profile == "pdf_layout"`) — the layout parser already strips them. |
+| 10 | `builtin:strip_repetitive_lines` | **OFF** | Remove short lines repeating ≥ `repetitive_line_threshold` (default 8) times, considering only lines ≤ `repetitive_line_max_chars` (default 80). |
 
 ---
 
@@ -848,6 +829,8 @@ Config-related endpoints for managing pipeline configuration at runtime.
 | `POST` | `/admin/config-versions/{id}/activate` | Activate a specific version |
 | `POST` | `/admin/cleanup-rules/apply` | Validate + apply a rule (creates new DB config version) |
 | `POST` | `/admin/cleanup-rules/dry-run` | Test rules against a markdown sample without ingesting |
+| `GET` | `/admin/cleanup-rules/export` | Export the active cleanup rules as JSON |
+| `POST` | `/admin/cleanup-rules/import` | Import a cleanup rules JSON bundle (creates new DB config version) |
 | `DELETE` | `/admin/cleanup-rules/{rule_name}` | Remove a rule by name (creates new DB config version) |
 | `POST` | `/admin/cleanup-rules/suggest` | Ask the LLM to suggest a rule from sample markdown |
 
@@ -877,8 +860,8 @@ Config-related endpoints for managing pipeline configuration at runtime.
 
 Alternatively, call the API directly:
 ```bash
-curl -X POST http://localhost:18080/admin/cleanup-rules/dry-run \
-  -H "Authorization: Bearer $TOKEN" \
+curl -X POST http://localhost:28080/admin/cleanup-rules/dry-run \
+  -H "X-Atlas-Admin-Token: $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "markdown_sample": "Hello &amp; world",
@@ -902,10 +885,10 @@ You can roll back to any previous version:
 
 ```bash
 # List versions
-curl http://localhost:18080/admin/config-versions \
-  -H "Authorization: Bearer $TOKEN"
+curl http://localhost:28080/admin/config-versions \
+  -H "X-Atlas-Admin-Token: $TOKEN"
 
 # Activate a specific version
-curl -X POST http://localhost:18080/admin/config-versions/3/activate \
-  -H "Authorization: Bearer $TOKEN"
+curl -X POST http://localhost:28080/admin/config-versions/3/activate \
+  -H "X-Atlas-Admin-Token: $TOKEN"
 ```

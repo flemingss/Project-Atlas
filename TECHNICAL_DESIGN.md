@@ -1,4 +1,4 @@
-# Project Atlas — Technical Design (Feb 2026)
+# Project Atlas — Technical Design (Aug 2026)
 
 This document is the build-continuity technical design for Project Atlas. It covers:
 
@@ -99,7 +99,7 @@ Notes:
 - ✅ `POST /rag/ingest/file`
   - stores the original file as an artifact
   - uses layout-aware ONNX parser or Docling for PDF/Office parsing with guardrails (max bytes, max pages, timeout, quality gates)
-  - Four parser backends: `auto` (Docling first → layout fallback), `auto_layout` (layout first → Docling fallback), `layout` (layout only), `docling` (Docling only). Selection is whole-document, not per-page.
+  - Five parser backends, built as strategies in `pipeline/parsers.py`: `auto` (Docling first → layout fallback), `auto_layout` (layout first → Docling fallback), `vision` (VLM per-page), `layout` (layout only), `docling` (Docling only). Selection is whole-document, not per-page.
   - persists Docling JSON ground truth + markdown projection as artifacts
   - surfaces `extraction_meta` (backend, OCR confidence, layout confidence, scanned flag) in the response
   - falls back to text extraction when both parsers are unavailable
@@ -116,10 +116,15 @@ Notes:
 
 ### 3.4 LLM provider abstraction
 
-- ✅ Provider protocol `ILlmProvider` with `chat()` and `embed()`
-- ✅ OpenAI-compatible provider (LM Studio typical) for chat+embeddings
+- ✅ Provider protocol `ILlmProvider` with `chat()` and `embed()`; multimodal `ChatMessage` (`content: str | list[dict]`) for vision calls
+- ✅ OpenAI-compatible provider (`llm/openai_compat.py`) backs every real backend — LM Studio, OpenRouter, and the embeddings sidecar. Strips closed and unclosed `<think>` blocks, logs `finish_reason`, raises on `length` truncation
 - ✅ Deterministic provider for repeatable local tests: `embed()` returns stable SHA-256-derived vectors; `chat()` returns heuristic responses for judge (score/rationale), refine (improved markdown), and metadata (JSON tags)
-- 🟨 Frontier providers are present in config shape (OpenAI/Anthropic) but not implemented
+- ✅ **Hosted generation through OpenRouter**: the `openrouter` provider (an OpenAI-compatible gateway) is implemented and is the shipped default. **Zero-data-retention is enforced per request** — `enforce_zdr: true` adds `provider: {zdr: true}` to every request body, restricting routing to ZDR-compliant endpoints
+- ✅ **LLM profiles** (`llm/profiles.py`): a profile is a named patch applied over **both** `models.yaml` and `pipeline.yaml`, so model ids and the tuning that has to move with them switch together. Selected by `ATLAS_LLM_PROFILE`, else `active_profile` in `config/models.yaml`:
+  - `local` — generation on LM Studio; `max_context_tokens: 16384`, `refine_max_section_tokens: 6000`, `judge_max_context_tokens: 32000`
+  - `api` — generation on OpenRouter (default); `max_context_tokens: 1048576`, `refine_max_section_tokens: 50000`, `judge_max_context_tokens: 1310720`
+- ✅ **Embeddings are infrastructure, not a profile choice**: `embed_model` sits in `PROFILE_IMMUTABLE_ROLES` and a profile that tries to override it fails at load. Embeddings are served by a CPU **`embeddings` sidecar** in docker compose (`text-embeddings-inference`, reachable as `http://embeddings:80` on the compose network, host port `18090`). The Atlas API itself is on host port `28080`
+- ✅ **Privacy posture**: there is no sensitivity-based provider-routing block. `is_sensitive` remains a per-document flag (it reaches Qdrant payloads, the HITL priority multiplier, and exports) but does **not** gate provider selection; the privacy guarantee rests on enforced zero-data-retention
 
 ### 3.5 Vector store integration
 
@@ -130,37 +135,40 @@ Notes:
 
 - ✅ Pipeline state machine (`PipelineStateManager`) and orchestrator (`PipelineOrchestrator`) under `src/atlas/pipeline/*`
 - ✅ 11-node pipeline: INGEST → CLEANUP → JUDGE → REFINE → METADATA → EMBEDDINGS → CHUNKING → COMMIT (+ HITL, COMPLETED, FAILED)
-- ✅ **Cleanup node** (`pipeline/cleanup.py`): deterministic markdown cleanup between Ingest and Judge. Five built-in transforms (normalise whitespace, strip broken links, repair heading hierarchy, strip trailing whitespace, static checks) plus five configurable builtin extraction-artifact fixes (`html_unescape`, `fix_ligatures`, `strip_zero_width_chars` — ON by default; `strip_page_numbers` — ON by default; `strip_repetitive_lines` — OFF by default; via `builtin_cleanup:` config section). Produces `CleanupResult`. Accepts optional `doc_context` and `config` to apply config-driven cleanup rules after built-in transforms.
-- ✅ **Cleanup rules engine** (`pipeline/cleanup_rules.py`): declarative, first-match-wins rule engine for per-corpus / per-mime-type cleanup. Seven step handlers: `strip_lines_matching`, `rewrite_pattern`, `strip_headers_footers`, `normalize_headings`, `merge_hardwrapped_paragraphs`, `fix_bullets`, `html_unescape`. Rules configured in `pipeline.yaml` `cleanup_rules:` section. Rule tags (`hard_failure`, `suspicious_content`, `auto_fix_only`) influence routing decisions. `html_unescape` handler delegates to the shared builtin implementation.
-- ✅ **Judge node** (`pipeline/judge.py`): multi-dimensional rubric — FAITHFULNESS, FORMATTING, COHESION, HALLUCINATION_RISK (each 1–5). Composite score = rounded mean. Per-dimension rationale for scores below 4 with specific issues and improvement guidance. Four few-shot examples including a mixed-score example. Error fallback `score=3` / `needs_refinement=False` (neutral — transient failures don’t burn retries). Legacy single-SCORE fallback preserved. Versioned `judge_version` (model + prompt hash).
-- ✅ **Refine node** (`pipeline/refine.py`): configurable max retries, triggers HITL when exhausted. Receives rich judge context (sub-scores with focus markers, rationale, iteration context). Content-safety guardrails: tightened system prompt ("MUST NOT summarise, condense, or omit"), `min_preservation_ratio` (default 0.85) rejects outputs shorter than 85% of input. Sectional refinement for documents exceeding `max_context_tokens`. Section-count preservation guard (rejects if ≥20% headings lost). LLM artifact stripping (`strip_llm_artifacts()`). Dynamic `max_tokens` per call. Only successful refinements count against retry limit; hard cap at 2× max retries for total attempts. Versioned `refine_version` v2.
-- ✅ **Metadata node**: tiered (tier1 / tier2) with configurable per-doc tier2 cap
+- ✅ **Cleanup node** (`pipeline/cleanup.py`): deterministic markdown cleanup between Ingest and Judge. Five built-in transforms (normalise whitespace, strip broken links, repair heading hierarchy, strip trailing whitespace, static checks) plus five configurable builtin extraction-artifact fixes via the `builtin_cleanup:` config section — `html_unescape`, `fix_ligatures`, `strip_zero_width_chars` and `strip_page_numbers` are ON by default; only `strip_repetitive_lines` is OFF by default (`strip_page_numbers` is additionally skipped for `parse_profile == "pdf_layout"`). Produces `CleanupResult`. Accepts optional `doc_context` and `config` to apply config-driven cleanup rules after built-in transforms.
+- ✅ **Cleanup rules engine** (`pipeline/cleanup_rules.py`): declarative, first-match-wins rule engine for per-corpus / per-mime-type cleanup. Eight step handlers (`_STEP_REGISTRY`): `strip_lines_matching`, `rewrite_pattern`, `strip_headers_footers`, `normalize_headings`, `fix_numbered_headings`, `merge_hardwrapped_paragraphs`, `fix_bullets`, `html_unescape`. Rules configured in `pipeline.yaml` `cleanup_rules:` section; the stock config ships `cleanup_rules: []` (commented examples inline) and the reference rule set lives in `personal_configs/`. Rule tags (`hard_failure`, `suspicious_content`, `auto_fix_only`) influence routing decisions. `html_unescape` handler delegates to the shared builtin implementation.
+- ✅ **Judge node** (`pipeline/judge.py`): multi-dimensional rubric — FAITHFULNESS, FORMATTING, COHESION, HALLUCINATION_RISK (each 1–5). Composite score = rounded mean. Per-dimension rationale for scores below 4 with specific issues and improvement guidance. Four few-shot examples including a mixed-score example. Error fallback `score=3` / `needs_refinement=False` (neutral — transient failures don’t burn retries). Legacy single-SCORE fallback preserved. Versioned `judge_version` (model + prompt hash). **Oversize guard**: the judge embeds the whole document in its prompt with no truncation, so documents estimated above `limits.judge_max_context_tokens` skip grading instead of failing ingest with an over-length request — they are still cleaned, chunked, embedded and searchable, just not quality-gated or refined.
+- ✅ **Refine node** (`pipeline/refine.py`): configurable max retries, triggers HITL when exhausted. Receives rich judge context (sub-scores with focus markers, rationale, iteration context). Content-safety guardrails: tightened system prompt ("MUST NOT summarise, condense, or omit"), `min_preservation_ratio` (default 0.85) rejects outputs shorter than 85% of input. Sectional refinement when `tokens.fits_in_context()` fails either ceiling — the context budget (`limits.max_context_tokens`) **or** the refine model's `max_output_tokens` — splitting on headings at `limits.refine_max_section_tokens`. Section-count preservation guard (rejects if ≥20% headings lost). LLM artifact stripping (`strip_llm_artifacts()`, extracted to `pipeline/guardrails.py`). Dynamic `max_tokens` per call. Only successful refinements count against retry limit; hard cap at 2× max retries for total attempts. Versioned `refine_version` v2.
+- ✅ **Metadata node** (`pipeline/metadata.py`): fully implemented and on the runtime path (not a scaffold). Runs **once per document**, not per chunk, and only sees `content[:1000]`. Tier 2 (`metadata_tier2_model`) is selected for borderline judge scores (3–4), subject to `limits.tier2_chunk_cap_per_document`; the single resulting tag set is copied onto every chunk payload.
 - ✅ **Unified routing** (`pipeline/routing.py`): `decide_next_step()` pure function centralises all branching (fail-fast on composite ≤ `fail_fast_score`, per-dimension floor checks, cleanup-rejudge with cycle guard (max 1), standard refine/HITL paths, rule-tag-aware cleanup routing — `hard_failure`→FAILED, `suspicious_content`→HITL). `RoutingDecision` includes `rollback: bool` field. Score regression rollback (refine made score worse → revert markdown, route appropriately). Diminishing-returns detection (score unchanged after refine → HITL). `content_ok` check includes `hallucination_risk`. `PipelineStateManager.get_next_node()` delegates here.
 - ✅ **Retry/backoff** (`retry.py`): `RetryConfig` + `async_retry()` / `sync_retry()` decorators. Applied to `openai_compat.py`, `qdrant_store.py`, `docling_adapter.py`. Config-driven per subsystem via `pipeline.yaml` `retry:` section.
-- ✅ **Chunk QA + fallback** (`rag/chunk_qa.py`): post-chunking validation + automatic fallback (semantic→paragraph, hierarchical→paragraph). Bounds configurable via `pipeline.yaml` `chunking.qa:` section.
+- ✅ **Chunk QA + fallback** (`rag/chunk_qa.py`): `validate_chunks()` gates on `min_chunk_count`, `max_token_ratio_limit`, `max_duplication_ratio` and `min_coverage_ratio`; min/max/average token counts are reported in `ChunkQAResult` but are not pass/fail bounds. On failure `chunk_with_fallback()` retries a simpler strategy (semantic→paragraph, hierarchical→paragraph). Bounds configurable via `pipeline.yaml` `chunking.qa:` section.
 - ✅ **Docling health score** (`ingest/docling_health.py`): `compute_health()` evaluates extraction quality signals into a 1–5 composite score, stored on `PipelineContext`.
-- ✅ Pipeline runner is wired into `/rag/ingest/*` endpoints (text + file) and executes the full agentic loop with cleanup, chunk QA fallback, and health scoring. Runner consolidated into ~996 lines with 5 shared helpers. HITL tasks include rich context (judge sub-scores, rationale, score history, refine attempts). HITL resume guarded by `MAX_HITL_RESUMES=2`. `max_refine_retries` read from `limits` section with backwards-compat fallback.
+- ✅ Pipeline runner is wired into `/rag/ingest/*` endpoints (text + file) and executes the full agentic loop with cleanup, chunk QA fallback, and health scoring. Runner is 1203 lines with 5 shared helpers. HITL tasks include rich context (judge sub-scores, rationale, score history, refine attempts). HITL resume guarded by `MAX_HITL_RESUMES=2`. `max_refine_retries` read from `limits` section with backwards-compat fallback.
 - ✅ No LangGraph dependency exists today
 
 Notes:
 
 - Prompts/parsing are v1 and will evolve; the pipeline contract is stable.
-- Pipeline config (`pipeline.yaml`) includes `retry:`, `chunking.qa:`, `judge_dim_floors:` (formatting/cohesion floors default to 2), `fail_fast_score`, `cleanup_rejudge` (default `true`), `limits.refine_max_retries` (default 3), and `cleanup_rules:` sections.
+- Pipeline config (`pipeline.yaml`) includes `retry:`, `chunking.qa:`, `builtin_cleanup:`, `judge_dim_floors:` (formatting/cohesion floors default to 2), `fail_fast_score`, `cleanup_rejudge` (default `true`), `limits.refine_max_retries` (default 3), `limits.max_context_tokens`, `limits.refine_max_section_tokens`, `limits.judge_max_context_tokens`, and `cleanup_rules:` (ships empty). The three `limits.*` context values are profile-driven.
+- Removed from `pipeline.yaml`: the `frontier_fallback:`, `cache:` (a semantic cache was never implemented) and `privacy:` blocks, along with `thresholds.judge_borderline_low/high`. Settings `atlas_redis_url`, `atlas_layout_table_extraction` and `atlas_heavy_task_limit` are likewise gone.
 
 ### 3.7 HITL
 
 - ✅ Durable HITL tasks are persisted in Postgres (`hitl_tasks`) with a small CRUD/queue API under `/admin/hitl/*`
-- 🟨 In-memory HITL queue exists (`src/atlas/hitl.py`) but is no longer the primary runtime path
+- ✅ HITL priority scoring and CRUD live in `hitl_ledger.py`; routes live in `admin/hitl.py`. The old in-memory `src/atlas/hitl.py` manager (`HITLManager` / `get_hitl_manager`) has been deleted — the durable ledger is the only path
 - 🟨 “Push to Dify” remains explicitly a placeholder/optional experiment
 ### 3.8 Cleanup feedback & metrics
 
+`api_admin.py` is now a thin (175-line) aggregator; the admin surface lives in `src/atlas/admin/*` (`cleanup_rules.py`, `config.py`, `exports.py`, `hitl.py`, `looking_glass.py`, `maintenance.py`, `scope.py`, `workflow.py`).
+
 - ✅ **Cleanup feedback model** (`models.py`): `CleanupFeedback` table with tenant/project/corpus/doc/chunk scoping, category, description, source spans, run_id FK, and metadata JSON.
 - ✅ **Feedback ledger** (`feedback_ledger.py`): CRUD helpers — `create_feedback`, `get_feedback`, `list_feedback`, `delete_feedback`, `feedback_category_counts`.
-- ✅ **Cleanup feedback API** (`api_admin.py`): five endpoints under `/admin/cleanup-feedback` — create (POST, 201), list (GET, scoped), categories (GET, aggregation), get by ID, delete by ID.
-- ✅ **Metrics aggregation API** (`api_admin.py`): `GET /admin/looking-glass/metrics` with optional tenant/project/corpus scoping. Returns workflow status distribution, node failure rates by node name, HITL escalation rates, auto-accepted counts, and cleanup-feedback category counts.
+- ✅ **Cleanup feedback API** (`admin/cleanup_rules.py`): five endpoints under `/admin/cleanup-feedback` — create (POST, 201), list (GET, scoped), categories (GET, aggregation), get by ID, delete by ID.
+- ✅ **Metrics aggregation API** (`admin/looking_glass.py`): `GET /admin/looking-glass/metrics` with optional tenant/project/corpus scoping. Returns workflow status distribution, node failure rates by node name, HITL escalation rates, auto-accepted counts, and cleanup-feedback category counts.
 - ✅ **LLM-assisted rule suggestion** (`rule_suggester.py`): `suggest_cleanup_rule()` accepts sample markdown + issues, calls the LLM (via `ModelRegistry`), and returns `{rule_yaml, rationale}`. Heuristic fallback when LLM unavailable. Deterministic provider branch for CI.
-- ✅ **Rule suggestion endpoint** (`api_admin.py`): `POST /admin/cleanup-rules/suggest` — resolves `chat_model` or `refine_model`, invokes `suggest_cleanup_rule()`, returns JSON suggestion.
-- ✅ **Cleanup rules import/export** (`api_admin.py`): `GET /admin/cleanup-rules/export` downloads active rules as YAML. `POST /admin/cleanup-rules/import` accepts YAML with `replace` (overwrite all) or `merge` (add/update by name) modes. Both validate rules against the schema before applying.
+- ✅ **Rule suggestion endpoint** (`admin/cleanup_rules.py`): `POST /admin/cleanup-rules/suggest` — resolves `chat_model` or `refine_model`, invokes `suggest_cleanup_rule()`, returns JSON suggestion.
+- ✅ **Cleanup rules import/export** (`admin/cleanup_rules.py`): `GET /admin/cleanup-rules/export` downloads active rules as YAML. `POST /admin/cleanup-rules/import` accepts YAML with `replace` (overwrite all) or `merge` (add/update by name) modes. Both validate rules against the schema before applying.
 
 ### 3.9 E2E and repeatability
 
@@ -177,20 +185,21 @@ Notes:
 ### 3.10 Operator UI
 
 - ✅ **React SPA Control Center** (`web/`, served at `/app`)
-  - Full operator console: Dashboard, Upload, Library, Search, Review, Document Editor, VLM Ingest Wizard
-  - Admin sub-pages: Health/Diagnostics, Config Management, Cleanup & Tuning, DB Reset
+  - Routes (SPA `basename="/app"`, mounted only at `/app`): index → Dashboard, `ingest`, `library`, `search`, `review`, `admin/{health,cleanup,groups,danger}`, and the Document Editor at `doc/:docId` / `run/:runId`. `upload` and `vlm-ingest` are redirects to `ingest`; there is no `/app/editor` route
+  - Admin sub-pages: Health/Diagnostics, Cleanup & Tuning, Groups, Danger Zone (DB reset)
   - Stack: Vite 6 + React 18 + TypeScript + shadcn/ui + Tailwind CSS + Zustand + TanStack React Query
   - Builds to `static/app/` via `npm run build`; Dockerfile multi-stage build
   - PDF.js viewer + CodeMirror 6 markdown editor with resizable panels
   - Tool palette: VLM Fix, LLM Refine, Strip Artifacts, Re-Judge, Save, Undo
   - See `web/README.md` for developer guide
-- ✅ **VLM Ingest Wizard** (`web/src/pages/vlm-ingest/`, served at `/app/vlm-ingest`)
-  - 7-step interactive workflow: start → configure → pages → process → review → stitch → commit
-  - PDF preview with red crop guide overlays, Fit Page/Width/Actual zoom modes (ResizeObserver auto-fit)
-  - Auto-advance page processing, per-page markdown correction, config export/import
+- ✅ **Unified Ingest wizard** (`web/src/pages/ingest/ingest-page.tsx`, served at `/app/ingest`)
+  - One 6-step workflow covering the text, Docling and VLM methods: method + upload → configure → pages (VLM) → process → review/stitch → commit
+  - PDF preview with red crop guide overlays and a mask editor, Fit Page/Width/Actual zoom modes (ResizeObserver auto-fit)
+  - Auto-advance page processing, per-page markdown correction, config export (import is handled client-side)
   - Session-expired recovery: red banner on backend 404, conditional polling stop
-  - Backend: 14-endpoint API router (`api_vlm_ingest.py`), auto-creates workflow run on commit for uploaded PDFs
-  - Headless mode: `IngestNode._vlm_parse()` for pipeline automation via `pipeline.yaml → pdf_parser.vlm`
+  - Backend: 16-endpoint API router (`api_vlm_ingest.py`), auto-creates workflow run on commit for uploaded PDFs
+  - The earlier separate `upload/` and `vlm-ingest/` pages have been deleted
+  - Headless mode: `VisionParser` (`backend: vision`) in `pipeline/parsers.py`, configured via `pipeline.yaml → pdf_parser.vlm`
 
 ### 3.11 Export and corpus management
 
@@ -254,7 +263,7 @@ Rationale:
 
 2) **Agentic pipeline (automation loop)**
    - ✅ Deterministic cleanup node (5 built-in transforms + 5 configurable builtins) between Ingest and Judge
-   - ✅ Config-driven cleanup rules engine (7 step handlers, first-match-wins, rule-tag routing)
+   - ✅ Config-driven cleanup rules engine (8 step handlers, first-match-wins, rule-tag routing)
    - ✅ Multi-dimensional judge (4 dimensions: faithfulness, formatting, cohesion, hallucination_risk)
    - ✅ Unified routing with fail-fast, per-dimension floor checks, cleanup-rejudge (cycle-guarded), rule-tag-aware escalation, score regression rollback, diminishing-returns detection
    - ✅ `RoutingDecision` with `rollback: bool` field for structured rollback signalling
@@ -314,9 +323,9 @@ Rationale:
    - ✅ LLM-assisted rule suggestion (on-demand endpoint to propose new cleanup rules from feedback patterns)
    - ✅ Admin UI "Cleanup & Tuning" page in React SPA
 9) **Operator UI**
-   - ✅ **React SPA Control Center** (`web/`, served at `/app`) — full operator console (Dashboard, Upload, Library, Search, Review, Editor, Admin) with Vite 6 + React 18 + TypeScript + shadcn/ui + Tailwind CSS. Builds to `static/app/`.
-   - ✅ **Document Editor** — PDF.js + CodeMirror 6 + VLM tools at `/app/editor`. See `web/README.md`.
-   - ✅ **VLM Ingest Wizard** — 7-step interactive VLM ingestion at `/app/vlm-ingest`. PDF preview with crop overlays, session-expired recovery, auto-create workflow run on commit for uploads. Headless mode via `IngestNode._vlm_parse()`.
+   - ✅ **React SPA Control Center** (`web/`, served at `/app`) — full operator console (Dashboard, Ingest, Library, Search, Review, Editor, Admin) with Vite 6 + React 18 + TypeScript + shadcn/ui + Tailwind CSS. Builds to `static/app/`.
+   - ✅ **Document Editor** — PDF.js + CodeMirror 6 + VLM tools at `/app/doc/{docId}` and `/app/run/{runId}`. See `web/README.md`.
+   - ✅ **Unified Ingest wizard** — 6-step ingest at `/app/ingest`, covering text, Docling and VLM methods. PDF preview with crop overlays and mask editor, session-expired recovery, auto-create workflow run on commit for uploads. Headless VLM mode via `VisionParser` (`backend: vision`).
 
 ---
 
@@ -421,19 +430,19 @@ This is sequenced to maximize repeatability and minimize fantasy risk.
 
 ### Phase 10 — Swappable parser backends & Docling-first default (v0.7.2)
 
-- ✅ **Swappable `pdf_parser.backend`**: IngestNode reads `pipeline.yaml → pdf_parser.backend` (was hardcoded env var). Four modes: `auto` (Docling first → layout fallback), `auto_layout` (layout first → Docling fallback), `layout` (deepdoc only), `docling` (Docling only).
+- ✅ **Swappable `pdf_parser.backend`**: IngestNode reads `pipeline.yaml → pdf_parser.backend` (was hardcoded env var). Modes: `auto` (Docling first → layout fallback), `auto_layout` (layout first → Docling fallback), `layout` (deepdoc only), `docling` (Docling only) — later joined by `vision` (Phase 12E). Strategy construction now lives in `pipeline/parsers.py`.
 - ✅ **Whole-document selection**: Parser backend chosen once per document (not per-page). This simplifies artifact tracking and avoids stitching inconsistencies.
 - ✅ **Config wiring**: `runner.py` passes `pipeline_cfg.get("pdf_parser")` to IngestNode constructor. `pipeline.yaml.example` and `PIPELINE_REFERENCE.md` updated.
 
 **Definition of done (Phase 10):** Docling is the primary parser for PDF ingest. Operators can override via `pipeline.yaml`. No code changes needed to swap backends.
 
-### Phase 11 — Pipeline quality & cleanup improvements (v0.7.3)
+### Phase 11 — Pipeline quality & cleanup improvements (v0.7.3-dev)
 
-- ✅ **Cleanup rules optimization**: Expanded from 7 to 10 rules, organized into logical sections (heading normalization, content stripping, bullet/list cleanup, paragraph repair). Added `fix_numbered_headings`, `strip_headers_footers`, `merge_hardwrapped_paragraphs`.
+- ✅ **Cleanup rules optimization**: `fix_numbered_headings` added to the step registry (now 8 handlers). The ~10-rule reference set, organized into logical sections (heading normalization, content stripping, bullet/list cleanup, paragraph repair), lives in `personal_configs/` — the stock `config/pipeline.yaml` ships `cleanup_rules: []`.
 - ✅ **Builtin cleanup expansion**: `strip_repetitive_lines` added as a configurable builtin (default OFF). `strip_page_numbers` remains ON by default.
 - ✅ **Sectional refinement**: Refine node uses section-count guard and `max_tokens` scaled to input length. `min_preservation_ratio` raised from 0.6 → 0.85.
 - ✅ **LLM artifact stripping**: `strip_llm_artifacts()` removes leaked `<think>` blocks, markdown fences, preamble/postamble boilerplate. Applied as a post-refine step.
-- 🔲 **`<think>` tag regex fix**: `_THINK_TAG_RE` in `openai_compat.py` needs to handle unclosed tags (Qwen3 output truncated mid-thought). Also needs `finish_reason` checking.
+- ✅ **`<think>` tag regex fix**: `openai_compat.py` now strips both closed and unclosed reasoning tags (per-tag compiled pair), logs `finish_reason`, and raises on `finish_reason == "length"` rather than returning truncated text.
 
 **Definition of done (Phase 11):** Docling + improved cleanup produces ≤10% noise in refined output for representative corpus. Artifact stripping catches common LLM leaks.
 
@@ -445,8 +454,8 @@ This phase adds operator tooling for surgical document refinement and a vision-l
 - ✅ Multimodal `ChatMessage`: `content` field becomes `str | list[dict]` to support `image_url` blocks.
 - ✅ `page_renderer.py`: PyMuPDF-based page-to-PNG with configurable DPI and header/footer crop margins.
 - ✅ `vision_model` role in `models.yaml` (e.g. `qwen2.5-vl-32b` or `qwen3.5-35b-a3b`).
-- ✅ `/api/vision-refine` endpoint: accepts `(doc_id, page, section_index)`, renders page, sends to VLM with current markdown, returns corrected markdown.
-- ✅ Editor API (`api_editor.py`): 9 endpoints — `resolve-doc`, `page-info`, `source-pdf`, `markdown`, `page-markdown`, `vision-refine`, `save-markdown`, `llm-refine`, `re-judge`.
+- ✅ `/api/editor/vision-refine` endpoint: accepts `(doc_id, page, section_index)`, renders page, sends to VLM with current markdown, returns corrected markdown.
+- ✅ Editor API (`api_editor.py`, prefix `/api/editor`): 10 endpoints — `resolve-doc`, `page-info`, `render-page`, `source-pdf`, `markdown`, `page-markdown`, `vision-refine`, `save-markdown`, `llm-refine`, `re-judge`.
 
 **Phase 12B — Standalone Document Editor ✅ (completed, then superseded by 12C):**
 - ✅ Zero-build-step HTML/JS page served by FastAPI at `/editor`. (Now replaced by React SPA — see 12C.)
@@ -468,10 +477,10 @@ This phase adds operator tooling for surgical document refinement and a vision-l
 **Phase 12E — VLM-first parser backend ✅ (completed):**
 - ✅ `backend: vision` mode in `pdf_parser.backend`: render all pages → VLM → stitch markdown.
 - ✅ `vlm_ingest` package: deterministic page stitcher (dedup, table merge, heading merge) + session manager (in-memory registry, TTL, config serialization).
-- ✅ 14-endpoint API router (`/api/editor/vlm-ingest/*`): start session (run ID or upload), configure, thumbnails, preview (with crop overlay params), process page, stitch, commit, export config.
-- ✅ Interactive wizard React SPA page (`/app/vlm-ingest`): 7-step workflow (start → configure → pages → process → review → stitch → commit). PDF preview with crop guide overlays, Fit Page/Width/Actual zoom modes, auto-advance processing, per-page markdown correction.
-- ✅ Headless VLM parse in `IngestNode._vlm_parse()` — per-page isolation, deterministic stitch, config from `pipeline.yaml`.
-- ✅ Config export/import for headless reuse across documents.
+- ✅ 16-endpoint API router (`/api/editor/vlm-ingest/*`): start session (run ID or upload), list/get/delete sessions, configure, export config, page analysis, thumbnails, preview (with crop overlay params), process page, process all, stitch, commit, get/update per-page result. There is no import route — config import is client-side.
+- ✅ Interactive wizard folded into the unified React ingest page (`/app/ingest`): 6-step workflow (method + upload → configure → pages → process → review/stitch → commit). PDF preview with crop guide overlays and mask editor, Fit Page/Width/Actual zoom modes, auto-advance processing, per-page markdown correction.
+- ✅ Headless VLM parse via `VisionParser` in `pipeline/parsers.py` — per-page isolation, deterministic stitch, config from `pipeline.yaml`.
+- ✅ Config export for headless reuse across documents (import is applied client-side).
 - ✅ 55+ new tests (stitcher, session, API-level) — all passing.
 - ✅ Session-expired recovery: red banner UI on backend session loss (404), conditional polling stop, `isSessionNotFoundError()` helper across all mutation hooks.
 - ✅ E2E wiring audit: fixed page-correction flicker, commit `runId` update for uploads, polling stop on 404.
@@ -499,7 +508,23 @@ This phase adds operator tooling for surgical document refinement and a vision-l
 **How to run:**
 
 - Example golden set: eval/retrieval_golden.example.json
-- Command: python scripts/retrieval_eval.py --api-url http://127.0.0.1:18080 --golden eval/retrieval_golden.example.json --out retrieval_report.json
+- Command: python scripts/retrieval_eval.py --api-url http://127.0.0.1:28080 --golden eval/retrieval_golden.example.json --out retrieval_report.json
+
+### Phase 14 — LLM profile migration & hosted generation (landed)
+
+Generation moved off a single local GPU and onto a hosted OpenAI-compatible gateway, with the
+whole posture (model ids *and* the tuning that has to move with them) switching as one unit.
+
+- ✅ **`openrouter` provider**: OpenAI-compatible gateway wired through the existing `openai_compat` provider — no new provider type.
+- ✅ **LLM profiles** (`llm/profiles.py`): `local` (LM Studio) and `api` (OpenRouter). Selected by `ATLAS_LLM_PROFILE`, else `active_profile` in `config/models.yaml`. A profile patches **both** `models.yaml` and `pipeline.yaml`; `api` is the shipped default.
+- ✅ **Zero-data-retention enforced per request**: `enforce_zdr: true` adds `provider: {zdr: true}` to every request body. A 400/404/422 under ZDR raises with an explanatory message rather than silently falling back.
+- ✅ **Embeddings sidecar**: a CPU `text-embeddings-inference` container in docker compose (`http://embeddings:80` internally, host port `18090`). `embed_model` is profile-immutable — swapping the embedder under an existing corpus corrupts retrieval silently when the dimension matches. Atlas API is on host port `28080`.
+- ✅ **Dual-ceiling context check**: `tokens.fits_in_context()` checks the context budget *and* the refine model's `max_output_tokens`. Setting `max_context_tokens` to a model's advertised window without this check silently truncates every long refine.
+- ✅ **`limits.judge_max_context_tokens`**: documents above the judge's budget **skip** quality grading instead of failing ingest with an over-length request. They are still cleaned, chunked, embedded and searchable — just not graded or refined.
+- ✅ **Removals**: `concurrency.py` (`ConcurrencyGuard` / `ResourceGuard` / `ResourceMetrics` / the only `PrivacyGuard` implementation) and `hitl.py` (`HITLManager`) are deleted, together with the `frontier_fallback:`, `cache:` and `privacy:` config blocks, `thresholds.judge_borderline_low/high`, and the `atlas_redis_url` / `atlas_layout_table_extraction` / `atlas_heavy_task_limit` settings.
+- ✅ **Privacy decision**: the sensitivity-based routing block is gone by decision. `is_sensitive` still flags documents (Qdrant payloads, HITL priority, exports) but does not gate provider routing; privacy rests on enforced zero-data-retention.
+
+**Definition of done (Phase 14):** one switch (`ATLAS_LLM_PROFILE`) moves the whole generation posture; embeddings never move with it; no request leaves the appliance without ZDR asserted.
 
 ---
 
@@ -559,17 +584,17 @@ The minimum “human shakedown ready” bar:
 - The system deterministically produces committed chunks and a package export
 - When automation fails, operators have a HITL queue to resolve issues
 - Every decision is traceable (which model/provider/config, which run, why it paused)
-- Operators have a React SPA UI for upload, corpus browsing, HITL review, and Looking Glass views
+- Operators have a React SPA UI for ingest, corpus browsing, HITL review, and Looking Glass views
 
 ---
 
 ## 9) Documentation
 
-Project documentation was consolidated in v0.7.3 to reduce maintenance burden:
+Project documentation was consolidated in v0.7.3-dev to reduce maintenance burden:
 
 - **Removed**: `HLD.md` (superseded by this doc + ARCHITECTURE.md), `PDF_OVERHAUL_PLAN.md` (completed — absorbed into Phases 10-11), `VALIDATION_REPORT.md` (frozen v0.7.0 snapshot), `CAPABILITIES_AUDIT.md` (extreme maintenance burden — capability status tracked here and in CHANGELOG).
 - **Authoritative docs**: This file (build-continuity/roadmap), `ARCHITECTURE.md` (current system state), `README.md` (quickstart), `config/PIPELINE_REFERENCE.md` (config reference).
-- **Supplementary**: `E2E_TEST_GUIDE.md`, `OPTEST.md`, `PIPELINE_QUALITY_IMPROVEMENTS.md`, `web/README.md`.
+- **Supplementary**: `E2E_TEST_GUIDE.md`, `OPTEST.md`, `BUILD_VARIANTS.md`, `PIPELINE_QUALITY_IMPROVEMENTS.md`, `web/README.md`, `web/STYLE_GUIDE.md`.
 
 ---
 

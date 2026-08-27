@@ -50,8 +50,30 @@ Then run:
 
 - `./scripts/optest.ps1 -Mode lmstudio`
 
-## UI\n\nThe React SPA is built into the Docker image and served at `/app` (port 18080).\nNo separate UI service is needed.
+## Ports
+
+The optest stack publishes Atlas on host port **18080** (`docker-compose.optest.yml`).
+This is deliberately different from the main stack (`docker-compose.yml`), which
+publishes Atlas on **28080** and the CPU embeddings sidecar on **18090** — 18080
+is left free there so both stacks can run side by side.
+
+Inside either compose network Atlas still listens on `8080`; the E2E containers
+reach it as `http://atlas:8080`.
+
+## UI
+
+The React SPA is built into the Docker image and served at `/app` (port 18080 in the optest stack, 28080 in the main stack).
+No separate UI service is needed.
 
 ## PDF ingest (Docling)
 
-Docling is a required dependency for PDF/Office parsing.
+The optest stack builds the full image (`Dockerfile`), where Docling is a base
+dependency and handles PDF/Office parsing.
+
+Docling is **not** required by Atlas as a whole. `Dockerfile.slim` is an
+explicitly supported Docling-free variant (see `BUILD_VARIANTS.md`): there PDFs
+route through the VLM path — `pdf_parser.backend: vision`, served by
+`VisionParser` in `src/atlas/pipeline/parsers.py`. The `auto` / `auto_layout`
+backends fall back via `FallbackParser` to the deepdoc layout parser, which
+needs `cv2` + `onnxruntime` — also absent from the slim image — so a slim
+deployment should be configured for the `vision` backend.

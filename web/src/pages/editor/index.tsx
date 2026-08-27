@@ -3,8 +3,8 @@
  * status bar at bottom, and toolbar above the editor.
  *
  * Routes:
- *   /editor/doc/:docId   → resolve doc → get runId
- *   /editor/run/:runId   → use runId directly
+ *   /app/doc/:docId   → resolve doc → get runId
+ *   /app/run/:runId   → use runId directly
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';

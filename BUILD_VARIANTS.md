@@ -9,9 +9,10 @@ Project Atlas offers two Docker build configurations to match different deployme
 | **Image Size** | ~13.8 GB | ~1.5–2.0 GB |
 | **Build Time** | 30–40 min | 5–10 min |
 | **Memory (runtime)** | ~6 GB | ~1–2 GB |
-| **Docling Support** | ✓ Full PDF parsing + OCR + layout analysis | ✗ Removed |
+| **Docling Support** | ✓ Docling PDF/Office parsing | ✗ Removed |
+| **Layout/OCR Parser** | ✓ deepdoc ONNX layout + OCR + table recognition | ✗ Removed (needs `onnxruntime` + `cv2`) |
 | **VLM Support** | ✓ Full | ✓ Full |
-| **LLM Serving** | ✓ Can bundle LLMs (with extras) | ✓ Must be external |
+| **LLM Serving** | External (LM Studio / OpenRouter, via `ATLAS_LLM_PROFILE`) | External (same) |
 | **Ideal For** | Enterprise, multi-method ingest | VLM-only, edge deployments, dev |
 
 ## Full Dockerfile
@@ -24,8 +25,9 @@ Project Atlas offers two Docker build configurations to match different deployme
 
 **What's included:**
 - Docling with onnxruntime, torch, layout models (~7 GB of deps)
-- Full OpenCV with GPU support (optional)
-- All OCR/ML models auto-downloaded on first run
+- OpenCV (`opencv-python-headless`) plus the X11/GL shared libraries it needs
+- deepdoc ONNX layout/OCR/table models, downloaded on first run from
+  HuggingFace `InfiniFlow/deepdoc` by `src/atlas/ingest/model_manager.py`
 
 **Build:**
 ```bash
@@ -44,8 +46,10 @@ docker compose build
 - ✗ `docling` — not needed for VLM path
 - ✗ `onnxruntime` — ML inference runtime (~5 GB)
 - ✗ `torch`, transformers — deep learning frameworks (~3 GB)
-- ✗ Layout/OCR models — auto-downloaded by Docling
-- ✗ OpenCV — computer vision library (slim base already has Python)
+- ✗ Layout/OCR models — the deepdoc ONNX models fetched at runtime from
+  HuggingFace `InfiniFlow/deepdoc` by `src/atlas/ingest/model_manager.py`.
+  These belong to the deepdoc layout parser and are independent of Docling.
+- ✗ OpenCV — computer vision library, used only by the deepdoc OCR/layout path
 
 **What's kept:**
 - FastAPI, Uvicorn — web server
@@ -56,14 +60,22 @@ docker compose build
 - VLM ingest — page rendering, stitching
 - RAG endpoints — search, retrieval, QA
 
+**Required config:** with both Docling and `onnxruntime`/`cv2` absent, the
+`auto`, `auto_layout`, `layout` and `docling` PDF backends cannot run. Set the
+VLM backend explicitly in `config/pipeline.yaml`:
+
+```yaml
+pdf_parser:
+  backend: vision
+```
+
 **Build:**
 ```bash
-# Option 1: Use the slim compose file
 docker compose -f docker-compose.slim.yml build
-
-# Option 2: Override dockerfile path
-docker compose build --file Dockerfile.slim attr
 ```
+
+`docker-compose.slim.yml` points the `atlas` service at `Dockerfile.slim` and
+publishes it on host port 28080, same as the main stack.
 
 ## Migration Guide
 
@@ -80,34 +92,41 @@ docker compose build --file Dockerfile.slim attr
 
 **Steps:**
 1. Ensure all PDFs use VLM ingest method
-2. Update `docker-compose.yml` to use `Dockerfile.slim`
-3. Rebuild: `docker compose build --no-cache`
-4. Restart: `docker compose up -d`
+2. Switch to `docker-compose.slim.yml` (it already selects `Dockerfile.slim`)
+3. Set `pdf_parser.backend: vision` in `config/pipeline.yaml`
+4. Rebuild: `docker compose -f docker-compose.slim.yml build --no-cache`
+5. Restart: `docker compose -f docker-compose.slim.yml up -d`
 
 ### From Slim to Full
 
-1. Revert `docker-compose.yml` to use `Dockerfile`
+1. Switch back to `docker-compose.yml` (it uses `Dockerfile`)
 2. Rebuild: `docker compose build --no-cache`
 3. Restart: `docker compose up -d`
-4. Docling path is now available
+4. The Docling and deepdoc layout paths are available again — `pdf_parser.backend`
+   can return to `auto`
 
 ## Implementation Details
 
-### Dockerfile.slim dependency pinning
+### Dockerfile.slim dependency list
 
-Explicit version pins in slim variant ensure reproducibility:
+The slim variant bypasses `pyproject.toml`'s dependency list (which requires
+`docling` and `onnxruntime`) and installs an explicit subset with the same
+lower-bound constraints:
 ```dockerfile
-pip install \
-    fastapi==0.110.0 \
-    uvicorn[standard]==0.27.0 \
-    sqlalchemy==2.0.25 \
-    'psycopg[binary]==3.1.18' \
-    qdrant-client>=1.9.0 \
-    PyMuPDF==1.24.0 \
+RUN pip install --no-cache-dir \
+    "fastapi>=0.110" \
+    "uvicorn[standard]>=0.27" \
+    "sqlalchemy>=2.0" \
+    "psycopg[binary]>=3.1" \
+    "qdrant-client>=1.9.0" \
+    "PyMuPDF>=1.24.0" \
     ...
 ```
 
-Full `Dockerfile` uses `pyproject.toml` with looser version constraints for flexibility.
+The source package is then installed with `pip install --no-deps .` so the
+excluded dependencies are not pulled back in. Neither variant hard-pins
+versions; reproducibility comes from the lockfiles (`requirements.lock`,
+`uv.lock`).
 
 ### OS Libraries Reduction
 
@@ -132,8 +151,11 @@ RUN apt-get install libpq5
 
 Slim variant is 7x faster to build and pull due to:
 - No torch/CUDA compilation
-- No model auto-downloads
+- No OpenCV/X11 OS library layer
 - Smaller layer cache hits
+
+It also never downloads the deepdoc ONNX models at runtime, so first-boot time
+is lower too.
 
 ### Runtime Performance
 
