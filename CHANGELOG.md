@@ -12,6 +12,68 @@ Version numbering note: the last tag is `v0.8.0` and `pyproject.toml` now reads
 was never released under that number). The work in this section has no version
 assigned yet — pick the next version and bump both when it ships.
 
+### Removed (2026-08-27, compose consolidation)
+- **Compose surface consolidated to two stacks — dev and prod.** Deleted
+  `docker-compose.e2e.yml`, `docker-compose.optest.yml`,
+  `docker-compose.slim.yml`, `Dockerfile.slim`, `scripts/optest.ps1`,
+  `scripts/e2e_runner.py`, `OPTEST.md`, `BUILD_VARIANTS.md`, and
+  `E2E_TEST_GUIDE.md`. The e2e/optest stacks predate the embeddings sidecar
+  and LLM profiles (their Atlas service had no `embeddings` dependency, so
+  ingest could not work against current code), and the slim variant was an
+  unused fork of the image spec. `scripts/e2e_scenarios.py` survives and runs
+  against the live dev stack (see README "E2E Scenario Tests"). Everything
+  else is recoverable from git history if a CI harness is revived.
+
+### Fixed (2026-08-27, operator testing round 1)
+- **Embeddings batched client-side** (`src/atlas/llm/openai_compat.py`): `embed()`
+  sent every text in one request; the TEI sidecar rejects >32 inputs per call
+  (its default `--max-client-batch-size`) with a 422, so any real document
+  failed at commit (first hit: an 11-page datasheet → 57 chunks). Now batches
+  in slices of 32 with per-batch retry; order preserved.
+- **Embeddings model revision pinned** (`docker-compose.yml`): the nomic repo's
+  HEAD ("v5 Transformers") regenerated `config.json` with both
+  `max_position_embeddings` and `n_positions`; TEI's serde parser treats them
+  as aliases of one field and crash-loops. Pinned `--revision e5cf08a` — which
+  also protects the corpus from a silently swapped embedder.
+- **VLM commit marks its run failed** (`src/atlas/api_vlm_ingest.py`): when the
+  pipeline feed after a VLM commit throws, the WorkflowRun was left `running`
+  forever; it is now marked `failed` with the error message.
+- **Maintenance orphan scan tolerates missing collection** (`src/atlas/api.py`):
+  scrolling `atlas_chunks` before first commit 404'd and logged a traceback
+  every cycle; now treated as "nothing to scan".
+- **API version reported from package metadata** (`src/atlas/api.py`): was
+  hardcoded `0.1.0` in FastAPI and in the dashboard; `GET /` now exposes the
+  installed version and the dashboard reads it. (Also removed a stale
+  `src/project_atlas.egg-info` from an old editable install that shadowed the
+  installed 0.8.0 metadata via the bind mount.)
+- **SPA: Import/Paste sent `doc_name`, backend requires `doc_id`** — both
+  ingest forms 422'd; they now send `doc_id` (Import falls back to the
+  filename), and the client type marks `doc_id` required.
+- **SPA: bulk VLM progress was blind** (`vlm-ingest-store.ts`): the progress
+  bar computed from local page state that only per-page mutations updated, so
+  server-side `process-all` showed 0% until it finished. The 5s session poll
+  now syncs server page statuses into the wizard (never clobbering
+  operator-edited markdown).
+- **SPA: VLM session resume** — the wizard now persists the backend session id
+  (localStorage) and re-attaches on load, landing on the step matching the
+  server's state; `?vlm_session=<id>` deep-links are supported. A page refresh
+  no longer orphans a running ingest (the backend loop always survived it).
+
+### Added (2026-08-27, operator testing round 1)
+- **"LLM configuration" card** on Admin → Health: active profile, config
+  source/hash, and the role → provider → model table with ZDR/local-sidecar
+  privacy badges, from `/admin/config/effective` (previously fetched by no
+  page).
+
+### Added (2026-08-27, compose consolidation)
+- **`COMPOSE_FILE` in `.env`/`.env.example`**: bare `docker compose` now means
+  the dev stack (base + dev overlay + devcontainer overlay); prod is an
+  explicit `docker compose -f docker-compose.yml`.
+- **`scripts/flush.ps1`**: host-side data flush between testing rounds —
+  truncates all `atlas` DB tables, deletes every Qdrant collection, empties
+  `artifacts/`, restarts `atlas-api`. Leaves containers, schema, and the
+  embeddings weight cache intact.
+
 ### Added
 - **LLM profiles** (`src/atlas/llm/profiles.py`, `config/models.yaml`): two generation postures selected by `ATLAS_LLM_PROFILE` or `active_profile` in `models.yaml`.
   - `local` — LM Studio or any LAN OpenAI-compatible server.

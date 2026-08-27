@@ -1,5 +1,69 @@
 # Worklog
 
+## 2026-08-27 (testing round 1) — Real-doc VLM + import flows exercised end to end; 8 bugs found and fixed
+
+Operator ran the full VLM wizard against a real 11-page datasheet
+(Microsemi SyncServer S600), then imported the stitched markdown through
+/rag/ingest/file. Everything on the checklist passed by end of session:
+all containers healthy, /health responsive mid-ingest, 768-dim collection,
+search returning the doc. Bugs found by the flow itself (all fixed, see
+CHANGELOG "operator testing round 1"):
+
+1. TEI sidecar crash-loop — nomic repo HEAD broke TEI's config parser; pinned
+   model revision in compose.
+2. Unbatched embeddings — 57-chunk commit 422'd against TEI's 32-input cap;
+   client-side batching in openai_compat.
+3. VLM commit left its WorkflowRun 'running' after pipeline-feed failure.
+4. Maintenance orphan scan traceback every 5 min while qdrant empty.
+5. SPA bulk-processing progress bar stuck at 0% (poll results never synced
+   into the wizard store).
+6. Page refresh orphaned a running VLM session UI-side — added localStorage
+   persistence + auto-resume + ?vlm_session= deep links.
+7. Import/Paste forms sent doc_name; backend requires doc_id — both 422'd.
+8. API/dashboard reported hardcoded version 0.1.0 (plus a stale
+   src/project_atlas.egg-info shadowing installed metadata via bind mounts).
+
+Also: "LLM configuration" card added to Admin → Health (profile, ZDR badges,
+role→model table). VLM output quality spot-checked against the source PDF —
+all part numbers, spec tables, and scientific-notation exponents correct;
+conversion is index-worthy.
+
+Notes for the future:
+- The workspace container is compose-built and does NOT run
+  .devcontainer/post-create.sh — install pytest/ruff via
+  `docker exec atlas-workspace pip install pytest pytest-asyncio pytest-cov ruff`
+  after a recreate. Avoid `pip install -e .` there: it writes
+  src/project_atlas.egg-info onto the host, which shadows package metadata
+  inside atlas-api via the bind mount (bug 8 above).
+- Data flushed at session close; ready for real org-doc ingestion.
+
+## 2026-08-27 (host bring-up) — Stack nuked + rebuilt; compose consolidated to dev/prod; flush script
+
+Operator moved from the dev container back to the Windows host for the testing
+phase. Session actions:
+
+- **HF CDN unblocked**: the `us.aws.cdn.hf.co` sinkhole was AdGuard DNS
+  filtering; operator switched DNS and the CDN now returns 200 from inside
+  containers. The TEI sidecar can finally pull its weights (the cache volume
+  had been empty all along — cpu-1.5 never got past the config files).
+- **Full nuke**: `compose down --volumes --remove-orphans` across the dev
+  chain, plus the stray `atlas_embeddings_probe` volume. Nothing was lost —
+  postgres/qdrant were empty per the day-close entry, and this cleared the
+  stale cpu-1.5 embeddings container that predated the `5b09df7` image fix.
+- **Compose consolidation (dev/prod only)**: deleted the e2e/optest/slim
+  stacks, `Dockerfile.slim`, and their docs/driver scripts (see CHANGELOG
+  "Removed"). `COMPOSE_FILE` in `.env` now makes bare `docker compose` the dev
+  stack; prod is `docker compose -f docker-compose.yml`. devcontainer.json's
+  explicit file list is unaffected.
+- **Flush mechanism**: new `scripts/flush.ps1` — truncates all `atlas` DB
+  tables, deletes every Qdrant collection, empties `artifacts/`, restarts
+  `atlas-api`; keeps containers, schema, and the embeddings weight cache. Use
+  between testing rounds and before the first real org-doc ingestion.
+- `.gitignore` audited — no changes needed (SPA build output in `static/app`
+  stays tracked by design).
+
+Testing-phase checklist from the day-close entry below still applies.
+
 ## 2026-08-27 (close) — Repo work complete; ready for bring-up and operator testing
 
 All repo-side work is committed and pushed. Full ledger for the day, oldest
