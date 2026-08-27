@@ -26,6 +26,10 @@ updates:
       # - eslint 9+: flat-config rewrite (plus plugin compatibility).
       - dependency-name: eslint
         update-types: ["version-update:semver-major"]
+      # - eslint-plugin-react-refresh 0.5+ peer-requires eslint 9/10 —
+      #   part of the same migration.
+      - dependency-name: eslint-plugin-react-refresh
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
       # - pdfjs-dist 5+: worker/version coupling with the editor's PDF pane;
       #   needs editor regression testing before adopting.
       - dependency-name: pdfjs-dist
