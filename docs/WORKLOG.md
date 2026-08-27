@@ -1,5 +1,49 @@
 # Worklog
 
+## 2026-08-27 (close) — Repo work complete; ready for bring-up and operator testing
+
+All repo-side work is committed and pushed. Full ledger for the day, oldest
+first:
+
+- `363f944` chore: dev container, line-ending policy, build hygiene (pyproject → 0.8.0)
+- `3ad39b2` refactor!: remove dead code, incl. the never-wired PrivacyGuard
+- `bb1133d` feat: LLM profiles, embeddings sidecar, ZDR enforcement, oversize guards
+- `0e25050` docs: guides aligned, 0.8.0 changelog reconstructed, this worklog added
+- `5b09df7` fix: embeddings sidecar image (TEI cpu-1.9), docker proxy → lifecycle surface
+- `ac00f63` fix: parser work off the event loop, parse models baked into image,
+  unknown-mime `.pdf` suffix default removed
+
+State at close: suite 698 passed / 89.8% coverage; qdrant empty; postgres
+tables empty; `artifacts/` clean; operator `config/models.yaml` on pinned
+nomic embeddings; no uncommitted changes.
+
+### Bring-up (from the Windows host, repo root)
+
+    git pull
+    docker compose -f docker-compose.yml -f docker-compose.dev.yml -f .devcontainer/docker-compose.devcontainer.yml up -d --build --force-recreate docker-proxy embeddings atlas
+
+First build is slower once: the image now bakes ~1GB of parse-model weights;
+the embeddings sidecar downloads its weights on first boot (healthcheck allows
+180s). After the proxy recreate, the dev shell has container lifecycle access
+(start/stop/restart/exec) — builds and `compose up` stay host-side.
+
+### Testing phase checklist (operator runs docs, assistant fishes logs)
+
+1. All containers healthy: atlas-api, atlas-embeddings, atlas-postgres,
+   atlas-qdrant (`docker ps`), then `GET /health` on Atlas.
+2. Dummy-doc ingests via the SPA or `/rag/ingest/*` — watch judge → refine →
+   metadata in `docker logs -f atlas-api`; confirm `/health` stays responsive
+   mid-ingest (regression check for the event-loop fix).
+3. `/rag/search` returns the ingested content; qdrant collection is 768-dim.
+4. Flush test data before real org-doc ingestion.
+
+Deferred to the bug-fix push: parse-retry pile-up design (largely defused by
+model baking), ruff debt (~350 pre-existing, 211 auto-fixable), watch items
+(one-off pytest shutdown segfault; whether timed-out Docling converter
+threads linger).
+
+---
+
 ## 2026-08-27 (evening) — Stack check + aborted in-container E2E; handover to operator testing
 
 Commits pushed earlier today (`363f944`…`0e25050`). Stack inspection through the
