@@ -5,6 +5,7 @@ Coordinates the agentic loop: Ingest → Judge → Refine → Metadata → Embed
 
 from __future__ import annotations
 
+import datetime as _dt
 from typing import Any
 
 from atlas.diagnostics import ErrorCode, get_diagnostics
@@ -14,7 +15,8 @@ from atlas.pipeline.judge import JudgeNode
 from atlas.pipeline.metadata import MetadataNode
 from atlas.pipeline.refine import RefineNode
 from atlas.pipeline.state import PipelineContext, PipelineNode, PipelineStateManager
-from atlas.pipeline.tokens import fits_in_context
+from atlas.pipeline.tokens import estimate_tokens, fits_in_context
+from atlas.schemas import JudgeResult
 
 
 class PipelineOrchestrator:
@@ -157,9 +159,48 @@ class PipelineOrchestrator:
         self.diagnostics.log_info(component="pipeline", message="Processing judge node")
 
         judge_cutoff = self.config.get("thresholds", {}).get("judge_cutoff_refine", 4)
+        markdown = context.state.markdown_projection
+
+        # Oversize guard. The judge prompt embeds the whole document, so a very
+        # large manual would produce an over-length request — a non-retryable
+        # 4xx that fails the entire ingest. Losing the document over a quality
+        # check it is too big to receive is the wrong trade: skip the check,
+        # say so loudly, and let it continue to metadata so it still ends up
+        # chunked, embedded and searchable.
+        judge_ctx = getattr(self.judge_node, "max_context_tokens", None)
+        # output_ratio=0: the judge emits a handful of scores, not a rewrite.
+        # The overhead covers the system rubric and few-shot examples.
+        if judge_ctx and not fits_in_context(
+            markdown, judge_ctx, prompt_overhead_tokens=2000, output_ratio=0.0
+        ):
+            self.diagnostics.log_info(
+                component="pipeline",
+                message=(
+                    f"Document exceeds judge context budget "
+                    f"(~{estimate_tokens(markdown)} tokens > {judge_ctx}); "
+                    "skipping quality grading. The document is NOT quality-gated "
+                    "and will not be refined; it proceeds to metadata and indexing."
+                ),
+            )
+            context.set_judge_result(
+                JudgeResult(
+                    score=judge_cutoff,
+                    confidence_rationale=(
+                        "SKIPPED: document too large for the judge model's context "
+                        f"(~{estimate_tokens(markdown)} tokens, budget {judge_ctx}). "
+                        "Not graded — score reported at cutoff so ingest continues."
+                    ),
+                    judge_version=f"skipped-oversize:{getattr(self.judge_node, 'model_name', '?')}",
+                    needs_refinement=False,
+                    timestamp=_dt.datetime.now(_dt.UTC)
+                    .isoformat()
+                    .replace("+00:00", "Z"),
+                )
+            )
+            return
 
         result = await self.judge_node.grade_document(
-            markdown=context.state.markdown_projection, judge_cutoff=judge_cutoff
+            markdown=markdown, judge_cutoff=judge_cutoff
         )
 
         context.set_judge_result(result)
@@ -182,8 +223,12 @@ class PipelineOrchestrator:
 
         markdown = context.state.markdown_projection
         max_ctx = int(self.config.get("limits", {}).get("max_context_tokens", 16384))
+        # The refine model's own response ceiling. A 1M-context model that caps
+        # responses at 48k cannot rewrite a 100k-token document in one pass, so
+        # context budget alone is not enough to make this decision.
+        max_out = getattr(self.refine_node, "max_output_tokens", None)
 
-        if fits_in_context(markdown, max_ctx):
+        if fits_in_context(markdown, max_ctx, max_output_tokens=max_out):
             # Full-document refinement — document fits in context
             result = await self.refine_node.refine_document(
                 markdown=markdown,
@@ -198,9 +243,9 @@ class PipelineOrchestrator:
             self.diagnostics.log_info(
                 component="pipeline",
                 message=(
-                    f"Document exceeds context budget for full refinement "
-                    f"(~{len(markdown)} chars, max_ctx={max_ctx}); "
-                    f"using sectional refinement"
+                    f"Document exceeds budget for full refinement "
+                    f"(~{len(markdown)} chars, max_ctx={max_ctx}, "
+                    f"max_output={max_out}); using sectional refinement"
                 ),
             )
             result = await self.refine_node.refine_document_sectional(

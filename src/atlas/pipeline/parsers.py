@@ -10,18 +10,21 @@ Each concrete ``DocumentParser`` encapsulates one parsing approach.
 from __future__ import annotations
 
 import logging as _logging
-import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from atlas.diagnostics import ErrorCode, get_diagnostics
+from atlas.diagnostics import ErrorCode
 from atlas.ingest.docling_adapter import DoclingIngestError, parse_document_path
 from atlas.schemas import ParseProfile
 from atlas.settings import Settings
+
+if TYPE_CHECKING:
+    # Import only for annotations: ingest.py imports this module at runtime.
+    from atlas.pipeline.ingest import IngestResult
 
 _logger = _logging.getLogger(__name__)
 
@@ -266,7 +269,10 @@ class VisionParser(DocumentParser):
             from atlas.config_manager import ConfigManager
 
             config_dir = Path(self.ctx.settings.atlas_config_dir).resolve()
-            config_manager = ConfigManager(config_dir=config_dir)
+            config_manager = ConfigManager(
+                config_dir=config_dir,
+                profile=self.ctx.settings.atlas_llm_profile or None,
+            )
             models_cfg = config_manager.get().models
             model_registry = ModelRegistry(
                 settings=self.ctx.settings, models_cfg=models_cfg,

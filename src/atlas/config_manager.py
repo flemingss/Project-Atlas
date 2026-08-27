@@ -8,6 +8,8 @@ from typing import Any
 
 import yaml
 
+from atlas.llm.profiles import apply_profile, resolve_profile_name
+
 
 @dataclass(frozen=True)
 class EffectiveConfig:
@@ -23,7 +25,13 @@ def _stable_hash(obj: Any) -> str:
 
 
 class ConfigManager:
-    def __init__(self, *, root_dir: Path | None = None, config_dir: Path | None = None):
+    def __init__(
+        self,
+        *,
+        root_dir: Path | None = None,
+        config_dir: Path | None = None,
+        profile: str | None = None,
+    ):
         if config_dir is None:
             if root_dir is None:
                 raise ValueError("ConfigManager requires either root_dir or config_dir")
@@ -32,11 +40,24 @@ class ConfigManager:
         self._config_dir = config_dir
         self._pipeline_path = config_dir / "pipeline.yaml"
         self._models_path = config_dir / "models.yaml"
+        # Explicit profile override. When None the profile is resolved from
+        # ATLAS_LLM_PROFILE or models.yaml's active_profile, so tests that
+        # construct a ConfigManager without one keep the pre-profile behaviour.
+        self._profile_override = profile
         self._cached: EffectiveConfig | None = None
 
     def load_yaml_defaults(self) -> EffectiveConfig:
         pipeline = self._load_yaml(self._pipeline_path)
         models = self._load_yaml(self._models_path)
+
+        # Profiles are resolved here rather than in ModelRegistry so that every
+        # consumer — the eight registry call sites, startup validation, and the
+        # admin config endpoints — sees one already-resolved effective config.
+        profile_name = resolve_profile_name(models, override=self._profile_override)
+        models, pipeline = apply_profile(
+            models=models, pipeline=pipeline, profile_name=profile_name
+        )
+
         effective = {"pipeline": pipeline, "models": models}
         return EffectiveConfig(
             pipeline=pipeline,
@@ -46,6 +67,7 @@ class ConfigManager:
                     "config_dir": str(self._config_dir),
                     "pipeline": str(self._pipeline_path),
                     "models": str(self._models_path),
+                    "profile": profile_name or "<none>",
                 }
             },
             hash=_stable_hash(effective),

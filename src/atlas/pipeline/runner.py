@@ -26,7 +26,7 @@ from atlas.pipeline.orchestrator import PipelineOrchestrator
 from atlas.pipeline.refine import RefineNode
 from atlas.pipeline.state import PipelineNode, create_pipeline_context
 from atlas.rag.chunk_qa import chunk_with_fallback
-from atlas.rag.chunking import chunk_markdown_semantic, chunk_text, chunk_text_hierarchical, infer_chunk_features
+from atlas.rag.chunking import infer_chunk_features
 from atlas.rag.deterministic import deterministic_chunk_id, sha256_hex
 from atlas.rag.normalize import normalize_markdown
 from atlas.schemas import FidelityFlag
@@ -140,7 +140,15 @@ def _build_orchestrator(*, settings: Settings, models_cfg: dict[str, Any], pipel
         pass
 
     ingest_node = IngestNode(pdf_parser_config=pipeline_cfg.get("pdf_parser") or {})
-    judge_node = JudgeNode(provider=judge_provider, model_name=judge.model_name, model_params=judge.params)
+    judge_node = JudgeNode(
+        provider=judge_provider,
+        model_name=judge.model_name,
+        model_params=judge.params,
+        max_context_tokens=int(
+            (pipeline_cfg.get("limits", {}) or {}).get("judge_max_context_tokens", 0)
+        )
+        or None,
+    )
     refine_node = RefineNode(
         provider=refine_provider,
         model_name=refine.model_name,
@@ -153,9 +161,25 @@ def _build_orchestrator(*, settings: Settings, models_cfg: dict[str, Any], pipel
         ),
         min_preservation_ratio=float(
             (pipeline_cfg.get("thresholds", {}) or {}).get(
-                "refine_min_preservation_ratio", 0.6
+                "refine_min_preservation_ratio", 0.85
             )
         ),
+        # Previously never passed, so thresholds.refine_min_section_ratio was
+        # inert and the section-drop guard always used the 0.8 default.
+        min_section_ratio=float(
+            (pipeline_cfg.get("thresholds", {}) or {}).get(
+                "refine_min_section_ratio", 0.8
+            )
+        ),
+        max_context_tokens=int(
+            (pipeline_cfg.get("limits", {}) or {}).get("max_context_tokens", 16384)
+        ),
+        # Previously never passed, so pipeline.yaml's refine_max_section_tokens
+        # was inert and sectional refinement always used the 6000 default.
+        max_section_tokens=int(
+            (pipeline_cfg.get("limits", {}) or {}).get("refine_max_section_tokens", 6000)
+        ),
+        max_output_tokens=refine.max_output_tokens,
     )
     metadata_node = MetadataNode(
         tier1_provider=tier1_provider,

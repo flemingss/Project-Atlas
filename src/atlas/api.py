@@ -231,7 +231,9 @@ def _check_qdrant(settings: Settings) -> tuple[bool, str]:
 def create_app() -> FastAPI:
     settings = Settings()
     config_dir = Path(settings.atlas_config_dir).resolve()
-    config_manager = ConfigManager(config_dir=config_dir)
+    config_manager = ConfigManager(
+        config_dir=config_dir, profile=settings.atlas_llm_profile or None
+    )
 
     engine = make_engine(settings.atlas_db_url)
     session_factory = make_sessionmaker(engine)

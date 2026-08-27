@@ -43,26 +43,47 @@ def fits_in_context(
     *,
     prompt_overhead_tokens: int = 500,
     output_ratio: float = 1.15,
+    max_output_tokens: int | None = None,
 ) -> bool:
-    """Check whether a refine call can physically fit in the context window.
+    """Check whether a refine call can physically fit in one pass.
 
-    The calculation is::
+    Two separate ceilings have to hold, and they are not the same number:
 
-        prompt_tokens = estimate_tokens(input_text) + prompt_overhead_tokens
-        expected_output = estimate_tokens(input_text) * output_ratio
-        total = prompt_tokens + expected_output
+    1. **Context window** — prompt plus expected output must fit in
+       ``max_context_tokens``::
 
-    If ``total > max_context_tokens`` the refine call will inevitably
-    truncate or summarise, so the caller should skip full-document
-    refinement and use sectional refinement instead.
+           prompt_tokens   = estimate_tokens(input_text) + prompt_overhead_tokens
+           expected_output = estimate_tokens(input_text) * output_ratio
+           total           = prompt_tokens + expected_output
+
+    2. **Output ceiling** — refine rewrites the whole document, so the response
+       is roughly as long as the input. ``max_output_tokens`` is usually far
+       smaller than the context window (a model with a 1M context may cap
+       responses at 48k), and it is the constraint that actually binds for
+       long documents.
+
+    Checking only (1) is a trap: setting ``max_context_tokens`` to a model's
+    advertised context window looks correct and silently truncates every large
+    refine, because the response hits the output cap long before the prompt
+    runs out of context. The truncation surfaces only as a ``finish_reason``
+    warning in the logs, and the preservation guard then rejects the result as
+    dropped sections — which reads like a model quality problem rather than a
+    misconfiguration.
+
+    Returns False when either ceiling would be exceeded, so the caller falls
+    back to sectional refinement.
     """
     input_tokens = estimate_tokens(input_text)
-    total_needed = (
-        input_tokens
-        + prompt_overhead_tokens
-        + int(input_tokens * output_ratio)
-    )
-    return total_needed <= max_context_tokens
+    expected_output = int(input_tokens * output_ratio)
+
+    total_needed = input_tokens + prompt_overhead_tokens + expected_output
+    if total_needed > max_context_tokens:
+        return False
+
+    if max_output_tokens is not None and expected_output > max_output_tokens:
+        return False
+
+    return True
 
 
 def split_into_sections(text: str, max_section_tokens: int = 6000) -> list[str]:

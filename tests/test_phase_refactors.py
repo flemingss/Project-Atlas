@@ -78,7 +78,7 @@ class TestRefinePreservationGuardrail:
     """Verify the min_preservation_ratio guardrail in RefineNode."""
 
     def test_default_preservation_ratio(self) -> None:
-        assert _DEFAULT_MIN_PRESERVATION_RATIO == 0.6
+        assert _DEFAULT_MIN_PRESERVATION_RATIO == 0.85
 
     def test_custom_preservation_ratio(self) -> None:
         node = _refine_node(min_ratio=0.8)

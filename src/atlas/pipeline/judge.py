@@ -80,10 +80,23 @@ class JudgeNode:
     - Determine if refinement is needed
     """
 
-    def __init__(self, *, provider: ILlmProvider, model_name: str, model_params: dict[str, Any]):
+    def __init__(
+        self,
+        *,
+        provider: ILlmProvider,
+        model_name: str,
+        model_params: dict[str, Any],
+        max_context_tokens: int | None = None,
+    ):
         self.provider = provider
         self.model_name = model_name
         self.model_params = model_params
+        # Judge sends the entire document (see _build_prompt) with no
+        # truncation, so an oversized document reaches the API as an
+        # over-length request. That comes back as a 4xx, which is correctly
+        # classified as non-retryable and fails the whole run. Knowing the
+        # budget lets the orchestrator skip judging instead of failing ingest.
+        self.max_context_tokens = max_context_tokens
         self.diagnostics = get_diagnostics()
 
         # Create judge version identifier (model name + prompt hash for traceability)

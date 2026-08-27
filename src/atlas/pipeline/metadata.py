@@ -104,7 +104,12 @@ class MetadataNode:
         - Borderline Judge scores (3-4)
         - Subject to cap limit
         """
-        # Check if we've hit the cap
+        # NOTE: this cap is currently unreachable. generate_metadata() is invoked
+        # once per document (orchestrator._process_metadata), and the counter it
+        # reads is only incremented afterwards in state.set_metadata_result, so
+        # tier2_count is always 0 on the call that consults it. The guard is
+        # correct if metadata ever becomes per-chunk — which is what the cap was
+        # designed for — but until then tier2_chunk_cap_per_document has no effect.
         if tier2_count >= self.tier2_cap:
             self.diagnostics.log_info(
                 component="metadata",

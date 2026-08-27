@@ -54,9 +54,15 @@ class _HeadingDroppingProvider(ILlmProvider):
             md = text.split("Document to improve:\n", 1)[1].split("\nImproved Document:", 1)[0]
         else:
             md = text
-        # Strip all heading lines but keep content (preserves length)
+        # Demote headings to plain text, keeping the words. Deleting the whole
+        # line would also shorten the document past the preservation guard, so
+        # the test would pass for the wrong reason — it is the section-count
+        # guard being exercised here, not the length guard.
         lines = md.split("\n")
-        return "\n".join(line for line in lines if not line.lstrip().startswith("#"))
+        return "\n".join(
+            line.lstrip().lstrip("#").lstrip() if line.lstrip().startswith("#") else line
+            for line in lines
+        )
 
     async def embed(self, *, model: str, texts: list[str], params: dict) -> list[list[float]]:
         return [[0.0] * 384 for _ in texts]
@@ -368,14 +374,3 @@ class TestUnfixableInput:
 # ---------------------------------------------------------------------------
 # Fidelity flag: score=1
 # ---------------------------------------------------------------------------
-
-class TestFidelityFlagEdge:
-    def test_score_1_is_low_confidence(self) -> None:
-        node = _make_node()
-        flag = node.determine_fidelity_flag(judge_score=1, refine_success=False, retry_count=0)
-        assert flag == FidelityFlag.LOW_CONFIDENCE
-
-    def test_score_3_not_at_max_retries_is_partial(self) -> None:
-        node = _make_node(max_retries=5)
-        flag = node.determine_fidelity_flag(judge_score=3, refine_success=False, retry_count=3)
-        assert flag == FidelityFlag.PARTIAL

@@ -2,8 +2,6 @@ version: 1
 
 thresholds:
   judge_cutoff_refine: 4
-  judge_borderline_low: 3
-  judge_borderline_high: 4
   # Per-dimension judge floors (optional). If any dimension falls below its
   # floor the document is sent to refine regardless of composite score.
   # Set to 0 to disable per-dimension gating for a given dimension.
@@ -30,15 +28,34 @@ thresholds:
 
 limits:
   refine_max_retries: 3
+  # Cap on tier-2 metadata escalations per document. Currently has no
+  # effect: metadata is generated once per document, so the counter this
+  # is compared against is always 0. Kept for when metadata becomes
+  # per-chunk. See atlas/pipeline/metadata.py _select_tier.
   tier2_chunk_cap_per_document: 25
   # Back-compat: older configs used chunk_max_chars. Kept as a safety valve.
   chunk_max_chars: 1000
-  # Maximum context-window size (tokens) of the refine model.  Used by the
-  # pre-refine budget check and the sectional-refinement splitter.
+  # Context-window budget (tokens) for a single holistic refine pass.
+  #
+  # This is only half the check.  Refine emits a full rewrite, so the response
+  # is about as long as the input, and the refine model's response ceiling
+  # (models.yaml roles.refine_model.max_output_tokens) usually binds first — a
+  # model with a 1M context may cap responses at 48k.  Both are enforced in
+  # atlas.pipeline.tokens.fits_in_context; documents exceeding either take the
+  # sectional path.  Profile-driven — see models.yaml profiles.
   max_context_tokens: 16384
   # Maximum section size (tokens) for sectional refinement.  Sections
   # larger than this are sent individually; smaller sections may be batched.
+  # Size this to the refine model: 6000 suits a local 8B, a large-context
+  # hosted model can take far bigger sections and stitch better for it.
   refine_max_section_tokens: 6000
+  # Context budget for the judge, which embeds the entire document in its
+  # prompt with no truncation.  Documents above this skip quality grading
+  # rather than failing ingest with an over-length request — they are still
+  # chunked, embedded and searchable, just not graded or refined.
+  # 0 or unset disables the guard (pre-existing behaviour: fail on oversize).
+  # Profile-driven — see models.yaml profiles.
+  judge_max_context_tokens: 32000
 
 normalize:
   enabled: true
@@ -54,18 +71,6 @@ chunking:
     max_token_ratio_limit: 1.25
     max_duplication_ratio: 0.10
     min_coverage_ratio: 0.80
-
-frontier_fallback:
-  enabled: false
-  vram_percent_threshold: 92
-  queue_depth_threshold: 2
-
-cache:
-  semantic_cache_enabled: false
-  similarity_threshold: 0.98
-
-privacy:
-  default_is_sensitive: true
 
 retry:
   llm:

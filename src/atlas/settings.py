@@ -25,7 +25,25 @@ class Settings(BaseSettings):
 
     # OpenAI-compatible endpoint (LM Studio, etc). In Docker, prefer overriding
     # via ATLAS_OPENAI_BASE_URL (e.g. http://host.docker.internal:1234).
+    # Only the 'local' profile depends on this; the 'api' profile reaches
+    # OpenRouter and the embedding sidecar via their own provider base_urls.
     atlas_openai_base_url: str = "http://127.0.0.1:1234"
+
+    # Active LLM profile — see config/models.yaml 'profiles'. Blank falls back
+    # to models.yaml's active_profile. Switches model ids, context budget,
+    # concurrency, and retry posture together.
+    atlas_llm_profile: str = ""
+
+    # Gateway credential for the 'api' profile. Named to match api_key_env in
+    # models.yaml. Declared here (not just read from os.environ) so it resolves
+    # when Atlas runs directly from .env rather than under docker compose.
+    openrouter_api_key: str = ""
+
+    # Embedding sidecar. Runs in the compose stack on CPU rather than on the
+    # operator's machine, so ingest and search never depend on LM Studio being
+    # up. Pinned across profiles — see atlas.llm.profiles.
+    atlas_embeddings_base_url: str = "http://embeddings:80"
+
 
     atlas_default_tenant_id: str = "local"
     atlas_default_project_id: str = "default"
@@ -39,7 +57,6 @@ class Settings(BaseSettings):
 
     atlas_db_url: str = "postgresql+psycopg://atlas:atlas@localhost:5432/atlas"
     atlas_qdrant_url: str = "http://localhost:6333"
-    atlas_redis_url: str = "redis://localhost:6379/0"
 
     # -------------------- PDF ingest hardening --------------------
     # Guardrails
@@ -63,7 +80,5 @@ class Settings(BaseSettings):
     atlas_models_dir: str = "./models/deepdoc"
     # Minimum mean OCR confidence (0-1) to accept layout parser output.
     atlas_layout_ocr_confidence_min: float = 0.5
-    # Enable table structure recognition in layout parser.
-    atlas_layout_table_extraction: bool = True
     # PDF zoom factor for page rendering (higher = better OCR, slower).
     atlas_layout_pdf_zoom: float = 3.0

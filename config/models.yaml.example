@@ -1,26 +1,104 @@
 version: 1
 
+# ---------------------------------------------------------------------------
+# Active profile.  Overridden by ATLAS_LLM_PROFILE.
+#
+#   local  — generation on LM Studio (or any LAN OpenAI-compatible server)
+#   api    — generation on OpenRouter under enforced zero-data-retention
+#
+# A profile switches model ids *and* the tuning that has to move with them:
+# context budget, section size, and heavy-task concurrency.  Local inference on
+# one GPU and a rate-limited cloud gateway are not the same machine, and running
+# either at the other's settings wastes it.
+#
+# Embeddings are deliberately NOT part of the profile — see roles.embed_model.
+# ---------------------------------------------------------------------------
+active_profile: api
+
 providers:
+  # Local / LAN OpenAI-compatible server (LM Studio).  Only the 'local' profile
+  # uses this.  Long read timeout: local prefill on a big document is slow, and
+  # killing a run that was going to succeed is worse than waiting.
   lmstudio:
     type: openai_compat
     base_url_env: ATLAS_OPENAI_BASE_URL
+    timeouts:
+      connect_s: 10
+      read_s: 900
+      write_s: 60
 
+  # OpenRouter gateway.
+  #
+  # enforce_zdr adds `provider: {zdr: true}` to every request body, restricting
+  # routing to zero-data-retention endpoints.  The account-level policy already
+  # binds, so this cannot narrow model availability further — it is asserted
+  # here so the guarantee lives in version control and survives someone
+  # relaxing the account setting later.
+  #
+  # read_s is deliberately large: a holistic refine of a 100-page document is a
+  # single request that generates tens of thousands of tokens.  Read timeouts
+  # are NOT retried (see atlas/llm/openai_compat.py) precisely because
+  # replaying one burns another full window without changing the outcome.
+  openrouter:
+    type: openai_compat
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    enforce_zdr: true
+    headers:
+      HTTP-Referer: https://github.com/flemingss/Project-Atlas
+      X-Title: Project Atlas
+    timeouts:
+      connect_s: 10
+      read_s: 1800
+      write_s: 60
+
+  # In-stack embedding sidecar (CPU).  Runs in docker compose beside postgres
+  # and qdrant, so ingest and search never depend on an operator's machine
+  # being up.  No API key: it is on the compose network, not the internet.
+  embeddings:
+    type: openai_compat
+    base_url_env: ATLAS_EMBEDDINGS_BASE_URL
+    timeouts:
+      connect_s: 5
+      read_s: 300
+      write_s: 60
+
+  # Stub providers used by the E2E suite.
   deterministic:
     type: deterministic
 
-  openai_frontier:
-    type: openai
-    api_key_env: OPENAI_API_KEY
-
-  anthropic_frontier:
-    type: anthropic
-    api_key_env: ANTHROPIC_API_KEY
-
+# ---------------------------------------------------------------------------
+# Roles.
+#
+# Base values below describe the LOCAL posture; the 'api' profile patches the
+# generation roles over them.  max_output_tokens is the model's response
+# ceiling — it is not sent to the API, it is the budget the orchestrator needs
+# to decide whether a document can be refined whole or must be split.  Refine
+# emits a full rewrite, so the response is about as long as the input, and this
+# ceiling (not the context window) is what actually binds on long documents.
+#
+# think_tag is kept on every role even for models that return reasoning in a
+# separate field.  The stripper is a no-op regex pass when no tags are present,
+# so leaving it on costs nothing and protects against inline leakage.
+# ---------------------------------------------------------------------------
 roles:
+  # ---- PINNED ACROSS PROFILES -------------------------------------------
+  # A vector search only returns meaningful results when the query and the
+  # documents were embedded by the same model.  Swapping the embedder under an
+  # existing corpus corrupts retrieval — and when the dimension happens to
+  # match, it does so silently, because Qdrant cannot detect it.  Profiles are
+  # blocked from overriding this role (atlas/llm/profiles.py); change it only
+  # deliberately, and re-index when you do.
+  embed_model:
+    provider: embeddings
+    model_name: nomic-ai/nomic-embed-text-v1.5   # 768-dim
+    params: {}
+
   judge_model:
     provider: lmstudio
     model_name: "qwen3-14b"
     think_tag: "<think>"
+    max_output_tokens: 4096
     params:
       temperature: 0.0
       max_tokens: 500
@@ -29,43 +107,164 @@ roles:
     provider: lmstudio
     model_name: "qwen3-8b"
     think_tag: "<think>"
+    max_output_tokens: 8192
     params:
       temperature: 0.2
-
-  embed_model:
-    provider: lmstudio
-    model_name: "text-embedding-nomic-embed-text-v1.5"
-    params: {}
 
   metadata_tier1_model:
     provider: lmstudio
     model_name: "qwen3-14b"
     think_tag: "<think>"
+    max_output_tokens: 4096
     params:
       temperature: 0.0
       max_tokens: 1000
 
+  # Escalation tier for borderline judge scores and technically dense chunks,
+  # capped per document by pipeline.yaml limits.tier2_chunk_cap_per_document.
+  # Pointing this at the same model as tier 1 makes the escalation a no-op.
   metadata_tier2_model:
     provider: lmstudio
     model_name: "qwen3-14b"
     think_tag: "<think>"
+    max_output_tokens: 4096
     params:
       temperature: 0.0
       max_tokens: 1000
 
-  reranker_model:
-    provider: lmstudio
-    model_name: "bge-reranker"
-    params: {}
-
-  # Vision-language model for page-level PDF correction.
-  # Used by the Document Editor's "VLM Fix" tool and the
-  # automated vision quality audit.  Requires a multimodal
-  # model that accepts image_url content blocks.
+  # Vision-language model for page-level PDF correction.  Used by the Document
+  # Editor's "VLM Fix" tool and the automated vision quality audit.  Requires a
+  # multimodal model that accepts image_url content blocks.
   vision_model:
     provider: lmstudio
     model_name: "qwen2.5-vl-32b"
     think_tag: "<think>"
+    max_output_tokens: 8192
     params:
       temperature: 0.1
       max_tokens: 4096
+
+  # Optional.  Used by /admin/cleanup-rules/suggest, which falls back to
+  # refine_model when this role is absent.  Defining it keeps a cheap model on
+  # a trivial task instead of the refine model.
+  chat_model:
+    provider: lmstudio
+    model_name: "qwen3-8b"
+    think_tag: "<think>"
+    max_output_tokens: 4096
+    params:
+      temperature: 0.2
+      max_tokens: 1000
+
+  # PLANNED — NOT IMPLEMENTED.
+  # No code reads this role yet.  Reranking would slot into the RAG search path
+  # (retrieve top-K from Qdrant -> rerank -> return top-N) and needs a rerank()
+  # method on ILlmProvider; OpenRouter serves rerankers on a dedicated endpoint,
+  # not chat/completions.  Candidate: qwen/qwen3-reranker-8b (~$0.20/M in,
+  # 40,960 token window, roughly $0.003 per query at 50 candidates).
+  # Left declared so the intent is discoverable; wire it up after real-document
+  # retrieval feedback shows it is needed.
+  # reranker_model:
+  #   provider: openrouter
+  #   model_name: "qwen/qwen3-reranker-8b"
+
+# ---------------------------------------------------------------------------
+# Profiles — patches applied over the blocks above.
+# ---------------------------------------------------------------------------
+profiles:
+
+  local:
+    models:
+      roles: {}          # base roles already describe the local posture
+    pipeline:
+      limits:
+        # qwen3-8b context. Documents above this take the sectional path.
+        max_context_tokens: 16384
+        refine_max_section_tokens: 6000
+        # qwen3-14b context, minus room for the judge rubric.
+        judge_max_context_tokens: 32000
+
+  api:
+    models:
+      roles:
+        # Reads the whole document on every call, several times per run, so
+        # input cost dominates and its 1.31M context is the largest available —
+        # the only one comfortable judging a 2000+ page manual whole.
+        judge_model:
+          provider: openrouter
+          model_name: "z-ai/glm-5.3-flash"
+          max_output_tokens: 48000
+          params:
+            temperature: 0.0
+            # NOT 500. GLM 5.3's reasoning cannot be disabled and bills against
+            # the same max_tokens budget as the answer, returned in a separate
+            # 'reasoning' field. A budget sized for the ~5 lines of visible
+            # scores is spent thinking and returns content=null.
+            max_tokens: 4000
+
+        # 65,536 output tokens ~= 114 pages refined holistically, which covers
+        # the common case. Swap to deepseek/deepseek-v4-pro-0813
+        # (max_output_tokens: 384000, ~668 pages) if you need the long tail
+        # holistic; it costs roughly 2x per refined document.
+        refine_model:
+          provider: openrouter
+          model_name: "google/gemini-3.7-flash"
+          max_output_tokens: 65536
+          params:
+            temperature: 0.2
+            max_tokens: 65536
+
+        # Runs ONCE PER DOCUMENT, not per chunk, and only sees content[:1000]
+        # (metadata.py). Cost here is negligible regardless of document size;
+        # the single resulting tag set is copied onto every chunk payload.
+        # reasoning_effort keeps the model from burning completion tokens
+        # thinking about what is a small tagging task.
+        metadata_tier1_model:
+          provider: openrouter
+          model_name: "z-ai/glm-5.3-flash"
+          max_output_tokens: 48000
+          params:
+            temperature: 0.0
+            max_tokens: 4000
+            reasoning_effort: low
+
+        # The quality reserve. Bounded per document, so a stronger model here
+        # is affordable — and makes the escalation mean something.
+        metadata_tier2_model:
+          provider: openrouter
+          model_name: "deepseek/deepseek-v4-pro-0813"
+          max_output_tokens: 384000
+          params:
+            temperature: 0.0
+            max_tokens: 4000
+
+        vision_model:
+          provider: openrouter
+          model_name: "z-ai/glm-5.3-flash"
+          max_output_tokens: 48000
+          params:
+            temperature: 0.1
+            # Headroom over the local 4096: reasoning shares this budget.
+            max_tokens: 8192
+
+        chat_model:
+          provider: openrouter
+          model_name: "z-ai/glm-5.3-flash"
+          max_output_tokens: 48000
+          params:
+            temperature: 0.2
+            max_tokens: 4000
+
+    pipeline:
+      limits:
+        # Safe to set to the model's real context window now that the output
+        # ceiling is checked separately (atlas/pipeline/tokens.fits_in_context).
+        # For gemini-3.7-flash the 65,536 output cap binds long before this does.
+        max_context_tokens: 1048576
+        # When a document IS too big for one pass, sections should be as large
+        # as the model can rewrite. 6000 was sized for a local 8B model.
+        refine_max_section_tokens: 50000
+        # glm-5.3-flash's 1.31M window — the largest on the vetted list, and
+        # the reason it holds the judge role: it is the only one that can grade
+        # a ~2000-page manual whole. Beyond this the judge is skipped, not failed.
+        judge_max_context_tokens: 1310720

@@ -25,6 +25,7 @@ def validate_startup(*, settings: Settings, config_manager: ConfigManager, engin
     _validate_admin_token(settings=settings)
     _validate_paths(settings=settings)
     _validate_config_shapes(config_manager=config_manager)
+    _validate_providers(settings=settings, config_manager=config_manager)
     _validate_db_connection(settings=settings, engine=engine)
     _validate_qdrant(settings=settings)
     _warn_deterministic_config(settings=settings, engine=engine)
@@ -266,6 +267,59 @@ def _validate_cleanup_rules(raw: Any) -> None:
     if errors:
         detail = "\n  - ".join(errors)
         raise RuntimeError(f"pipeline.yaml cleanup_rules validation failed:\n  - {detail}")
+
+
+def _validate_providers(*, settings: Settings, config_manager: ConfigManager) -> None:
+    """Construct every provider a role references, at boot.
+
+    Provider construction is where credentials are resolved, so building them
+    here turns a missing OPENROUTER_API_KEY into a startup failure naming the
+    variable, rather than a 500 partway through someone's first ingest — after
+    parsing, judging, and refining have already been paid for.
+
+    Also logs the active profile and its ZDR posture, so the running
+    configuration is visible in the logs instead of being inferred from files.
+    """
+    from atlas.llm.registry import ModelRegistry
+
+    effective = config_manager.get()
+    models = effective.models
+    roles = models.get("roles", {}) or {}
+    providers_cfg = models.get("providers", {}) or {}
+
+    _log.info(
+        "LLM profile: %s | embed_model pinned to provider '%s'",
+        models.get("active_profile", "<none>"),
+        (roles.get("embed_model") or {}).get("provider", "<unset>"),
+    )
+
+    registry = ModelRegistry(settings=settings, models_cfg=models)
+    referenced = {
+        entry.get("provider")
+        for entry in roles.values()
+        if isinstance(entry, dict) and entry.get("provider")
+    }
+
+    for name in sorted(referenced):
+        try:
+            registry.provider_for(str(name))
+        except NotImplementedError as e:
+            raise RuntimeError(
+                f"Role references provider '{name}', which is not implemented: {e}"
+            ) from e
+        except Exception as e:
+            raise RuntimeError(
+                f"Provider '{name}' (referenced by a model role) could not be "
+                f"initialised: {e}"
+            ) from e
+
+        p_cfg = providers_cfg.get(name, {}) or {}
+        if p_cfg.get("enforce_zdr"):
+            _log.info(
+                "Provider '%s': zero-data-retention enforced per request "
+                "(provider.zdr=true on every call)",
+                name,
+            )
 
 
 def _validate_db_connection(*, settings: Settings, engine: Engine) -> None:

@@ -60,7 +60,11 @@ Return ONLY the improved markdown. No explanations. No wrapper."""
 # text is shorter than this fraction of the original the refinement is
 # rejected and the original text is kept.  Configurable via
 # ``thresholds.refine_min_preservation_ratio`` in pipeline.yaml.
-_DEFAULT_MIN_PRESERVATION_RATIO = 0.6
+# 0.85 matches thresholds.refine_min_preservation_ratio in pipeline.yaml and
+# the runner's fallback. Kept in sync deliberately: a class default that
+# disagrees with the shipped config means a directly-constructed RefineNode
+# (tests, ad-hoc use) silently enforces a weaker guard than production.
+_DEFAULT_MIN_PRESERVATION_RATIO = 0.85
 
 
 class RefineNode:
@@ -84,6 +88,7 @@ class RefineNode:
         min_section_ratio: float = 0.8,
         max_context_tokens: int = 16384,
         max_section_tokens: int = 6000,
+        max_output_tokens: int | None = None,
     ):
         self.provider = provider
         self.model_name = model_name
@@ -93,6 +98,10 @@ class RefineNode:
         self.min_section_ratio = min_section_ratio
         self.max_context_tokens = max_context_tokens
         self.max_section_tokens = max_section_tokens
+        # Declared response ceiling for this model. Refine emits a full rewrite,
+        # so the response is about as long as the input — this, not the context
+        # window, is what limits how large a document can be refined in one pass.
+        self.max_output_tokens = max_output_tokens
         self.diagnostics = get_diagnostics()
 
         # Create refine version identifier
@@ -455,27 +464,3 @@ class RefineNode:
             improvements.append("Content refined")
 
         return improvements if improvements else ["No changes made"]
-
-    def determine_fidelity_flag(
-        self, *, judge_score: int, refine_success: bool, retry_count: int
-    ) -> FidelityFlag:
-        """Determine fidelity flag for a chunk based on processing results.
-
-        HLD: Safety - Tag problematic chunks with fidelity_flag
-
-        Priority order:
-        1. NEEDS_REVIEW: max retries exceeded (must escalate to HITL)
-        2. VERIFIED: judge score is high (>= 4), quality is good
-        3. LOW_CONFIDENCE: judge score <= 2, quality is poor
-        4. PARTIAL: score is borderline (3), neither clearly good nor clearly poor
-        """
-        if retry_count >= self.max_retries:
-            return FidelityFlag.NEEDS_REVIEW
-
-        if judge_score >= 4:
-            return FidelityFlag.VERIFIED
-
-        if judge_score <= 2:
-            return FidelityFlag.LOW_CONFIDENCE
-
-        return FidelityFlag.PARTIAL

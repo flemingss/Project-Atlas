@@ -7,10 +7,17 @@ services:
       POSTGRES_USER: atlas
       POSTGRES_PASSWORD: atlas
     ports:
-      - "5432:5432"
+      # Host port remapped to avoid colliding with other local Postgres
+      # instances. The container still listens on 5432, and compose-internal
+      # DSNs (postgres:5432) are unaffected.
+      - "15432:5432"
     volumes:
       - atlas_postgres:/var/lib/postgresql/data
       - ./docker/postgres/init-multi-db.sql:/docker-entrypoint-initdb.d/01-init-multi-db.sql:ro
+    # Every other long-lived service restarts; without this, postgres alone
+    # stays down after a Docker Desktop / WSL restart and the dev container
+    # then blocks forever on its service_healthy dependency.
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U atlas -d atlas"]
       interval: 5s
@@ -35,6 +42,42 @@ services:
       retries: 10
       start_period: 10s
 
+  # ---------------------------------------------------------------------
+  # Embedding sidecar (CPU).
+  #
+  # Embeddings live in the stack rather than on the operator's machine so that
+  # ingest and search never depend on LM Studio being up. This is the one part
+  # of the LLM path that is NOT profile-switchable: a vector search only
+  # returns meaningful results when the query and the documents were embedded
+  # by the same model, so swapping the embedder under an existing corpus
+  # corrupts retrieval — silently, when the dimension happens to match.
+  #
+  # CPU is deliberate. Embedding is a single forward pass over <=400-token
+  # chunks, with no decode loop and no KV cache, so it is cheap locally even
+  # though generation is not. Expect minutes, not seconds, on a 2000-page
+  # manual (~2,300 chunks); fine for batch ingest.
+  # ---------------------------------------------------------------------
+  embeddings:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.5
+    container_name: atlas-embeddings
+    command: ["--model-id", "nomic-ai/nomic-embed-text-v1.5", "--port", "80"]
+    ports:
+      # Host debugging only; Atlas reaches it as http://embeddings:80 on the
+      # compose network. 18080 is deliberately avoided — docker-compose.optest.yml
+      # publishes Atlas there, and the two stacks should be able to coexist.
+      - "18090:80"
+    volumes:
+      # Cache the weights so restarts do not re-download ~550MB.
+      - atlas_embeddings_cache:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/80'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      # Weights download on first boot; allow for a slow cold start.
+      start_period: 180s
+
   atlas:
     build:
       context: .
@@ -46,6 +89,8 @@ services:
       postgres:
         condition: service_healthy
       qdrant:
+        condition: service_healthy
+      embeddings:
         condition: service_healthy
     environment:
       ATLAS_ENV: ${ATLAS_ENV:-dev}
@@ -64,6 +109,11 @@ services:
       # Use service hostnames inside the compose network (do not inherit host .env localhost URLs).
       ATLAS_DB_URL: postgresql+psycopg://atlas:atlas@postgres:5432/atlas
       ATLAS_QDRANT_URL: http://qdrant:6333
+      # Embedding sidecar on the compose network (no API key needed).
+      ATLAS_EMBEDDINGS_BASE_URL: http://embeddings:80
+      # Active LLM profile: 'api' (OpenRouter, ZDR-enforced) or 'local' (LM Studio).
+      ATLAS_LLM_PROFILE: ${ATLAS_LLM_PROFILE:-api}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     ports:
       - "28080:8080"
     restart: unless-stopped
@@ -279,6 +329,7 @@ services:
       - ./volumes/dify/plugin-daemon:/app/storage
 
 volumes:
+  atlas_embeddings_cache:
   atlas_postgres:
   atlas_qdrant:
   atlas_redis:
