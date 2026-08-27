@@ -3,13 +3,14 @@ import mimetypes
 
 from typing import Any
 
-from fastapi import APIRouter, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, UploadFile
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 from qdrant_client.http import models as qm
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.concurrency import run_in_threadpool
 
+from atlas.auth import require_admin_token
 from atlas.config_manager import ConfigManager
 from atlas.config_versions import get_active_config_version
 from atlas.llm.registry import ModelRegistry
@@ -99,7 +100,11 @@ def _effective_config_payload(*, config_manager: ConfigManager, session_factory:
 
 
 def make_rag_router(*, config_manager: ConfigManager, session_factory: sessionmaker[Session]) -> APIRouter:
-    r = APIRouter(prefix="/rag", tags=["rag"])
+    # Same auth posture as /admin: open in dev (bypass or no token
+    # configured), token-required otherwise. Ingest is a write path and
+    # search returns document content — neither should be anonymous on a
+    # non-dev deployment.
+    r = APIRouter(prefix="/rag", tags=["rag"], dependencies=[Depends(require_admin_token)])
     settings = Settings()
 
     @r.post("/ingest/text", response_model=IngestTextResponse)
@@ -153,6 +158,14 @@ def make_rag_router(*, config_manager: ConfigManager, session_factory: sessionma
 
         try:
             body = await file.read()
+            if len(body) > int(settings.atlas_pdf_max_bytes):
+                raise HTTPException(
+                    status_code=413,
+                    detail=(
+                        f"Upload exceeds size limit "
+                        f"({len(body)} > {int(settings.atlas_pdf_max_bytes)} bytes)"
+                    ),
+                )
             mime = source_mime_type or file.content_type or "application/octet-stream"
             if mime == "application/octet-stream" and file.filename:
                 guessed, _ = mimetypes.guess_type(file.filename)
@@ -173,6 +186,8 @@ def make_rag_router(*, config_manager: ConfigManager, session_factory: sessionma
                 is_sensitive=bool(is_sensitive),
                 metadata={},
             )
+        except HTTPException:
+            raise
         except Exception as e:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=str(e)) from e
 

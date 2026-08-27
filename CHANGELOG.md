@@ -24,6 +24,28 @@ assigned yet — pick the next version and bump both when it ships.
   against the live dev stack (see README "E2E Scenario Tests"). Everything
   else is recoverable from git history if a CI harness is revived.
 
+### Fixed (2026-08-27, hardening round)
+- **`/rag` endpoints carry the admin auth posture** (`src/atlas/api_rag.py`):
+  ingest (write path) and search (returns document content) were fully
+  anonymous. They now use the same non-strict dependency as `/admin` — open
+  in dev (bypass or no token configured), token-required otherwise. The SPA
+  already sends the header.
+- **Upload size limits enforced** on `POST /rag/ingest/file` and VLM
+  `start-upload` (413 above `ATLAS_PDF_MAX_BYTES`); previously the cap was
+  only checked deep in the Docling adapter, and the VLM path had no check at
+  all.
+- **Bulk VLM processing is cancellable**: discarding the session (DELETE) now
+  stops the server-side loop at the next page boundary — previously the loop
+  kept spending VLM tokens for the rest of the document with no way to stop
+  it short of restarting the API.
+- **Double-start guard on `process-all`** (409 when already processing), with
+  status recovery so a cancelled or all-failed loop never wedges the session
+  in PROCESSING; failed pages are retryable on re-run.
+- **Startup reconciliation of orphaned runs** (`src/atlas/api.py`): Atlas is
+  single-process, so any WorkflowRun still 'running' at startup was
+  interrupted by a crash/restart; they are now marked failed
+  ("interrupted by API restart") instead of sitting in 'running' forever.
+
 ### Fixed (2026-08-27, long-job durability)
 - **VLM session TTL is now activity-based** (`src/atlas/vlm_ingest/session.py`):
   eviction keyed off `created_at` with a 1-hour TTL, so any bulk run longer

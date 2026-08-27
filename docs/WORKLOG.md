@@ -1,5 +1,25 @@
 # Worklog
 
+## 2026-08-27 (hardening round) — Bulletproofing pass: auth, guards, cancellation, crash reconciliation
+
+Follow-up sweep after the scale audit, hunting anything between "works" and
+"bulletproof". Five fixes (CHANGELOG "hardening round"): /rag now carries the
+admin auth posture (was fully anonymous — including search, which returns
+document content); upload size caps enforced at both upload endpoints (VLM
+start-upload previously had none); bulk VLM runs are cancellable via session
+discard (previously the loop burned VLM tokens to the end of the document
+with no off switch); process-all has a double-start guard with status
+recovery (failed pages retryable); and startup now marks any 'running'
+WorkflowRun as failed/interrupted, since nothing can legitimately be running
+at boot in a single-process app.
+
+Verified: suite 698 passed / 89.8%; zero new lint findings vs HEAD; dev auth
+posture unchanged (rag open without token in dev); startup clean.
+
+Still deliberately open (ops-level, not code): no backup story for the
+postgres/qdrant volumes; thumbnails endpoint unpaginated (headless mode for
+1000+ page docs); no automatic resume-from-checkpoint (salvage is manual).
+
 ## 2026-08-27 (real docs + scale audit) — First production doc indexed; timing measured; long-job durability fixes
 
 First real document went through the full VLM path cleanly: 44 pages

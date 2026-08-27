@@ -252,6 +252,27 @@ def create_app() -> FastAPI:
         # ── Startup ───────────────────────────────────────────
         validate_startup(settings=settings, config_manager=config_manager, engine=engine)
         ensure_schema(engine)
+
+        # Reconcile runs orphaned by a crash/restart: Atlas is single-process,
+        # so at startup nothing can legitimately be 'running'. Without this,
+        # an interrupted pipeline run sits in 'running' forever and never
+        # surfaces as a failure.
+        try:
+            with session_factory() as session:
+                stale = session.execute(
+                    select(WorkflowRun).where(WorkflowRun.status == "running")
+                ).scalars().all()
+                for w in stale:
+                    w.status = "failed"
+                    w.error_message = "interrupted by API restart"
+                if stale:
+                    session.commit()
+                    log.warning(
+                        "Startup: marked %d orphaned 'running' run(s) as failed", len(stale)
+                    )
+        except Exception:
+            log.warning("Startup run reconciliation failed (non-fatal)", exc_info=True)
+
         log.info("Atlas startup complete (env=%s)", settings.atlas_env)
 
         # Launch maintenance loop

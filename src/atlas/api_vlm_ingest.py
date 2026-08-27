@@ -341,6 +341,14 @@ def make_vlm_ingest_router(
             raise HTTPException(status_code=400, detail="Only PDF files are supported")
 
         pdf_bytes = await file.read()
+        if len(pdf_bytes) > int(settings.atlas_pdf_max_bytes):
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"PDF exceeds size limit "
+                    f"({len(pdf_bytes)} > {int(settings.atlas_pdf_max_bytes)} bytes)"
+                ),
+            )
         n_pages = await run_in_threadpool(page_count, pdf_bytes)
 
         try:
@@ -730,16 +738,31 @@ def make_vlm_ingest_router(
         Poll ``GET /{session_id}`` for progress during processing.
         """
         s = _get_session(session_id)
-        s.status = SessionStatus.PROCESSING
-
+        if s.status == SessionStatus.PROCESSING:
+            # A bulk loop is already running for this session; a second one
+            # would double-process pages and double-spend VLM tokens.
+            raise HTTPException(
+                status_code=409,
+                detail="Session is already processing — poll GET /{session_id} for progress",
+            )
         resolved, provider = _resolve_vision_model()
+        s.status = SessionStatus.PROCESSING
 
         processed = 0
         skipped = 0
         failed = 0
+        cancelled = False
         errors: dict[int, str] = {}
 
         for p in s.enabled_pages():
+            # Cancellation: discarding the session (DELETE) removes it from
+            # the registry. Without this check the loop would keep calling
+            # the VLM for hours on a document nobody wants anymore.
+            if registry.get(session_id) is None:
+                cancelled = True
+                log.info("VLM bulk cancelled (session discarded): sid=%s at page=%d", session_id, p)
+                break
+
             if s.page_statuses.get(p) in (PageStatus.DONE, PageStatus.SKIPPED):
                 continue  # already finished
 
@@ -804,7 +827,7 @@ def make_vlm_ingest_router(
 
         # Auto-stitch if any pages succeeded
         stitch_resp: StitchResponse | None = None
-        if any(st == PageStatus.DONE for st in s.page_statuses.values()):
+        if not cancelled and any(st == PageStatus.DONE for st in s.page_statuses.values()):
             s.status = SessionStatus.STITCHING
             sr = s.stitch()
             stitch_resp = StitchResponse(
@@ -815,6 +838,11 @@ def make_vlm_ingest_router(
                 tables_merged=sr.tables_merged,
                 headings_merged=sr.headings_merged,
             )
+        elif s.status == SessionStatus.PROCESSING:
+            # Loop ended without a stitch (cancelled or nothing succeeded).
+            # Never leave the session in PROCESSING — that would trip the
+            # double-start guard forever and block any retry.
+            s.status = SessionStatus.FAILED if failed else SessionStatus.CONFIGURING
 
         log.info(
             "VLM bulk complete: sid=%s processed=%d skipped=%d failed=%d",
