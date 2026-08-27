@@ -86,7 +86,7 @@ export function ReviewPage() {
 
   const handleClaimNext = async () => {
     try {
-      const t = await hitlApi.nextTask({ tenant_id: workspace || undefined });
+      const t = await hitlApi.nextTask();
       openTask(t);
       toast.success(`Claimed task #${t.id}`);
     } catch (e) {

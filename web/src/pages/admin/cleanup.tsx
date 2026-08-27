@@ -99,7 +99,7 @@ export function AdminCleanupPage() {
       await adminApi.submitFeedback({
         doc_id: fbDocId,
         category: fbCategory,
-        comment: fbComment || undefined,
+        description: fbComment || undefined,
       });
       toast.success('Feedback submitted');
       setFbDocId('');
@@ -168,12 +168,13 @@ export function AdminCleanupPage() {
 
   const handleExportRules = async () => {
     try {
-      const data = await adminApi.exportRules();
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      // Backend streams a YAML file; download it as-is.
+      const resp = await adminApi.exportRules();
+      const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'cleanup-rules-export.json';
+      a.download = 'cleanup-rules-export.yaml';
       a.click();
       URL.revokeObjectURL(url);
       toast.success('Rules exported');

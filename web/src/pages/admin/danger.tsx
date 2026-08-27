@@ -59,9 +59,9 @@ export function AdminDangerPage() {
     setResetting(true);
     try {
       await adminApi.resetDb({
-        reset_postgres: resetPostgres,
-        clear_qdrant: clearQdrant,
-        clear_artifacts: clearArtifacts,
+        postgres: resetPostgres,
+        qdrant: clearQdrant,
+        artifacts: clearArtifacts,
       });
       toast.success('Database reset complete');
     } catch (e) {
@@ -75,8 +75,8 @@ export function AdminDangerPage() {
     setRestoring(true);
     try {
       await adminApi.restoreStockConfig({
-        restore_pipeline: restorePipeline,
-        restore_models: restoreModels,
+        pipeline: restorePipeline,
+        models: restoreModels,
       });
       toast.success('Stock config restored');
     } catch (e) {

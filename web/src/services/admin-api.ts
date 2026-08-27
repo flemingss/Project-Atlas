@@ -252,10 +252,13 @@ export interface AdoptOrphanGroupResult {
 
 export const adminApi = {
   // ── DB ──
-  resetDb(payload: { reset_postgres?: boolean; clear_qdrant?: boolean; clear_artifacts?: boolean }) {
-    return apiFetch<{ status: string }>('/admin/db/reset', {
+  // Booleans are passed explicitly on every call: the backend defaults are
+  // postgres=True/qdrant=True, so omitting a field would wipe that store
+  // regardless of what the operator unchecked.
+  resetDb(payload: { postgres: boolean; qdrant: boolean; artifacts: boolean }) {
+    return apiFetch<{ ok: boolean }>('/admin/db/reset', {
       method: 'POST',
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ confirm: 'RESET', ...payload }),
     });
   },
 
@@ -263,16 +266,21 @@ export const adminApi = {
   effectiveConfig() {
     return apiFetch<EffectiveConfig>('/admin/config/effective');
   },
-  restoreStockConfig(payload: { restore_pipeline?: boolean; restore_models?: boolean }) {
-    return apiFetch<{ status: string }>('/admin/config/restore-stock', {
+  restoreStockConfig(payload: { pipeline: boolean; models: boolean }) {
+    // Backend takes QUERY params (pipeline, models, confirm), not a body.
+    const q = new URLSearchParams({
+      pipeline: String(payload.pipeline),
+      models: String(payload.models),
+      confirm: 'RESTORE',
+    });
+    return apiFetch<{ ok: boolean }>(`/admin/config/restore-stock?${q}`, {
       method: 'POST',
-      body: JSON.stringify(payload),
     });
   },
   configVersions() {
     return apiFetch<ConfigVersionSummary[]>('/admin/config-versions');
   },
-  createConfigVersion(payload: { config: Record<string, unknown>; comment?: string }) {
+  createConfigVersion(payload: { name?: string; notes?: string; base?: string; patch?: Record<string, unknown>; activate?: boolean }) {
     return apiFetch<ConfigVersionSummary>('/admin/config-versions', {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -361,7 +369,8 @@ export const adminApi = {
   },
 
   // ── Cleanup feedback ──
-  submitFeedback(payload: { doc_id: string; category: string; comment?: string }) {
+  // Backend field for free text is `description` (there is no `comment`).
+  submitFeedback(payload: { doc_id: string; category: string; description?: string; tenant_id?: string; project_id?: string; corpus_id?: string }) {
     return apiFetch<CleanupFeedback>('/admin/cleanup-feedback', {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -402,7 +411,8 @@ export const adminApi = {
     });
   },
   exportRules() {
-    return apiFetch<{ rules: unknown }>('/admin/cleanup-rules/export');
+    // Backend streams a YAML file download, not JSON.
+    return apiFetchRaw('/admin/cleanup-rules/export');
   },
   importRules(payload: { rules_yaml: string; mode?: 'replace' | 'merge'; name?: string; notes?: string }) {
     return apiFetch<{ ok: boolean }>('/admin/cleanup-rules/import', {

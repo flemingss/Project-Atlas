@@ -860,7 +860,8 @@ function DoclingProcessingStep({ onBack, onReset }: { onBack: () => void; onRese
 
     const fd = new FormData();
     fd.append('file', file);
-    if (docName) fd.append('doc_name', docName);
+    // Backend requires doc_id (there is no doc_name field server-side).
+    fd.append('doc_id', docName.trim() || file.name.replace(/\.[^.]+$/, ''));
     fd.append('is_finalized', String(searchable));
     fd.append('is_sensitive', String(sensitive));
     if (workspace) fd.append('tenant_id', workspace);

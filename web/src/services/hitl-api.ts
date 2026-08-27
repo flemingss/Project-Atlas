@@ -51,9 +51,10 @@ export const hitlApi = {
     return apiFetch<HitlTask>(`/admin/hitl/tasks/${taskId}`);
   },
 
-  /** Claim the next pending task. */
-  nextTask(params?: { tenant_id?: string }) {
-    const q = params?.tenant_id ? `?tenant_id=${encodeURIComponent(params.tenant_id)}` : '';
+  /** Claim the next pending task (highest priority first, any workspace —
+   *  the backend's only filter is assigned_to, which the UI doesn't use). */
+  nextTask(params?: { assigned_to?: string }) {
+    const q = params?.assigned_to ? `?assigned_to=${encodeURIComponent(params.assigned_to)}` : '';
     return apiFetch<HitlTask>(`/admin/hitl/tasks/next${q}`, { method: 'POST' });
   },
 

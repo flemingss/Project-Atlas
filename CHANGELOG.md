@@ -24,6 +24,32 @@ assigned yet — pick the next version and bump both when it ships.
   against the live dev stack (see README "E2E Scenario Tests"). Everything
   else is recoverable from git history if a CI harness is revived.
 
+### Fixed (2026-08-28, full UI/API contract audit)
+- **Every frontend call site diffed against the live OpenAPI schema** (request
+  fields, required flags, response shapes — both directions). Nine further
+  mismatches found and fixed:
+  - Danger zone **Reset database** never sent the required `confirm` string
+    and used wrong field names (`reset_postgres`/`clear_qdrant`/
+    `clear_artifacts` vs `postgres`/`qdrant`/`artifacts`) — always 400'd.
+    Fixed to send `confirm: RESET` plus explicit booleans on every call,
+    because the backend defaults are postgres=True/qdrant=True and omitted
+    fields would wipe stores the operator unchecked.
+  - Danger zone **Restore stock config** sent a JSON body; the backend takes
+    query params (`pipeline`, `models`, `confirm=RESTORE`) — always 400'd.
+  - **Cleanup feedback** sent `comment`; the backend field is `description`
+    — the operator's comment text was silently dropped on every submission.
+  - **Export rules** parsed the streamed YAML download as JSON (always threw)
+    and saved as `.json`; now downloads the YAML as-is.
+  - **Docling ingest** still sent `doc_name` instead of the required `doc_id`
+    (same bug as the Import card, separate call site) — always 422'd.
+  - `createConfigVersion` client signature didn't match the backend model
+    (`{config, comment}` vs `{name, notes, base, patch, activate}`).
+  - `hitlApi.nextTask` sent a `tenant_id` query param the backend doesn't
+    have (its only filter is `assigned_to`) — silently ignored.
+- Verified clean: full 9-route headless sweep, feedback round-trip with
+  `description` persisting, rules export streaming
+  `application/x-yaml`. Destructive endpoints audited by contract only.
+
 ### Fixed (2026-08-28, cleanup-page API contracts)
 - **SPA: every Cleanup & Feedback rule endpoint had drifted from the backend
   contract.** Suggest sent `sample_markdown`/`observed_issues` where the
