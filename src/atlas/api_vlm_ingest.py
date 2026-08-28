@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -267,8 +268,12 @@ def make_vlm_ingest_router(
         pdf_path: Path | None = d / "source.pdf"
         try:
             d.mkdir(parents=True, exist_ok=True)
-            assert pdf_path is not None
-            pdf_path.write_bytes(pdf_bytes)
+            # Write-then-rename: a crash partway through a direct write would
+            # leave a truncated source.pdf that rehydrate cannot render, and
+            # the session would look recoverable while being unusable.
+            tmp = d / "source.pdf.tmp"
+            tmp.write_bytes(pdf_bytes)
+            os.replace(tmp, d / "source.pdf")
         except OSError:
             log.warning("Could not persist source PDF for sid=%s", s.session_id, exc_info=True)
             pdf_path = None
@@ -836,10 +841,6 @@ def make_vlm_ingest_router(
                 detail=f"Page {p} is already being processed. Try again when it completes.",
             )
 
-        # Mark processing
-        s.page_statuses[p] = PageStatus.PROCESSING
-        s.set_status(SessionStatus.PROCESSING)
-
         settings = s.config.settings_for_page(p)
         if not settings.enabled:
             s.skip_page(p)
@@ -849,6 +850,11 @@ def make_vlm_ingest_router(
                 model="",
                 status="skipped",
             )
+
+        # Mark the *page* in flight. The session status is deliberately left
+        # alone: a single interactive page is not a bulk run, and marking the
+        # session busy here is what used to wedge it permanently.
+        s.page_statuses[p] = PageStatus.PROCESSING
 
         try:
             resolved, provider = _resolve_vision_model()
@@ -876,6 +882,11 @@ def make_vlm_ingest_router(
                 status="error",
                 error=error_msg,
             )
+        finally:
+            # No exit path may leave the page stuck in PROCESSING — that would
+            # make the page permanently unreprocessable via the CAS guard above.
+            if s.page_statuses.get(p) is PageStatus.PROCESSING:
+                s.page_statuses[p] = PageStatus.PENDING
 
     # ------------------------------------------------------------------
     # Bulk process all pages (server-side sequential)
@@ -890,14 +901,17 @@ def make_vlm_ingest_router(
         Poll ``GET /{session_id}`` for progress during processing.
         """
         s = _get_session(session_id)
-        if s.status == SessionStatus.PROCESSING:
-            # A bulk loop is already running for this session; a second one
-            # would double-process pages and double-spend VLM tokens.
+        if s.bulk_active:
+            # A bulk loop is already running *in this process*; a second one
+            # would double-process pages and double-spend VLM tokens. This is
+            # an in-memory lock on purpose — a restart releases it, because
+            # after a restart no loop is in fact running.
             raise HTTPException(
                 status_code=409,
                 detail="Session is already processing — poll GET /{session_id} for progress",
             )
         resolved, provider = _resolve_vision_model()
+        s.bulk_active = True
         s.set_status(SessionStatus.PROCESSING)
 
         processed = 0
@@ -906,64 +920,83 @@ def make_vlm_ingest_router(
         cancelled = False
         errors: dict[int, str] = {}
 
-        for p in s.enabled_pages():
-            # Cancellation: discarding the session (DELETE) removes it from
-            # the registry. Without this check the loop would keep calling
-            # the VLM for hours on a document nobody wants anymore.
-            if registry.get(session_id) is None:
-                cancelled = True
-                log.info("VLM bulk cancelled (session discarded): sid=%s at page=%d", session_id, p)
-                break
-
-            if s.page_statuses.get(p) in (PageStatus.DONE, PageStatus.SKIPPED):
-                continue  # already finished
-
-            settings = s.config.settings_for_page(p)
-            if not settings.enabled:
-                s.skip_page(p)
-                skipped += 1
-                continue
-
-            s.page_statuses[p] = PageStatus.PROCESSING
-
-            try:
-                log.info(
-                    "VLM bulk page: sid=%s page=%d/%d model=%s",
-                    session_id, p, s.page_count, resolved.model_name,
-                )
-                result = await _extract_page(s, p, settings, resolved, provider)
-                s.set_page_result(p, result)
-                processed += 1
-
-            except Exception as exc:
-                error_msg = str(exc)
-                log.error("VLM bulk page %d failed: %s", p, error_msg, exc_info=True)
-                s.set_page_error(p, error_msg)
-                errors[p] = error_msg
-                failed += 1
-
-        # Auto-stitch if any pages succeeded
         stitch_resp: StitchResponse | None = None
-        if not cancelled and any(st == PageStatus.DONE for st in s.page_statuses.values()):
-            s.set_status(SessionStatus.STITCHING)
-            sr = s.stitch()
-            stitch_resp = StitchResponse(
-                markdown=sr.markdown,
-                page_count=sr.page_count,
-                pages_processed=sr.pages_processed,
-                duplicate_lines_removed=sr.duplicate_lines_removed,
-                tables_merged=sr.tables_merged,
-                headings_merged=sr.headings_merged,
-            )
-        elif s.status == SessionStatus.PROCESSING:
-            # Loop ended without a stitch (cancelled or nothing succeeded).
-            # Never leave the session in PROCESSING — that would trip the
-            # double-start guard forever and block any retry.
-            s.set_status(SessionStatus.FAILED if failed else SessionStatus.CONFIGURING)
+        try:
+            for p in s.enabled_pages():
+                # Cancellation: discarding the session (DELETE) removes it
+                # from the registry and flags the object. Without this check
+                # the loop would keep calling the VLM for hours on a document
+                # nobody wants any more.
+                if s.discarded or registry.get(session_id) is None:
+                    cancelled = True
+                    log.info(
+                        "VLM bulk cancelled (session discarded): sid=%s at page=%d",
+                        session_id, p,
+                    )
+                    break
+
+                if s.page_statuses.get(p) in (PageStatus.DONE, PageStatus.SKIPPED):
+                    continue  # already finished
+
+                settings = s.config.settings_for_page(p)
+                if not settings.enabled:
+                    s.skip_page(p)
+                    skipped += 1
+                    continue
+
+                s.page_statuses[p] = PageStatus.PROCESSING
+
+                try:
+                    log.info(
+                        "VLM bulk page: sid=%s page=%d/%d model=%s",
+                        session_id, p, s.page_count, resolved.model_name,
+                    )
+                    result = await _extract_page(s, p, settings, resolved, provider)
+                    s.set_page_result(p, result)
+                    processed += 1
+
+                except Exception as exc:
+                    error_msg = str(exc)
+                    log.error("VLM bulk page %d failed: %s", p, error_msg, exc_info=True)
+                    s.set_page_error(p, error_msg)
+                    errors[p] = error_msg
+                    failed += 1
+
+                finally:
+                    # A page must never be left claiming to be in flight.
+                    if s.page_statuses.get(p) is PageStatus.PROCESSING:
+                        s.page_statuses[p] = PageStatus.PENDING
+
+            # Auto-stitch if any pages succeeded
+            if not cancelled and any(
+                st == PageStatus.DONE for st in s.page_statuses.values()
+            ):
+                s.set_status(SessionStatus.STITCHING)
+                sr = s.stitch()
+                stitch_resp = StitchResponse(
+                    markdown=sr.markdown,
+                    page_count=sr.page_count,
+                    pages_processed=sr.pages_processed,
+                    duplicate_lines_removed=sr.duplicate_lines_removed,
+                    tables_merged=sr.tables_merged,
+                    headings_merged=sr.headings_merged,
+                )
+            elif failed and not cancelled:
+                s.status = SessionStatus.FAILED
+
+        finally:
+            # Releasing the lock and settling the status belong here, not on
+            # the happy path: an exception escaping the loop used to leave the
+            # session permanently "processing" and unstartable. A discarded
+            # session is left alone — persisting it would recreate the rows
+            # DELETE just removed.
+            s.bulk_active = False
+            if not s.discarded:
+                s.settle()
 
         log.info(
-            "VLM bulk complete: sid=%s processed=%d skipped=%d failed=%d",
-            session_id, processed, skipped, failed,
+            "VLM bulk complete: sid=%s processed=%d skipped=%d failed=%d cancelled=%s",
+            session_id, processed, skipped, failed, cancelled,
         )
 
         return ProcessAllResponse(
@@ -1247,13 +1280,24 @@ def make_vlm_ingest_router(
             )
         pr = s.page_results[page_num]
         if "markdown" in body:
-            s.page_results[page_num] = PageResult(
-                page_num=pr.page_num,
-                markdown=body["markdown"],
-                model=pr.model,
-                dpi=pr.dpi,
-                crop_top=pr.crop_top,
-                crop_bottom=pr.crop_bottom,
+            # Route through set_page_result so the correction is written to the
+            # ledger and the checkpoint file. Assigning page_results directly
+            # kept the edit in memory only, so an operator's hand-corrections —
+            # more expensive than the VLM output they replace — were silently
+            # discarded when the session was released from the cache.
+            #
+            # cache_key is deliberately dropped: a human edit is not an
+            # extraction of those inputs and must never be served as one.
+            s.set_page_result(
+                page_num,
+                PageResult(
+                    page_num=pr.page_num,
+                    markdown=body["markdown"],
+                    model=pr.model,
+                    dpi=pr.dpi,
+                    crop_top=pr.crop_top,
+                    crop_bottom=pr.crop_bottom,
+                ),
             )
         return {"page_num": page_num, "status": "updated"}
 

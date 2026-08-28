@@ -165,6 +165,23 @@ class VlmIngestSession:
     # state is a plain data structure, persistence is somebody else's job.
     writer: Any = None
 
+    # True while a bulk loop is running *in this process*. This is the
+    # concurrency lock, deliberately separate from ``status``:
+    #
+    #   status      = durable description of where the document has got to
+    #   bulk_active = in-memory fact about a loop running right now
+    #
+    # Conflating the two is what let a single interactive page wedge the
+    # session into PROCESSING forever, and — once status became durable —
+    # made that wedge survive restarts. A lock that lives only in memory is
+    # released by a restart automatically, which is exactly the semantics a
+    # "is a loop running?" question wants.
+    bulk_active: bool = False
+
+    # Set when the operator discards the session. Suppresses write-through so
+    # an in-flight page cannot resurrect rows that DELETE just removed.
+    discarded: bool = False
+
     # Headless flag
     headless: bool = False
 
@@ -225,13 +242,37 @@ class VlmIngestSession:
         """Transition the session and persist the new status immediately.
 
         Status is durable state: it decides whether a resumed session lands on
-        the review step or the configure step, and it gates the double-start
-        guard. Assigning ``.status`` directly skips persistence — go through
-        this instead.
+        the review step or the configure step. Assigning ``.status`` directly
+        skips persistence — go through this instead.
         """
         self.status = status
         self.touch()
         self._notify("status_changed")
+
+    def resting_status(self) -> SessionStatus:
+        """The status this session should hold when no work is in flight.
+
+        ``PROCESSING`` and ``STITCHING`` describe an *activity*, not a place
+        the document has reached, so they are never a valid resting value —
+        persisting one is what made an interrupted session unstartable. This
+        derives an honest resting state from what actually exists.
+        """
+        if self.status is SessionStatus.COMMITTED:
+            return SessionStatus.COMMITTED
+        if self.stitched is not None:
+            return SessionStatus.COMPLETE
+        if self.status is SessionStatus.FAILED:
+            return SessionStatus.FAILED
+        return SessionStatus.CONFIGURING
+
+    def settle(self) -> None:
+        """Return the session to a resting status and persist it.
+
+        Called from the ``finally`` of anything that marks work in flight, so
+        no exit path — success, error, or cancellation — can leave the session
+        claiming to be busy.
+        """
+        self.set_status(self.resting_status())
 
     def _checkpoint_page(self, page_num: int, markdown: str) -> None:
         """Best-effort write-through of a completed page's markdown."""
@@ -251,7 +292,7 @@ class VlmIngestSession:
 
     def _notify(self, hook: str, *args: Any) -> None:
         """Fire a write-through hook. Never lets persistence break the job."""
-        if self.writer is None:
+        if self.writer is None or self.discarded:
             return
         fn = getattr(self.writer, hook, None)
         if fn is None:
@@ -390,8 +431,7 @@ class SessionRegistry:
             # write over each other's progress.
             while len(self._sessions) >= self._max:
                 candidates = [
-                    s for s in self._sessions.values()
-                    if s.status is not SessionStatus.PROCESSING
+                    s for s in self._sessions.values() if not s.bulk_active
                 ]
                 if not candidates:
                     raise RuntimeError(
@@ -456,7 +496,13 @@ class SessionRegistry:
 
     def delete(self, session_id: str) -> bool:
         with self._lock:
-            return self._sessions.pop(session_id, None) is not None
+            s = self._sessions.pop(session_id, None)
+            if s is not None:
+                # A bulk loop may still be mid-page and holding a reference.
+                # Flagging the object stops its write-through from recreating
+                # the very rows the caller is about to delete.
+                s.discarded = True
+            return s is not None
 
     def list_sessions(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -474,8 +520,7 @@ class SessionRegistry:
         with self._lock:
             cold = [
                 sid for sid, s in self._sessions.items()
-                if now - s.last_activity > self._ttl
-                and s.status is not SessionStatus.PROCESSING
+                if now - s.last_activity > self._ttl and not s.bulk_active
             ]
             for sid in cold:
                 log.info(

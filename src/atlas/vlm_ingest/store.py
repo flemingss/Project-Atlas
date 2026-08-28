@@ -36,7 +36,7 @@ from atlas.vlm_ingest.session import (
     VlmIngestConfig,
     VlmIngestSession,
 )
-from atlas.vlm_ingest.stitcher import PageResult
+from atlas.vlm_ingest.stitcher import PageResult, StitchResult
 
 log = logging.getLogger(__name__)
 
@@ -147,7 +147,11 @@ def save_session(
         row.run_id = s.run_id
         row.source_filename = s.source_filename
         row.page_count = s.page_count
-        row.status = s.status.value
+        # Never persist an in-flight status. PROCESSING/STITCHING describe an
+        # activity belonging to a process that will not exist after a restart;
+        # writing one down produced sessions that came back claiming to be busy
+        # and could never be restarted.
+        row.status = s.resting_status().value
         row.headless = s.headless
         row.config = s.config.to_dict()
         if source_sha256:
@@ -286,6 +290,25 @@ def rehydrate(
         s.status = SessionStatus(state.get("status", "configuring"))
     except ValueError:
         s.status = SessionStatus.CONFIGURING
+    # Defence in depth: save_session should never have written one of these,
+    # but a row from an older build might carry one. Nothing is running now.
+    if s.status in (SessionStatus.PROCESSING, SessionStatus.STITCHING):
+        s.status = SessionStatus.CONFIGURING
+
+    # Restore the stitched document. Without this a resumed session cannot be
+    # committed — commit falls back to s.stitched when the caller sends no
+    # markdown of its own.
+    stitched_md = state.get("stitched_markdown") or ""
+    if stitched_md:
+        done_pages = sum(
+            1 for p in state.get("pages", []) if p.get("status") == "done"
+        )
+        s.stitched = StitchResult(
+            markdown=stitched_md,
+            page_count=int(state["page_count"]),
+            pages_processed=done_pages,
+        )
+        s.status = SessionStatus.COMPLETE
 
     for p in state.get("pages", []):
         num = int(p["page_num"])

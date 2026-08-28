@@ -232,10 +232,10 @@ def test_releasing_a_cold_session_does_not_lose_work() -> None:
     assert recovered.page_results[0].markdown == "# expensive"
 
 
-def test_a_processing_session_is_never_released() -> None:
-    """Its bulk loop holds a live reference; releasing it would fork state."""
+def test_a_session_running_a_bulk_loop_is_never_released() -> None:
+    """Its loop holds a live reference; releasing it would fork state."""
     s = _make_session("busy0001")
-    s.status = SessionStatus.PROCESSING
+    s.bulk_active = True
 
     registry = SessionRegistry(ttl_seconds=0.0)
     registry.put(s)
@@ -244,11 +244,11 @@ def test_a_processing_session_is_never_released() -> None:
     assert "busy0001" in registry._sessions
 
 
-def test_capacity_pressure_releases_lru_and_spares_processing() -> None:
+def test_capacity_pressure_releases_lru_and_spares_running_loops() -> None:
     registry = SessionRegistry(max_sessions=2)
 
     busy = _make_session("busy0001")
-    busy.status = SessionStatus.PROCESSING
+    busy.bulk_active = True
     busy.last_activity = 0.0  # oldest, but must be spared
     registry.put(busy)
 
@@ -265,7 +265,7 @@ def test_capacity_pressure_releases_lru_and_spares_processing() -> None:
 def test_capacity_pressure_refuses_rather_than_disturbing_active_jobs() -> None:
     registry = SessionRegistry(max_sessions=1)
     busy = _make_session("busy0001")
-    busy.status = SessionStatus.PROCESSING
+    busy.bulk_active = True
     registry.put(busy)
 
     with pytest.raises(RuntimeError, match="actively processing"):
@@ -326,3 +326,139 @@ def test_a_failing_writer_never_breaks_the_job() -> None:
     # The in-memory result still landed, which is what the operator sees.
     assert s.page_results[0].markdown == "# md"
     assert s.page_statuses[0] is PageStatus.DONE
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle: status is a description, bulk_active is the lock
+#
+# These pin the fix for the defect class where a session could be left
+# claiming to be busy and become permanently unstartable. The rule: anything
+# that marks work in flight must release it on *every* exit path, and an
+# activity must never be written down as durable state.
+# ---------------------------------------------------------------------------
+
+def test_a_fresh_session_holds_no_bulk_lock() -> None:
+    assert _make_session().bulk_active is False
+
+
+def test_transient_statuses_are_never_a_resting_state() -> None:
+    """PROCESSING/STITCHING describe an activity, not where the doc got to."""
+    s = _make_session()
+    for transient in (SessionStatus.PROCESSING, SessionStatus.STITCHING):
+        s.status = transient
+        assert s.resting_status() is SessionStatus.CONFIGURING
+
+    s.status = SessionStatus.PROCESSING
+    s.settle()
+    assert s.status is SessionStatus.CONFIGURING
+
+
+def test_resting_status_reports_complete_once_stitched() -> None:
+    s = _make_session()
+    s.set_page_result(0, PageResult(page_num=0, markdown="a"))
+    s.stitch()
+    s.status = SessionStatus.PROCESSING  # e.g. a later re-run
+    assert s.resting_status() is SessionStatus.COMPLETE
+
+
+def test_committed_is_terminal_and_survives_settle() -> None:
+    s = _make_session()
+    s.status = SessionStatus.COMMITTED
+    s.settle()
+    assert s.status is SessionStatus.COMMITTED
+
+
+def test_in_flight_status_is_never_persisted(session_factory) -> None:
+    """The regression that made an interrupted bulk run unstartable."""
+    s = _make_session()
+    s.status = SessionStatus.PROCESSING
+    vlm_store.save_session(session_factory, s)
+
+    state = vlm_store.load_session(session_factory, s.session_id)
+    assert state["status"] != "processing"
+
+    restored = vlm_store.rehydrate(state, b"pdf")
+    assert restored.status is SessionStatus.CONFIGURING
+    assert restored.bulk_active is False
+
+
+def test_rehydrate_defends_against_a_legacy_processing_row(session_factory) -> None:
+    """Rows written by an older build may still carry a transient status."""
+    s = _make_session()
+    vlm_store.save_session(session_factory, s)
+    with session_factory() as db:
+        from atlas.models import VlmSession
+
+        db.get(VlmSession, s.session_id).status = "processing"
+        db.commit()
+
+    state = vlm_store.load_session(session_factory, s.session_id)
+    assert vlm_store.rehydrate(state, b"pdf").status is SessionStatus.CONFIGURING
+
+
+def test_stitched_document_is_restored_on_rehydrate(session_factory) -> None:
+    """Without this a resumed session cannot be committed."""
+    s = _make_session()
+    s.set_page_result(0, PageResult(page_num=0, markdown="# One"))
+    s.set_page_result(1, PageResult(page_num=1, markdown="# Two"))
+    s.stitch()
+    vlm_store.save_session(session_factory, s)
+    vlm_store.save_page(session_factory, s.session_id, 0, status="done", markdown="# One")
+    vlm_store.save_page(session_factory, s.session_id, 1, status="done", markdown="# Two")
+
+    restored = vlm_store.rehydrate(
+        vlm_store.load_session(session_factory, s.session_id), b"pdf"
+    )
+    assert restored.stitched is not None
+    assert "# One" in restored.stitched.markdown
+    assert restored.status is SessionStatus.COMPLETE
+
+
+def test_operator_corrections_are_written_through() -> None:
+    """A hand-edit is more expensive than the extraction it replaces."""
+    s = _make_session()
+    w = _RecordingWriter()
+    s.set_page_result(0, PageResult(page_num=0, markdown="raw", model="m"))
+    s.writer = w  # attach after the machine result, as the API path does
+
+    s.set_page_result(
+        0, PageResult(page_num=0, markdown="corrected by hand", model="m")
+    )
+
+    assert ("done", 0, "corrected by hand") in w.events
+
+
+def test_a_discarded_session_cannot_resurrect_its_rows() -> None:
+    """An in-flight page completing after DELETE must not rewrite the ledger."""
+    s = _make_session()
+    w = _RecordingWriter()
+    s.writer = w
+    s.discarded = True
+
+    s.set_page_result(0, PageResult(page_num=0, markdown="late", model="m"))
+    s.set_status(SessionStatus.COMPLETE)
+
+    assert w.events == []
+
+
+def test_delete_flags_the_live_session_object() -> None:
+    registry = SessionRegistry()
+    s = registry.create(pdf_bytes=b"pdf", page_count=1)
+    assert registry.delete(s.session_id) is True
+    assert s.discarded is True
+
+
+def test_cache_release_is_driven_by_the_lock_not_the_status() -> None:
+    """A session merely *labelled* processing is still releasable."""
+    s = _make_session("stale001")
+    s.status = SessionStatus.PROCESSING  # stale label, no loop running
+    registry = SessionRegistry(ttl_seconds=0.0)
+    registry.put(s)
+    registry.release_cold_sessions()
+    assert registry._sessions == {}
+
+    busy = _make_session("busy0002")
+    busy.bulk_active = True
+    registry.put(busy)
+    registry.release_cold_sessions()
+    assert "busy0002" in registry._sessions
