@@ -59,7 +59,10 @@ jobs:
           cp config/pipeline.yaml.example config/pipeline.yaml
           cp config/models.yaml.example config/models.yaml
       - name: Lint
-        run: ruff check src tests
+        # scripts/ is included: it is operator-facing tooling (backup, flush,
+        # quality measurement) and was previously unlinted, so a new script
+        # could ship with problems the same check would have caught in src/.
+        run: ruff check src tests scripts
       - name: Type check
         # Registered debt lives in pyproject's mypy overrides; the line holds
         # everywhere else. This gate found a real one on its first run —

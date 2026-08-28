@@ -8,12 +8,12 @@ import time
 from pathlib import Path
 
 try:
-    from atlas.eval.retrieval_eval import http_search_fn, load_golden_set, parse_cases, evaluate
+    from atlas.eval.retrieval_eval import evaluate, http_search_fn, load_golden_set, parse_cases
 except ModuleNotFoundError:
     # Support running from a source checkout.
     repo_root = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(repo_root / "src"))
-    from atlas.eval.retrieval_eval import http_search_fn, load_golden_set, parse_cases, evaluate
+    from atlas.eval.retrieval_eval import evaluate, http_search_fn, load_golden_set, parse_cases
 
 
 def _now() -> str:

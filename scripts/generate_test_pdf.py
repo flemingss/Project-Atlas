@@ -10,7 +10,7 @@ def build_pdf(*, out_path: Path) -> None:
         from reportlab.lib.pagesizes import LETTER
         from reportlab.lib.styles import getSampleStyleSheet
         from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         raise SystemExit(
             "Missing dependency 'reportlab'. Install it with: pip install reportlab\n"
             f"Original import error: {e!r}"
