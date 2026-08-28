@@ -44,6 +44,11 @@ from atlas.workflow_ledger import (
 
 log = logging.getLogger(__name__)
 
+# How many chunks are embedded and upserted per round-trip during commit.
+# Peak memory during commit is a function of this, not of document size —
+# see the commit loop for why that matters at the 2,000-3,000 page target.
+COMMIT_WINDOW_CHUNKS = 256
+
 
 async def _activate_doc_version(
     *,
@@ -489,10 +494,7 @@ async def _commit_chunks_to_qdrant(
     if not texts:
         return {"ok": True, "run_id": run_id, "collection": "atlas_chunks", "chunks_upserted": 0}
 
-    vectors = await embed_provider.embed(model=resolved_embed.model_name, texts=texts, params=resolved_embed.params)
-
     store = QdrantStore(url=settings.atlas_qdrant_url, api_key=None, collection="atlas_chunks")
-    await run_in_threadpool(store.ensure_collection, vector_size=len(vectors[0]))
 
     # Purge stale chunks for this doc_id + doc_version before upserting.
     stale_filter = [
@@ -502,11 +504,6 @@ async def _commit_chunks_to_qdrant(
         qm.FieldCondition(key="doc_id", match=qm.MatchValue(value=doc_id)),
         qm.FieldCondition(key="doc_version", match=qm.MatchValue(value=doc_version)),
     ]
-    try:
-        await run_in_threadpool(store.delete_by_filter, must=stale_filter)
-    except Exception:
-        log.warning("Failed to purge stale chunks for run %s", run_id, exc_info=True)
-
     now = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
 
     judge = ctx.results.get("judge") or {}
@@ -522,85 +519,122 @@ async def _commit_chunks_to_qdrant(
         max_retries=max_retries_cfg,
     )
 
-    points: list[qm.PointStruct] = []
+    # Chunks are embedded and upserted in bounded windows rather than all at
+    # once. The previous shape embedded every chunk, built every PointStruct,
+    # and only then issued a single upsert — so peak memory scaled with the
+    # whole document. At the 2,000-3,000 page target that is gigabytes of
+    # float vectors resident before the first byte reaches Qdrant, and a
+    # failure anywhere in that window discarded the entire run's embedding
+    # spend. Bounded windows make peak memory a function of the window, not
+    # the document, and let partial progress survive.
+    window_size = max(1, int(COMMIT_WINDOW_CHUNKS))
+
+    total_upserted = 0
     manifest_lines: list[str] = []
-    for c, v in zip(chunks, vectors, strict=True):
-        content_hash = sha256_hex(c.text)
-        pid = deterministic_chunk_id(
-            tenant_id=tenant_id,
-            project_id=project_id,
-            corpus_id=corpus_id,
-            doc_id=doc_id,
-            doc_version=doc_version,
-            content_hash=content_hash,
-            chunk_index=c.index,
-        )
-        feats = infer_chunk_features(c.text)
-        payload: dict[str, Any] = {
-            "tenant_id": tenant_id,
-            "project_id": project_id,
-            "corpus_id": corpus_id,
-            "doc_id": doc_id,
-            "doc_version": doc_version,
-            "chunk_index": c.index,
-            "text": c.text,
-            "content_hash": content_hash,
-            "is_finalized": bool(is_finalized),
-            "is_sensitive": bool(is_sensitive),
-            "is_active_version": True,
-            "source_mime_type": source_mime_type,
-            "source_filename": source_filename,
-            "chunking_strategy": strategy_used,
-            "chunk_qa": chunk_qa.to_dict(),
-            "section_path": getattr(c, "section_path", []) or [],
-            "parent_header_id": getattr(c, "parent_header_id", None),
-            "sibling_ids": getattr(c, "sibling_ids", []) or [],
-            "has_table": bool(feats.has_table),
-            "is_procedure": bool(feats.is_procedure),
-            "has_code": bool(feats.has_code),
-            "embedding_provider": resolved_embed.provider_name,
-            "embedding_model": resolved_embed.model_name,
-            "embedding_params": resolved_embed.params,
-            "judge_score": judge.get("score"),
-            "judge_version": judge.get("judge_version"),
-            "confidence_rationale": judge.get("confidence_rationale"),
-            "fidelity_flag": fidelity_flag,
-            "metadata_tier": meta.get("tier"),
-            "metadata_tags": meta.get("tags"),
-            "created_at": now,
-            **(metadata or {}),
-        }
-        points.append(qm.PointStruct(id=pid, vector=v, payload=payload))
+    collection_ready = False
 
-        manifest_lines.append(
-            json.dumps(
-                {
-                    "chunk_id": pid,
-                    "doc_id": doc_id,
-                    "doc_version": doc_version,
-                    "chunk_index": c.index,
-                    "heading_path": payload.get("section_path") or [],
-                    "text": c.text,
-                    "metadata": {
-                        "tenant_id": tenant_id,
-                        "project_id": project_id,
-                        "corpus_id": corpus_id,
-                        "source_mime_type": source_mime_type,
-                        "source_filename": source_filename,
-                        "has_table": bool(feats.has_table),
-                        "is_procedure": bool(feats.is_procedure),
-                        "has_code": bool(feats.has_code),
-                        "embedding_model": resolved_embed.model_name,
-                        "embedding_provider": resolved_embed.provider_name,
-                        "embedding_params": resolved_embed.params,
-                        "metadata_tags": meta.get("tags"),
-                    },
-                },
-                ensure_ascii=False,
+    for _start in range(0, len(chunks), window_size):
+        window = chunks[_start : _start + window_size]
+        vectors = await embed_provider.embed(
+            model=resolved_embed.model_name,
+            texts=[c.text for c in window],
+            params=resolved_embed.params,
+        )
+
+        if not collection_ready:
+            # Vector size is only knowable once something has been embedded,
+            # and the stale purge must land before the first upsert or it
+            # would delete the rows just written.
+            await run_in_threadpool(store.ensure_collection, vector_size=len(vectors[0]))
+            try:
+                await run_in_threadpool(store.delete_by_filter, must=stale_filter)
+            except Exception:
+                log.warning("Failed to purge stale chunks for run %s", run_id, exc_info=True)
+            collection_ready = True
+
+        points: list[qm.PointStruct] = []
+        for c, v in zip(window, vectors, strict=True):
+            content_hash = sha256_hex(c.text)
+            pid = deterministic_chunk_id(
+                tenant_id=tenant_id,
+                project_id=project_id,
+                corpus_id=corpus_id,
+                doc_id=doc_id,
+                doc_version=doc_version,
+                content_hash=content_hash,
+                chunk_index=c.index,
             )
-        )
+            feats = infer_chunk_features(c.text)
+            payload: dict[str, Any] = {
+                "tenant_id": tenant_id,
+                "project_id": project_id,
+                "corpus_id": corpus_id,
+                "doc_id": doc_id,
+                "doc_version": doc_version,
+                "chunk_index": c.index,
+                "text": c.text,
+                "content_hash": content_hash,
+                "is_finalized": bool(is_finalized),
+                "is_sensitive": bool(is_sensitive),
+                "is_active_version": True,
+                "source_mime_type": source_mime_type,
+                "source_filename": source_filename,
+                "chunking_strategy": strategy_used,
+                "chunk_qa": chunk_qa.to_dict(),
+                "section_path": getattr(c, "section_path", []) or [],
+                "parent_header_id": getattr(c, "parent_header_id", None),
+                "sibling_ids": getattr(c, "sibling_ids", []) or [],
+                "has_table": bool(feats.has_table),
+                "is_procedure": bool(feats.is_procedure),
+                "has_code": bool(feats.has_code),
+                "embedding_provider": resolved_embed.provider_name,
+                "embedding_model": resolved_embed.model_name,
+                "embedding_params": resolved_embed.params,
+                "judge_score": judge.get("score"),
+                "judge_version": judge.get("judge_version"),
+                "confidence_rationale": judge.get("confidence_rationale"),
+                "fidelity_flag": fidelity_flag,
+                "metadata_tier": meta.get("tier"),
+                "metadata_tags": meta.get("tags"),
+                "created_at": now,
+                **(metadata or {}),
+            }
+            points.append(qm.PointStruct(id=pid, vector=v, payload=payload))
 
-    await run_in_threadpool(store.upsert_points, points=points)
+            manifest_lines.append(
+                json.dumps(
+                    {
+                        "chunk_id": pid,
+                        "doc_id": doc_id,
+                        "doc_version": doc_version,
+                        "chunk_index": c.index,
+                        "heading_path": payload.get("section_path") or [],
+                        "text": c.text,
+                        "metadata": {
+                            "tenant_id": tenant_id,
+                            "project_id": project_id,
+                            "corpus_id": corpus_id,
+                            "source_mime_type": source_mime_type,
+                            "source_filename": source_filename,
+                            "has_table": bool(feats.has_table),
+                            "is_procedure": bool(feats.is_procedure),
+                            "has_code": bool(feats.has_code),
+                            "embedding_model": resolved_embed.model_name,
+                            "embedding_provider": resolved_embed.provider_name,
+                            "embedding_params": resolved_embed.params,
+                            "metadata_tags": meta.get("tags"),
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        await run_in_threadpool(store.upsert_points, points=points)
+        total_upserted += len(points)
+        log.info(
+            "Commit window upserted: run=%s %d/%d chunks",
+            run_id, total_upserted, len(chunks),
+        )
 
     # Persist chunk manifest as an artifact (best-effort).
     try:
@@ -619,7 +653,7 @@ async def _commit_chunks_to_qdrant(
                     path=mf_art.rel_path,
                     sha256=mf_art.sha256,
                     mime_type=mf_art.mime_type,
-                    meta={"chunks": len(points)},
+                    meta={"chunks": total_upserted},
                 ),
             )
     except Exception:
@@ -651,13 +685,13 @@ async def _commit_chunks_to_qdrant(
                     node_name="commit",
                     status="completed",
                     input_ref=_json_ref({"collection": store.collection}),
-                    output_ref=_json_ref({"chunks_upserted": len(points)}),
+                    output_ref=_json_ref({"chunks_upserted": total_upserted}),
                 ),
             )
         except Exception:
             log.warning("Failed to record commit node run for run %s", run_id, exc_info=True)
 
-    return {"ok": True, "run_id": run_id, "collection": store.collection, "chunks_upserted": len(points)}
+    return {"ok": True, "run_id": run_id, "collection": store.collection, "chunks_upserted": total_upserted}
 
 
 async def ingest_text_via_pipeline(
