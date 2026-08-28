@@ -65,6 +65,7 @@ import {
   useDeleteSession,
   useUpdatePageResult,
   useVlmThumbnails,
+  useResumableSessions,
 } from '@/hooks/use-vlm-ingest';
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -119,7 +120,7 @@ export function IngestPage() {
 
   useEffect(() => {
     if (sessionQuery.error && isSessionNotFoundError(sessionQuery.error)) {
-      markSessionExpired('The backend session no longer exists (server restart/reload).');
+      markSessionExpired('The backend has no record of this session — it was discarded or its data was reset.');
     }
   }, [sessionQuery.error, markSessionExpired]);
 
@@ -278,12 +279,16 @@ export function IngestPage() {
         {method === 'vlm' && vlmStore.sessionExpired && (
           <Card className="mx-auto mb-4 flex max-w-2xl shrink-0 items-start justify-between gap-4 border-red-500/30 bg-red-500/5 p-4">
             <div>
-              <h3 className="text-sm font-semibold text-red-300">VLM session expired</h3>
+              <h3 className="text-sm font-semibold text-red-300">VLM session unavailable</h3>
               <p className="mt-1 text-sm text-red-200">
                 {vlmStore.sessionExpiredReason || 'The backend session is no longer available.'}
               </p>
               <p className="mt-1 text-xs text-text-muted">
-                This usually happens after API restart/reload. Start a new session to continue.
+                Sessions no longer expire on their own — extracted pages are saved as
+                they complete and survive restarts. Seeing this means the session was
+                explicitly discarded, or its record was removed (for example by a
+                database reset). Any other in-progress document is still listed under
+                Start &rarr; Resume.
               </p>
             </div>
             <Button onClick={handleReset}>Start Over</Button>
@@ -421,8 +426,59 @@ function VlmMethodContent({ onAdvance }: { onAdvance: (step: UnifiedStep) => voi
 
   const isBusy = vlmStore.status === 'busy';
 
+  // Sessions still open on the server. Listed straight from the ledger, so
+  // this includes work the server has released from memory — the operator no
+  // longer has to have kept the original tab (or its localStorage) around.
+  const resumable = useResumableSessions();
+  const openSessions = (resumable.data ?? []).filter(
+    (s) => s.status !== 'committed' && (s.pages_done ?? 0) > 0,
+  );
+
+  const handleResume = useCallback(
+    (sid: string) => {
+      vlmIngestApi
+        .getSession(sid)
+        .then((session) => {
+          vlmStore.resumeSession(session);
+          toast.success(`Resumed ${session.source_filename}`);
+        })
+        .catch(() => toast.error('Could not resume that session'));
+    },
+    [vlmStore],
+  );
+
   return (
     <>
+      {openSessions.length > 0 && (
+        <Card className="flex flex-col gap-3 p-4">
+          <div>
+            <Label className="text-sm font-medium">Resume an in-progress document</Label>
+            <p className="mt-1 text-xs text-text-muted">
+              Extracted pages are saved as they complete, so these can be picked up
+              at any time — including after a restart.
+            </p>
+          </div>
+          <div className="flex flex-col gap-2">
+            {openSessions.map((s) => (
+              <button
+                key={s.session_id}
+                type="button"
+                onClick={() => handleResume(s.session_id)}
+                disabled={isBusy}
+                className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2 text-left hover:border-accent disabled:opacity-50"
+              >
+                <span className="min-w-0 flex-1 truncate text-sm text-text-primary">
+                  {s.source_filename || s.session_id}
+                </span>
+                <span className="shrink-0 text-xs text-text-muted">
+                  {s.pages_done ?? 0}/{s.page_count} pages · {s.status}
+                </span>
+              </button>
+            ))}
+          </div>
+        </Card>
+      )}
+
       {/* From run ID */}
       <Card className="flex flex-col gap-3 p-4">
         <Label className="text-sm font-medium">From existing pipeline run</Label>

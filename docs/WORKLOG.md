@@ -412,3 +412,84 @@ One coherent body of work, fully described in `CHANGELOG.md → [Unreleased]`:
 6. Known foot-guns still open (documented, not blockers):
    `docs/TECHNICAL_DEBT.md` §2A sectional-refinement context loss, §2B
    destructive cleanup rules.
+
+---
+
+## 2026-08-28 — VLM ingest: durability moved onto the ledger
+
+### The bug the operator hit
+
+A VLM session finished 28 of 31 pages (`status=complete`), sat unattended for
+79 minutes, and was gone on return — `GET /api/editor/vlm-ingest/<sid>` → 404.
+Auto-resume could not help, because there was nothing left to attach to.
+
+### Why it happened — five band-aids over one wrong foundation
+
+The in-memory `SessionRegistry` was the *system of record*. Every mechanism
+around it existed to compensate for that, and each one patched the wound left
+by the previous:
+
+| Failure | Compensation added |
+|---|---|
+| dict lost on restart | write-through `page_XXXX.md` checkpoints |
+| TTL from `created_at` killed long jobs | re-key TTL to `last_activity` |
+| `last_activity` needs traffic | make the **client poll** the keep-alive |
+| poll dies on refresh | localStorage + `?vlm_session=` resume |
+| resume cannot survive eviction | ← the reported bug |
+
+React Query does not fire `refetchInterval` in a backgrounded tab, and leaving
+the ingest page unmounts the hook entirely. So the liveness signal stopped in
+exactly the circumstance the TTL was meant to detect, and a *memory-management
+policy* destroyed hours of paid VLM output.
+
+Compounding it: `configure_logging()` had **zero callers**, so under uvicorn no
+`atlas.*` logger had a handler and the eviction left no trace at all.
+
+### The fix — the registry is now a cache, not the record
+
+Atlas already had a durable job substrate (`workflow_runs` / `node_runs` /
+`artifact_refs` + per-concern ledger modules); VLM ingest was the one subsystem
+that opted out. It now uses the same pattern.
+
+- **`vlm_sessions` / `vlm_page_results`** — session state and per-page outcomes,
+  written the moment each page settles (`LedgerSessionWriter`).
+- **`vlm_page_cache`** — content-addressed memo keyed on source hash, page,
+  DPI, crop, masks, prompt and model. A re-run is a cache hit, so a failure
+  costs only the in-flight page. Measured: 22.7s → **0.06s**, byte-identical.
+- **Source PDF persisted** next to the checkpoints, so a released session
+  rehydrates *fully* — previews and re-processing included, not results-only.
+- **`SessionRegistry`** gained a `loader`; a miss rehydrates from the ledger.
+  Eviction is pure RAM reclaim and skips sessions that are actively
+  `PROCESSING` (their bulk loop holds a live reference — releasing one would
+  let a later request rehydrate a second object and fork progress).
+- **Capacity pressure evicts LRU** instead of refusing to start new work.
+- **`GET /sessions`** now lists from the ledger, powering a "Resume an
+  in-progress document" list in the UI — no longer dependent on one
+  localStorage key surviving.
+- **`configure_logging()` is called at startup**, so `atlas.*` logs are visible.
+
+### Invariant this pins
+
+> A cache eviction policy must never be able to destroy business state.
+> If it cost real money or hours to compute, it is durable before it is
+> acknowledged.
+
+### Verification
+
+- Full process restart mid-session → `GET` returns 200 with results intact
+  (strictly harder than the TTL eviction that caused the bug).
+- Cache key proven to discriminate on all seven output-determining inputs and
+  to be stable under float noise — a false hit would be a correctness bug.
+- 718 tests pass (21 new in `tests/test_vlm_ingest_durability.py`); `ruff` and
+  the `tsc` contract gate clean.
+
+### Deleted, not added
+
+`touch()`-as-liveness, TTL-as-abandonment, client-poll-as-keep-alive and the
+localStorage lifeline are all gone as *load-bearing* mechanisms.
+
+### Known, unrelated
+
+`tests/test_cleanup_rules_import_export.py::test_export_empty` is flaky
+(~1 in 5 full-suite runs, `KeyError`; passes in isolation). Pre-existing —
+worth a separate look since it can redden CI at random.

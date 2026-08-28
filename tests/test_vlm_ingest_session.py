@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import time
 
-import pytest
-
 from atlas.vlm_ingest.session import (
     PageStatus,
     SessionRegistry,
@@ -185,12 +183,21 @@ class TestSessionRegistry:
         assert len(listing) == 2
         assert {s["source_filename"] for s in listing} == {"a.pdf", "b.pdf"}
 
-    def test_max_sessions_limit(self):
+    def test_max_sessions_evicts_lru_instead_of_refusing(self):
+        """Capacity pressure releases the coldest entry, it does not block work.
+
+        The registry is a cache over the ledger, so the displaced session is
+        rehydrated on its next access. Refusing to start a new job — the old
+        behaviour — punished the operator for a memory-management detail.
+        """
         reg = SessionRegistry(max_sessions=2)
-        reg.create(pdf_bytes=b"1", page_count=1)
-        reg.create(pdf_bytes=b"2", page_count=1)
-        with pytest.raises(RuntimeError, match="Session limit"):
-            reg.create(pdf_bytes=b"3", page_count=1)
+        first = reg.create(pdf_bytes=b"1", page_count=1)
+        second = reg.create(pdf_bytes=b"2", page_count=1)
+        third = reg.create(pdf_bytes=b"3", page_count=1)
+
+        assert third.session_id in reg._sessions
+        assert second.session_id in reg._sessions
+        assert first.session_id not in reg._sessions  # coldest, released
 
     def test_ttl_eviction(self):
         reg = SessionRegistry(ttl_seconds=0.01)

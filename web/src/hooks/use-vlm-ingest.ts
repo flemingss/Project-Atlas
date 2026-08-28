@@ -14,6 +14,7 @@ import {
   type CommitRequest,
   type ThumbnailEntry,
   type SessionSummary,
+  type ResumableSession,
 } from '@/services/vlm-ingest-api';
 import { useVlmIngestStore } from '@/stores/vlm-ingest-store';
 
@@ -38,6 +39,23 @@ export function useVlmSession(sid: string | null) {
     queryFn: () => vlmIngestApi.getSession(sid!),
     enabled: !!sid,
     refetchInterval: (query) => (query.state.error ? false : 5_000),
+    // Keep polling while the tab is in the background. This is now purely so
+    // the progress bar is current when the operator comes back — session
+    // survival no longer depends on client traffic — but a bulk run is
+    // exactly the time somebody switches away, and freezing progress at the
+    // moment they look away is the least useful behaviour available.
+    refetchIntervalInBackground: true,
+    retry: false,
+  });
+}
+
+/** Sessions the operator can pick back up, newest first. */
+export function useResumableSessions(enabled = true) {
+  return useQuery<ResumableSession[]>({
+    queryKey: KEYS.sessions,
+    queryFn: () => vlmIngestApi.listSessions(),
+    enabled,
+    staleTime: 10_000,
     retry: false,
   });
 }

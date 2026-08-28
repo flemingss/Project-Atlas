@@ -21,6 +21,7 @@ from atlas.api_vlm_ingest import make_vlm_ingest_router
 from atlas.config_manager import ConfigManager
 from atlas.db import make_engine, make_sessionmaker
 from atlas.db_init import ensure_schema
+from atlas.logging_config import configure_logging
 from atlas.models import WorkflowRun
 from atlas.settings import Settings
 from atlas.startup_validation import validate_startup
@@ -42,7 +43,8 @@ async def _maintenance_loop(
     """Periodic background loop for lightweight self-maintenance.
 
     Runs every *_MAINTENANCE_INTERVAL_S* seconds and performs:
-    - VLM ingest session TTL eviction (prevents stale PDF bytes hogging RAM).
+    - Releasing cold VLM ingest sessions from the in-memory cache (reclaims
+      PDF bytes; durable state stays in the ledger, so nothing is lost).
     - Artifact directory age-based cleanup (keeps disk growth bounded).
     """
     artifact_max_age_s = 7 * 24 * 3600  # 7 days
@@ -243,13 +245,17 @@ def create_app() -> FastAPI:
     engine = make_engine(settings.atlas_db_url)
     session_factory = make_sessionmaker(engine)
 
-    # Reference kept so maintenance loop can call _evict_expired.
+    # Reference kept so the maintenance loop can release cold sessions.
     # Lazily populated after the VLM ingest router is built.
     _vlm_registry_ref: dict[str, object] = {}
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         # ── Startup ───────────────────────────────────────────
+        # First, before anything that might want to report a problem: without
+        # this every atlas.* log record is discarded under uvicorn.
+        configure_logging(settings.atlas_log_level)
+
         validate_startup(settings=settings, config_manager=config_manager, engine=engine)
         ensure_schema(engine)
 

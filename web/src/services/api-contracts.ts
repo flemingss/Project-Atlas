@@ -47,6 +47,7 @@ export type StitchResponse = Schemas['StitchResponse'];
 export type CommitRequest = Schemas['CommitRequest'];
 export type CommitResponse = Schemas['CommitResponse'];
 export type SessionSummary = Schemas['SessionSummary'];
+export type ResumableSession = Schemas['ResumableSession'];
 export type PageSummary = Schemas['PageSummary'];
 export type ExportConfigResponse = Schemas['ExportConfigResponse'];
 

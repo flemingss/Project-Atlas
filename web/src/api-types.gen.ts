@@ -1385,7 +1385,11 @@ export interface paths {
         };
         /**
          * List Sessions
-         * @description List all active VLM ingest sessions.
+         * @description List VLM ingest sessions that can still be resumed.
+         *
+         *     Sourced from the ledger, not the in-memory cache: a session the cache
+         *     has released is every bit as resumable as one still held in RAM, and
+         *     listing only the hot ones is what made sessions look "lost".
          */
         get: operations["list_sessions_api_editor_vlm_ingest_sessions_get"];
         put?: never;
@@ -1412,7 +1416,10 @@ export interface paths {
         post?: never;
         /**
          * Delete Session
-         * @description Discard a session.
+         * @description Discard a session — the only way work is intentionally destroyed.
+         *
+         *     Removes both the cached copy and the durable record. The page *cache*
+         *     survives, so re-ingesting the same document stays free.
          */
         delete: operations["delete_session_api_editor_vlm_ingest__session_id__delete"];
         options?: never;
@@ -2620,6 +2627,36 @@ export interface components {
              * @default false
              */
             artifacts?: boolean;
+        };
+        /**
+         * ResumableSession
+         * @description A session the operator can pick back up.
+         *
+         *     Deliberately lighter than :class:`SessionSummary` — this is a chooser list,
+         *     so it carries no page bodies. Sourced from the ledger, so it includes
+         *     sessions the in-memory cache has already released.
+         */
+        ResumableSession: {
+            /** Session Id */
+            session_id: string;
+            /** Source Filename */
+            source_filename: string;
+            /** Page Count */
+            page_count: number;
+            /** Status */
+            status: string;
+            /** Run Id */
+            run_id?: number | null;
+            /**
+             * Pages Done
+             * @default 0
+             */
+            pages_done?: number;
+            /**
+             * Updated At
+             * @default
+             */
+            updated_at?: string;
         };
         /** RuleSuggestionRequest */
         RuleSuggestionRequest: {
@@ -5966,7 +6003,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SessionSummary"][];
+                    "application/json": components["schemas"]["ResumableSession"][];
                 };
             };
             /** @description Validation Error */

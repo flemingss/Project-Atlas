@@ -281,3 +281,114 @@ class CleanupFeedback(Base):
     created_by: Mapped[str] = mapped_column(String(256), default="")
 
     meta: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+# ---------------------------------------------------------------------------
+# VLM ingest — durable session state
+#
+# VLM ingest was originally an in-memory-only subsystem: the session registry
+# was the system of record, and everything else (write-through .md checkpoints,
+# activity-based TTL, client-poll keep-alive, localStorage resume) existed to
+# compensate for that.  A cache-eviction policy could therefore destroy hours
+# of paid VLM output.
+#
+# These tables make the ledger the system of record instead.  The in-memory
+# registry is now a pure hydration cache: evicting it is free, because every
+# durable fact lives here.
+# ---------------------------------------------------------------------------
+
+
+class VlmSession(Base):
+    """One VLM ingest workflow, durable across restarts and cache eviction."""
+
+    __tablename__ = "vlm_sessions"
+
+    session_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: dt.datetime.now(dt.UTC),
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: dt.datetime.now(dt.UTC),
+        onupdate=lambda: dt.datetime.now(dt.UTC),
+    )
+
+    # Optional link to the pipeline run this session was started from.
+    run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workflow_runs.id", ondelete="SET NULL"),
+        index=True,
+        default=None,
+    )
+
+    source_filename: Mapped[str] = mapped_column(String(512), default="")
+    # Content address of the source PDF — also the cache key prefix for pages.
+    source_sha256: Mapped[str] = mapped_column(String(64), default="", index=True)
+    # On-disk location of the source PDF, so an evicted session can rehydrate
+    # fully (previews, thumbnails and re-processing all need the bytes back).
+    source_path: Mapped[str] = mapped_column(Text, default="")
+
+    page_count: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(32), default="configuring", index=True)
+    headless: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    config: Mapped[dict] = mapped_column(JSON, default=dict)
+    stitched_markdown: Mapped[str] = mapped_column(Text, default="")
+
+
+class VlmPageResult(Base):
+    """Per-page outcome for one session. Written as each page completes."""
+
+    __tablename__ = "vlm_page_results"
+    __table_args__ = (UniqueConstraint("session_id", "page_num", name="uq_vlm_page_session_page"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("vlm_sessions.session_id", ondelete="CASCADE"),
+        index=True,
+    )
+    page_num: Mapped[int] = mapped_column(Integer)
+
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: dt.datetime.now(dt.UTC),
+        onupdate=lambda: dt.datetime.now(dt.UTC),
+    )
+
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    markdown: Mapped[str] = mapped_column(Text, default="")
+    model: Mapped[str] = mapped_column(String(160), default="")
+    error: Mapped[str] = mapped_column(Text, default="")
+
+    # Which memo entry produced this result (empty for skipped/errored pages).
+    cache_key: Mapped[str] = mapped_column(String(64), default="", index=True)
+
+
+class VlmPageCache(Base):
+    """Content-addressed memo of VLM page extractions.
+
+    Keyed on everything that determines the output: source document hash, page
+    number, render settings, system prompt and model.  A re-run of the same
+    document — after eviction, a crash, or an operator restarting a job — is a
+    cache hit rather than a paid model call, so a long job can never lose more
+    than the page that was in flight.
+    """
+
+    __tablename__ = "vlm_page_cache"
+
+    cache_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: dt.datetime.now(dt.UTC),
+    )
+
+    # Denormalised for purge-by-document and cache introspection.
+    source_sha256: Mapped[str] = mapped_column(String(64), default="", index=True)
+    page_num: Mapped[int] = mapped_column(Integer, default=0)
+
+    markdown: Mapped[str] = mapped_column(Text, default="")
+    model: Mapped[str] = mapped_column(String(160), default="")
+
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)

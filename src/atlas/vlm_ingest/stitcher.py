@@ -32,6 +32,10 @@ class PageResult:
     dpi: int = 200
     crop_top: float = 0.0
     crop_bottom: float = 0.0
+    # Content address of the extraction that produced this page (see
+    # vlm_ingest/store.py). Empty when the result did not come from a
+    # cache-aware path — e.g. an operator's manual correction.
+    cache_key: str = ""
 
 
 @dataclass

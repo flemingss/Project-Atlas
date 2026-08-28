@@ -13,6 +13,7 @@ All endpoints are mounted under ``/api/editor/vlm-ingest``.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,7 @@ from atlas.llm.provider import ChatMessage
 from atlas.llm.registry import ModelRegistry
 from atlas.pipeline.runner import ingest_text_via_pipeline
 from atlas.settings import Settings
+from atlas.vlm_ingest import store as vlm_store
 from atlas.vlm_ingest.session import (
     PageStatus,
     SessionRegistry,
@@ -182,6 +184,23 @@ class SessionSummary(BaseModel):
     pages: list[PageSummary] = []
 
 
+class ResumableSession(BaseModel):
+    """A session the operator can pick back up.
+
+    Deliberately lighter than :class:`SessionSummary` — this is a chooser list,
+    so it carries no page bodies. Sourced from the ledger, so it includes
+    sessions the in-memory cache has already released.
+    """
+
+    session_id: str
+    source_filename: str
+    page_count: int
+    status: str
+    run_id: int | None = None
+    pages_done: int = 0
+    updated_at: str = ""
+
+
 class ExportConfigResponse(BaseModel):
     """Exported session config for headless reuse."""
     config: dict[str, Any]
@@ -220,33 +239,181 @@ def make_vlm_ingest_router(
             raise HTTPException(status_code=404, detail=f"Session '{sid}' not found or expired")
         return s
 
-    def _arm_checkpointing(s: VlmIngestSession) -> None:
-        """Point the session's write-through checkpoint at the artifacts dir.
+    def _arm_session(s: VlmIngestSession, pdf_bytes: bytes) -> str:
+        """Make a new session durable, and return the source PDF's sha256.
 
-        Each completed page's markdown is persisted immediately so a crash or
-        restart during a multi-hour bulk run loses at most the in-flight page.
-        The dir also stores the config for headless salvage/re-runs.
+        Three things land before the operator can do any work:
+
+        * the source PDF on disk, so an evicted session can be rebuilt in full
+          — previews, thumbnails and re-processing all need the bytes back;
+        * the session row in the ledger, which is the system of record;
+        * a write-through writer, so each page result is persisted the moment
+          it settles rather than at the end of the job.
+
+        The human-readable ``page_XXXX.md`` checkpoints are kept as well: they
+        cost nothing and give the operator something to salvage by hand.
         """
         d = artifacts_dir / "vlm_sessions" / s.session_id
         s.checkpoint_dir = str(d)
-        try:
-            import json as _json
+        s.writer = vlm_store.LedgerSessionWriter(session_factory)
 
+        sha = hashlib.sha256(pdf_bytes).hexdigest()
+        pdf_path: Path | None = d / "source.pdf"
+        try:
             d.mkdir(parents=True, exist_ok=True)
-            (d / "session.json").write_text(
-                _json.dumps(
-                    {
-                        "session_id": s.session_id,
-                        "source_filename": s.source_filename,
-                        "page_count": s.page_count,
-                        "config": s.config.to_dict(),
-                    },
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
+            assert pdf_path is not None
+            pdf_path.write_bytes(pdf_bytes)
         except OSError:
-            log.warning("Could not initialise checkpoint dir for sid=%s", s.session_id, exc_info=True)
+            log.warning("Could not persist source PDF for sid=%s", s.session_id, exc_info=True)
+            pdf_path = None
+
+        s.source_sha256 = sha
+        vlm_store.save_session(
+            session_factory,
+            s,
+            source_sha256=sha,
+            source_path=str(pdf_path) if pdf_path else "",
+        )
+        return sha
+
+    def _rehydrate(session_id: str) -> VlmIngestSession | None:
+        """Rebuild an evicted session from durable state — the registry loader.
+
+        Returns ``None`` only when the session genuinely does not exist: one
+        that was deleted, or an id that was never issued.
+        """
+        state = vlm_store.load_session(session_factory, session_id)
+        if state is None:
+            return None
+
+        pdf_bytes = b""
+        src = state.get("source_path") or ""
+        if src:
+            try:
+                pdf_bytes = Path(src).read_bytes()
+            except OSError:
+                log.warning(
+                    "Source PDF missing for sid=%s at %s — rehydrating results only",
+                    session_id, src,
+                )
+
+        s = vlm_store.rehydrate(state, pdf_bytes)
+        s.checkpoint_dir = str(artifacts_dir / "vlm_sessions" / session_id)
+        s.writer = vlm_store.LedgerSessionWriter(session_factory)
+        s.source_sha256 = state.get("source_sha256", "")
+        return s
+
+    registry.set_loader(_rehydrate)
+
+    def _cache_lookup(cache_key: str) -> dict[str, str] | None:
+        with session_factory() as db:
+            row = vlm_store.cache_lookup(db, cache_key)
+            if row is None:
+                return None
+            return {"markdown": row.markdown, "model": row.model}
+
+    def _cache_store(
+        cache_key: str, sha: str, page_num: int, markdown: str, model: str, meta: dict,
+    ) -> None:
+        try:
+            with session_factory() as db:
+                vlm_store.cache_store(
+                    db, cache_key=cache_key, source_sha256=sha, page_num=page_num,
+                    markdown=markdown, model=model, meta=meta,
+                )
+                db.commit()
+        except Exception:  # a cache write must never fail the job
+            log.warning("VLM cache store failed for key=%s", cache_key[:12], exc_info=True)
+
+    async def _extract_page(
+        s: VlmIngestSession,
+        page_num: int,
+        page_settings: Any,
+        resolved: Any,
+        provider: Any,
+    ) -> PageResult:
+        """Return one page's extraction, consulting the content-addressed cache.
+
+        The cache key covers the source document, page, render settings, prompt
+        and model — everything that determines the output — so a hit is always
+        safe to serve. This is what makes a re-run after any failure cost only
+        the page that was in flight rather than the whole job.
+        """
+        crop_tuple = (
+            page_settings.crop_top,
+            page_settings.crop_bottom,
+            page_settings.crop_left,
+            page_settings.crop_right,
+        )
+        cache_key = ""
+        if s.source_sha256:
+            cache_key = vlm_store.compute_cache_key(
+                source_sha256=s.source_sha256,
+                page_num=page_num,
+                dpi=page_settings.dpi,
+                crop=crop_tuple,
+                mask_regions=page_settings.mask_regions,
+                system_prompt=s.config.system_prompt,
+                model=resolved.model_name,
+            )
+            hit = await run_in_threadpool(_cache_lookup, cache_key)
+            if hit is not None:
+                log.info(
+                    "VLM cache hit: sid=%s page=%d key=%s — no model call",
+                    s.session_id, page_num, cache_key[:12],
+                )
+                return PageResult(
+                    page_num=page_num,
+                    markdown=hit["markdown"],
+                    model=hit["model"],
+                    dpi=page_settings.dpi,
+                    crop_top=page_settings.crop_top,
+                    crop_bottom=page_settings.crop_bottom,
+                    cache_key=cache_key,
+                )
+
+        page_uri = await run_in_threadpool(
+            render_page_base64, s.pdf_bytes, page_num, dpi=page_settings.dpi,
+            crop=CropMargins(
+                top=page_settings.crop_top,
+                bottom=page_settings.crop_bottom,
+                left=page_settings.crop_left,
+                right=page_settings.crop_right,
+            ),
+            mask_regions=page_settings.mask_regions or None,
+        )
+        raw_messages = build_vision_messages(
+            page_image_uri=page_uri,
+            current_markdown="",  # no prior extraction — VLM produces from scratch
+            system_prompt=s.config.system_prompt,
+        )
+        messages = [ChatMessage(role=m["role"], content=m["content"]) for m in raw_messages]
+
+        log.info(
+            "VLM ingest page: sid=%s page=%d model=%s dpi=%d",
+            s.session_id, page_num, resolved.model_name, page_settings.dpi,
+        )
+        markdown = await provider.chat(
+            model=resolved.model_name,
+            messages=messages,
+            params=resolved.params,
+        )
+
+        if cache_key:
+            await run_in_threadpool(
+                _cache_store, cache_key, s.source_sha256, page_num, markdown,
+                resolved.model_name, {"dpi": page_settings.dpi, "crop": list(crop_tuple)},
+            )
+
+        return PageResult(
+            page_num=page_num,
+            markdown=markdown,
+            model=resolved.model_name,
+            dpi=page_settings.dpi,
+            crop_top=page_settings.crop_top,
+            crop_bottom=page_settings.crop_bottom,
+            cache_key=cache_key,
+        )
 
     def _find_source_pdf(run_id: int) -> tuple[bytes, str]:
         """Locate and read the source PDF for a run_id."""
@@ -317,7 +484,7 @@ def make_vlm_ingest_router(
             config=cfg,
             headless=req.headless,
         )
-        _arm_checkpointing(s)
+        _arm_session(s, pdf_bytes)
         log.info("VLM ingest session started: sid=%s run=%d pages=%d", s.session_id, req.run_id, n_pages)
 
         return StartSessionResponse(
@@ -364,7 +531,7 @@ def make_vlm_ingest_router(
             config=cfg,
             headless=headless,
         )
-        _arm_checkpointing(s)
+        _arm_session(s, pdf_bytes)
         log.info("VLM ingest session started (upload): sid=%s pages=%d", s.session_id, n_pages)
 
         return StartSessionResponse(
@@ -379,10 +546,16 @@ def make_vlm_ingest_router(
     # Session info
     # ------------------------------------------------------------------
 
-    @r.get("/sessions", response_model=list[SessionSummary])
+    @r.get("/sessions", response_model=list[ResumableSession])
     async def list_sessions() -> list[dict[str, Any]]:
-        """List all active VLM ingest sessions."""
-        return registry.list_sessions()
+        """List VLM ingest sessions that can still be resumed.
+
+        Sourced from the ledger, not the in-memory cache: a session the cache
+        has released is every bit as resumable as one still held in RAM, and
+        listing only the hot ones is what made sessions look "lost".
+        """
+        durable = await run_in_threadpool(vlm_store.list_sessions, session_factory)
+        return durable
 
     @r.get("/{session_id}", response_model=SessionSummary)
     async def get_session(session_id: str) -> dict[str, Any]:
@@ -402,8 +575,15 @@ def make_vlm_ingest_router(
 
     @r.delete("/{session_id}")
     async def delete_session(session_id: str) -> dict[str, str]:
-        """Discard a session."""
-        if registry.delete(session_id):
+        """Discard a session — the only way work is intentionally destroyed.
+
+        Removes both the cached copy and the durable record. The page *cache*
+        survives, so re-ingesting the same document stays free.
+        """
+        cached = registry.delete(session_id)
+        durable = await run_in_threadpool(vlm_store.delete_session, session_factory, session_id)
+        if cached or durable:
+            log.info("VLM session deleted by operator: sid=%s", session_id)
             return {"message": f"Session {session_id} deleted"}
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
 
@@ -461,6 +641,11 @@ def make_vlm_ingest_router(
             s.config.crop_right,
             len(req.page_overrides or []),
         )
+
+        # Config is durable state — it feeds the page cache key, so a resumed
+        # session that lost its overrides would re-run pages at the wrong
+        # settings and miss every cache entry.
+        await run_in_threadpool(vlm_store.save_session, session_factory, s)
 
         return s.summary()
 
@@ -647,7 +832,7 @@ def make_vlm_ingest_router(
 
         # Mark processing
         s.page_statuses[p] = PageStatus.PROCESSING
-        s.status = SessionStatus.PROCESSING
+        s.set_status(SessionStatus.PROCESSING)
 
         settings = s.config.settings_for_page(p)
         if not settings.enabled:
@@ -661,52 +846,13 @@ def make_vlm_ingest_router(
 
         try:
             resolved, provider = _resolve_vision_model()
-
-            # Render page
-            crop = CropMargins(
-                top=settings.crop_top,
-                bottom=settings.crop_bottom,
-                left=settings.crop_left,
-                right=settings.crop_right,
-            )
-            page_uri = await run_in_threadpool(
-                render_page_base64, s.pdf_bytes, p, dpi=settings.dpi, crop=crop,
-                mask_regions=settings.mask_regions or None,
-            )
-
-            # Build VLM prompt — page in isolation, no cross-page context
-            raw_messages = build_vision_messages(
-                page_image_uri=page_uri,
-                current_markdown="",  # no prior extraction — VLM produces from scratch
-                system_prompt=s.config.system_prompt,
-            )
-            messages = [ChatMessage(role=m["role"], content=m["content"]) for m in raw_messages]
-
-            log.info(
-                "VLM ingest page: sid=%s page=%d model=%s dpi=%d",
-                session_id, p, resolved.model_name, settings.dpi,
-            )
-
-            corrected = await provider.chat(
-                model=resolved.model_name,
-                messages=messages,
-                params=resolved.params,
-            )
-
-            result = PageResult(
-                page_num=p,
-                markdown=corrected,
-                model=resolved.model_name,
-                dpi=settings.dpi,
-                crop_top=settings.crop_top,
-                crop_bottom=settings.crop_bottom,
-            )
+            result = await _extract_page(s, p, settings, resolved, provider)
             s.set_page_result(p, result)
 
             return ProcessPageResponse(
                 page_num=p,
-                markdown=corrected,
-                model=resolved.model_name,
+                markdown=result.markdown,
+                model=result.model,
                 status="done",
             )
 
@@ -746,7 +892,7 @@ def make_vlm_ingest_router(
                 detail="Session is already processing — poll GET /{session_id} for progress",
             )
         resolved, provider = _resolve_vision_model()
-        s.status = SessionStatus.PROCESSING
+        s.set_status(SessionStatus.PROCESSING)
 
         processed = 0
         skipped = 0
@@ -775,46 +921,11 @@ def make_vlm_ingest_router(
             s.page_statuses[p] = PageStatus.PROCESSING
 
             try:
-                crop = CropMargins(
-                    top=settings.crop_top,
-                    bottom=settings.crop_bottom,
-                    left=settings.crop_left,
-                    right=settings.crop_right,
-                )
-                page_uri = await run_in_threadpool(
-                    render_page_base64, s.pdf_bytes, p, dpi=settings.dpi, crop=crop,
-                    mask_regions=settings.mask_regions or None,
-                )
-
-                raw_messages = build_vision_messages(
-                    page_image_uri=page_uri,
-                    current_markdown="",
-                    system_prompt=s.config.system_prompt,
-                )
-                messages = [
-                    ChatMessage(role=m["role"], content=m["content"])
-                    for m in raw_messages
-                ]
-
                 log.info(
                     "VLM bulk page: sid=%s page=%d/%d model=%s",
                     session_id, p, s.page_count, resolved.model_name,
                 )
-
-                corrected = await provider.chat(
-                    model=resolved.model_name,
-                    messages=messages,
-                    params=resolved.params,
-                )
-
-                result = PageResult(
-                    page_num=p,
-                    markdown=corrected,
-                    model=resolved.model_name,
-                    dpi=settings.dpi,
-                    crop_top=settings.crop_top,
-                    crop_bottom=settings.crop_bottom,
-                )
+                result = await _extract_page(s, p, settings, resolved, provider)
                 s.set_page_result(p, result)
                 processed += 1
 
@@ -828,7 +939,7 @@ def make_vlm_ingest_router(
         # Auto-stitch if any pages succeeded
         stitch_resp: StitchResponse | None = None
         if not cancelled and any(st == PageStatus.DONE for st in s.page_statuses.values()):
-            s.status = SessionStatus.STITCHING
+            s.set_status(SessionStatus.STITCHING)
             sr = s.stitch()
             stitch_resp = StitchResponse(
                 markdown=sr.markdown,
@@ -842,7 +953,7 @@ def make_vlm_ingest_router(
             # Loop ended without a stitch (cancelled or nothing succeeded).
             # Never leave the session in PROCESSING — that would trip the
             # double-start guard forever and block any retry.
-            s.status = SessionStatus.FAILED if failed else SessionStatus.CONFIGURING
+            s.set_status(SessionStatus.FAILED if failed else SessionStatus.CONFIGURING)
 
         log.info(
             "VLM bulk complete: sid=%s processed=%d skipped=%d failed=%d",
@@ -875,7 +986,7 @@ def make_vlm_ingest_router(
                 detail="No pages have been processed yet.",
             )
 
-        s.status = SessionStatus.STITCHING
+        s.set_status(SessionStatus.STITCHING)
         result = s.stitch()
 
         return StitchResponse(
@@ -1010,7 +1121,7 @@ def make_vlm_ingest_router(
         config_path = save_dir / "config.json"
         config_path.write_text(json.dumps(s.config.to_dict(), indent=2), encoding="utf-8")
 
-        s.status = SessionStatus.COMMITTED
+        s.set_status(SessionStatus.COMMITTED)
         log.info("VLM ingest committed: sid=%s run=%d path=%s chars=%d", s.session_id, run_id, rel_path, len(md))
 
         # ── Feed through pipeline (chunk → embed → Qdrant) ──────────

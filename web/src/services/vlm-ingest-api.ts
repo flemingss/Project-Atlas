@@ -15,6 +15,7 @@ import type {
   ProcessAllResponse,
   ProcessPageRequest,
   ProcessPageResponse,
+  ResumableSession,
   SessionSummary,
   StartSessionRequest,
   StartSessionResponse,
@@ -35,6 +36,7 @@ export type {
   CommitRequest,
   CommitResponse,
   SessionSummary,
+  ResumableSession,
   ExportConfigResponse,
 };
 
@@ -148,9 +150,14 @@ export const vlmIngestApi = {
     });
   },
 
-  /** List all active sessions. */
+  /** List sessions that can be resumed, newest first.
+   *
+   *  Backed by the ledger rather than the server's in-memory cache, so a
+   *  session the server has released from RAM still appears here — it is
+   *  rehydrated on demand when opened.
+   */
   listSessions() {
-    return apiFetch<SessionSummary[]>(`${BASE}/sessions`, {
+    return apiFetch<ResumableSession[]>(`${BASE}/sessions`, {
       headers: jsonHeaders(),
     });
   },
