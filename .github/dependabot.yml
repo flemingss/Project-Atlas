@@ -48,6 +48,12 @@ updates:
       #   adopt with the Tailwind 4 migration.
       - dependency-name: tailwind-merge
         update-types: ["version-update:semver-major"]
+      # - typescript 7: builds fine, but typescript-eslint does not support
+      #   TS 7.0 (upstream typescript-eslint#10940, needs >= 7.1), so it breaks
+      #   the lint gate. tsconfig is already migrated (no baseUrl, relative
+      #   paths), so this becomes a one-line bump once the plugin lands.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
       # - react 19: framework major; adopt deliberately with a full sweep.
       - dependency-name: react
         update-types: ["version-update:semver-major"]
