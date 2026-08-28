@@ -111,6 +111,16 @@ class QdrantStore:
         limit: int,
         must: list[qm.FieldCondition],
     ) -> list[QdrantHit]:
+        # A collection that does not exist yet means "nothing indexed", not an
+        # error: that is the state of every fresh deployment before the first
+        # commit, and of any stack right after scripts/flush.ps1. Without this
+        # the Search page 500s instead of reporting no results. Note the
+        # retry wrapper treats UnexpectedResponse as retryable, so this has to
+        # be caught inside _do, before the retry layer sees it.
+        if not self._client.collection_exists(self._collection):
+            log.info("Search on missing collection '%s' — returning no hits", self._collection)
+            return []
+
         def _do() -> list[QdrantHit]:
             res = self._client.query_points(
                 collection_name=self._collection,

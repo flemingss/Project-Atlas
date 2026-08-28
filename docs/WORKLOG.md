@@ -1,5 +1,37 @@
 # Worklog
 
+## 2026-08-28 (flush verification + DR) — flush.ps1 proven; backup/restore now exists
+
+Operator asked to verify `flush.ps1`. Because that destroys the real CANES
+corpus, took a full backup first — which turned into closing the DR gap.
+
+- **flush.ps1 verified against every claim**: all `atlas` tables truncated with
+  the 10-table schema intact, all Qdrant collections deleted, `artifacts/`
+  emptied, `atlas-api` restarted, containers up, 522MB embeddings weight cache
+  preserved. Post-flush the stack is fully functional.
+- **New `scripts/backup.ps1` + `scripts/restore.ps1`** (Qdrant snapshot +
+  `pg_dump --clean` + `artifacts/` copy). Proven twice: flush→restore
+  reproduced counts and **identical search scores**, and a backup→restore
+  no-op over live data was clean. This is the DR story that had been listed as
+  missing since the scale audit. `backups/` gitignored.
+- **Real bug found while verifying**: search 500'd whenever the Qdrant
+  collection did not exist — i.e. every fresh deployment before its first
+  commit, and any stack straight after a flush. Now returns no hits.
+
+Two things that *looked* like bugs and were not, worth remembering:
+1. Post-flush ingest reporting `chunks_upserted: 0` — the repetitive synthetic
+   text failed the judge's quality gate and routed to HITL, which is correct;
+   documents awaiting review are deliberately not indexed. Check
+   `workflow_runs.status = 'hitl'` before suspecting the indexer.
+2. Danger Zone reset/restore returning 401 "Admin token not configured" —
+   those two endpoints alone use the strict admin dependency and refuse to run
+   without `ATLAS_ADMIN_TOKEN`, by design, so a dev stack cannot wipe itself.
+
+Caution learned: **`/admin/self-test` is not read-only.** It ingests `e2e-*`
+documents, creates runs, and cycles config versions against the live stack. It
+polluted the live corpus (78 → 95 points) before being cleaned out by hand; it
+now sits behind a confirmation dialog.
+
 ## 2026-08-28 (CI truth + build tooling) — CI was never green; fixed both jobs
 
 **Correction to the previous entry.** CI had *never* passed on main. The

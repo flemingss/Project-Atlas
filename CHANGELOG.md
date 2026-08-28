@@ -24,6 +24,31 @@ assigned yet — pick the next version and bump both when it ships.
   against the live dev stack (see README "E2E Scenario Tests"). Everything
   else is recoverable from git history if a CI harness is revived.
 
+### Added (2026-08-28, backup/restore + flush verification)
+
+- **`scripts/backup.ps1` / `scripts/restore.ps1`** close the disaster-recovery
+  gap that had been deferred all along: nothing captured the two stores Atlas
+  cannot regenerate. Backup takes a Qdrant snapshot, a `pg_dump --clean`, and a
+  copy of `artifacts/`; restore puts all three back and bounces the API.
+  Verified end to end, twice: a real `flush.ps1` wipe followed by restore
+  reproduced the point count, run ledger, artifact count, and **identical
+  search scores** (0.62877345 / 0.59958184), and a backup→restore round-trip
+  over live data was a clean no-op. `backups/` is gitignored.
+- **`flush.ps1` verified against every claim it makes**: all `atlas` tables
+  truncated but the 10-table schema intact, every Qdrant collection deleted,
+  `artifacts/` emptied, `atlas-api` restarted, containers up, and the 522MB
+  embeddings weight cache preserved. The stack is fully functional afterwards
+  (ingest runs the whole pipeline; the collection is recreated on first
+  commit).
+
+### Fixed (2026-08-28, search on an empty stack)
+
+- **Search 500'd whenever the Qdrant collection did not exist** — the state of
+  every fresh deployment before its first commit, and of any stack right after
+  `flush.ps1`. `QdrantStore.search` now treats a missing collection as "nothing
+  indexed" and returns no hits, so the Search page reports an empty result
+  instead of an Internal Server Error. (Found while verifying flush; the
+  collection is only created on first upsert.)
 ### Fixed (2026-08-28, Danger Zone + button audit)
 
 - **Scoped export never worked**: `GET /admin/export` requires a `scope` query

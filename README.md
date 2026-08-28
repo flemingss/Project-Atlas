@@ -255,6 +255,22 @@ Admin auth: if `ATLAS_ADMIN_TOKEN` is set, open `/app?token=<token>` once — th
 
 See [`web/README.md`](web/README.md) for the full developer guide (directory structure, design tokens, adding components/pages).
 
+## Backups
+
+`artifacts/`, the Postgres ledger, and the Qdrant collection are the only
+state Atlas cannot regenerate. Back all three up together:
+
+```powershell
+.\scripts\backup.ps1                      # -> backups\<timestamp>\
+.\scripts\restore.ps1 -Dir backups\<ts>   # put it all back
+```
+
+Restore overwrites the current stores and bounces the API. Verified by a
+full flush-then-restore cycle (identical point counts and search scores).
+
+To empty the stores between testing rounds without touching containers,
+schema, or the embeddings weight cache, use `.\scripts\flush.ps1`.
+
 ## Tests
 
 Fast unit/breadcrumb tests (no Docker/LM Studio required):
