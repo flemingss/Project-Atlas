@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import mimetypes
 from typing import Any
 
@@ -16,6 +17,13 @@ from atlas.llm.registry import ModelRegistry
 from atlas.pipeline.runner import ingest_file_via_pipeline, ingest_text_via_pipeline
 from atlas.settings import Settings
 from atlas.vectorstore.qdrant_store import QdrantHit, QdrantStore
+
+log = logging.getLogger(__name__)
+
+# Stable, client-safe 502 detail. Upstream exception text can embed hostnames,
+# provider names, and internal config — never forward it to the client.
+# The full exception is logged server-side (with traceback) instead.
+_UPSTREAM_ERROR_DETAIL = "Upstream dependency failed"
 
 
 def _normalize_error_code(code: Any) -> str | None:
@@ -128,7 +136,8 @@ def make_rag_router(*, config_manager: ConfigManager, session_factory: sessionma
                 metadata=req.metadata or {},
             )
         except Exception as e:
-            raise HTTPException(status_code=502, detail=str(e)) from e
+            log.exception("RAG text ingest failed (doc_id=%s)", req.doc_id)
+            raise HTTPException(status_code=502, detail=_UPSTREAM_ERROR_DETAIL) from e
 
         return IngestTextResponse(
             ok=bool(result.get("ok")),
@@ -188,7 +197,8 @@ def make_rag_router(*, config_manager: ConfigManager, session_factory: sessionma
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(status_code=502, detail=str(e)) from e
+            log.exception("RAG file ingest failed (doc_id=%s)", doc_id)
+            raise HTTPException(status_code=502, detail=_UPSTREAM_ERROR_DETAIL) from e
 
         return IngestTextResponse(
             ok=bool(result.get("ok")),
@@ -215,7 +225,8 @@ def make_rag_router(*, config_manager: ConfigManager, session_factory: sessionma
         try:
             vectors = await provider.embed(model=resolved.model_name, texts=[req.query], params=resolved.params)
         except Exception as e:
-            raise HTTPException(status_code=502, detail=str(e)) from e
+            log.exception("RAG search embedding failed")
+            raise HTTPException(status_code=502, detail=_UPSTREAM_ERROR_DETAIL) from e
         if not vectors:
             return SearchResponse(ok=False, collection="", hits=[])
 
