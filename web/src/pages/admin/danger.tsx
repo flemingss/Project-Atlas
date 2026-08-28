@@ -23,6 +23,24 @@ import { ConfirmDialog } from '@/components/confirm-dialog';
 import { adminApi, type ConfigVersionSummary } from '@/services/admin-api';
 import { toast } from 'sonner';
 
+/** Reset-database and restore-stock-config use the backend's *strict* admin
+ *  dependency: unlike every other admin route, they refuse to run when no
+ *  ATLAS_ADMIN_TOKEN is configured — deliberately, so a dev-mode stack with
+ *  open admin endpoints can never wipe data by accident. Translate that 401
+ *  into something actionable instead of surfacing the raw detail string. */
+const STRICT_AUTH_HINT =
+  'This operation requires ATLAS_ADMIN_TOKEN to be set on the API (it is refused ' +
+  'even in dev, by design). Set it and reopen the SPA as /app?token=<token>. ' +
+  'For routine test-data flushes, use scripts/flush.ps1 instead.';
+
+function destructiveError(e: unknown): string {
+  const msg = e instanceof Error ? e.message : String(e);
+  if (msg.includes('401') || msg.includes('Admin token not configured')) {
+    return STRICT_AUTH_HINT;
+  }
+  return msg;
+}
+
 export function AdminDangerPage() {
   // DB Reset
   const [resetPostgres, setResetPostgres] = useState(true);
@@ -65,7 +83,7 @@ export function AdminDangerPage() {
       });
       toast.success('Database reset complete');
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Reset failed');
+      toast.error(destructiveError(e));
     } finally {
       setResetting(false);
     }
@@ -80,7 +98,7 @@ export function AdminDangerPage() {
       });
       toast.success('Stock config restored');
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Restore failed');
+      toast.error(destructiveError(e));
     } finally {
       setRestoring(false);
     }
@@ -130,7 +148,11 @@ export function AdminDangerPage() {
   const handleScopedExport = async () => {
     setExporting(true);
     try {
+      // scope is required and must match how deep the filters go: the most
+      // specific field the operator filled in decides it.
+      const scope = exportCorpus ? 'corpus' : exportProject ? 'project' : 'tenant';
       const resp = await adminApi.exportScoped({
+        scope,
         tenant_id: exportTenant || undefined,
         project_id: exportProject || undefined,
         corpus_id: exportCorpus || undefined,
@@ -171,6 +193,11 @@ export function AdminDangerPage() {
           </CardTitle>
           <CardDescription className="text-xs">
             Wipe data stores. This is permanent and cannot be undone.
+            <span className="mt-1 block text-text-muted">
+              Requires <code className="font-mono">ATLAS_ADMIN_TOKEN</code> on the API — refused
+              even in dev, by design. For routine test-data flushes use{' '}
+              <code className="font-mono">scripts/flush.ps1</code>.
+            </span>
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -212,6 +239,10 @@ export function AdminDangerPage() {
           </CardTitle>
           <CardDescription className="text-xs">
             Overwrite current YAML with the bundled defaults
+            <span className="mt-1 block text-text-muted">
+              Requires <code className="font-mono">ATLAS_ADMIN_TOKEN</code> on the API — refused
+              even in dev, by design.
+            </span>
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">

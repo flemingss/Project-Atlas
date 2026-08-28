@@ -157,7 +157,11 @@ def make_admin_router(*, config_manager: ConfigManager, session_factory: session
     @r.post("/self-test")
     def self_test(request: Request) -> dict[str, Any]:
         timeout_s = float(request.query_params.get("timeout_s", "20.0"))
-        api_url = str(request.base_url).rstrip("/")
+        # Call ourselves on our own bind port, NOT request.base_url: the browser
+        # reaches the API through a published host port (28080 in compose), which
+        # does not exist inside the container, so base_url made the self-test
+        # unable to reach itself and always fail with "API not healthy".
+        api_url = f"http://127.0.0.1:{int(settings.atlas_port)}"
         incoming_token = request.headers.get("X-Atlas-Admin-Token")
 
         summary = run_scenarios(

@@ -125,10 +125,22 @@ export function AdminHealthPage() {
             {loading ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : <RefreshCw className="mr-1.5 size-3.5" />}
             Refresh
           </Button>
-          <Button variant="outline" size="sm" onClick={runSelfTest} disabled={selfTestRunning}>
-            {selfTestRunning ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : <Server className="mr-1.5 size-3.5" />}
-            Self-test
-          </Button>
+          {/* Self-test is NOT read-only: it runs the full E2E scenario suite
+              against this live stack, which ingests throwaway e2e-* documents,
+              creates workflow runs, and cycles config versions. Everything is
+              cleaned up on success, but a mid-run failure can leave residue —
+              so it gets a confirmation, not a bare button. */}
+          <ConfirmDialog
+            title="Run appliance self-test?"
+            description="This exercises the live stack end to end: it ingests temporary e2e-* documents, creates workflow runs, and activates then restores config versions. Residue may remain if it fails mid-run. Prefer running it against an empty stack."
+            confirmLabel="Run self-test"
+            onConfirm={runSelfTest}
+          >
+            <Button variant="outline" size="sm" disabled={selfTestRunning}>
+              {selfTestRunning ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : <Server className="mr-1.5 size-3.5" />}
+              Self-test
+            </Button>
+          </ConfirmDialog>
         </div>
       </div>
 

@@ -19,14 +19,15 @@ module.exports = {
     '@typescript-eslint/no-explicit-any': 'off',
     // Intentionally-unused function args are prefixed with _.
     '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
-    // ── Registered debt (2026-08-28, eslint-plugin-react-hooks 7) ─────────
-    // set-state-in-effect flags 11 sites, nearly all the "load data on mount"
-    // pattern (effect calls a loader that setStates) plus the canonical
-    // matchMedia sync in use-mobile. Fixing them properly means migrating
-    // those pages to React Query (already a dependency) and use-mobile to
-    // useSyncExternalStore - a refactor with regression risk, not a lint
-    // tweak. Turned off deliberately so the rest of the v7 rules stay
-    // active; re-enable when that migration is scheduled.
+    // Pre-set for eslint-plugin-react-hooks 7, which is currently pinned back
+    // to 4.6.2 (its React Compiler analysis triggers a flaky V8 JIT crash
+    // during lint — see .github/dependabot.yml). Harmless on 4.x, where the
+    // rule does not exist, because ESLint only resolves rules it must enable.
+    // When v7 is re-adopted this keeps its 11 set-state-in-effect findings
+    // from blocking: nearly all are the "load data on mount" pattern plus the
+    // canonical matchMedia sync, whose real fix is migrating those pages to
+    // React Query (already a dependency) and use-mobile to
+    // useSyncExternalStore - a refactor, not a lint tweak.
     'react-hooks/set-state-in-effect': 'off',
   },
 };

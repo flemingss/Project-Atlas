@@ -280,10 +280,14 @@ export const adminApi = {
       body: JSON.stringify(payload),
     });
   },
-  deleteProject(projectId: string) {
-    return apiFetch<{ status: string }>(`/admin/projects/${encodeURIComponent(projectId)}`, {
-      method: 'DELETE',
-    });
+  // tenant_id is a REQUIRED query param on this endpoint (project ids are only
+  // unique within a tenant) — omitting it 422s.
+  deleteProject(projectId: string, tenantId: string) {
+    const q = new URLSearchParams({ tenant_id: tenantId });
+    return apiFetch<{ status: string }>(
+      `/admin/projects/${encodeURIComponent(projectId)}?${q}`,
+      { method: 'DELETE' },
+    );
   },
 
   async listCorpora(params?: { project_id?: string }) {
@@ -297,10 +301,13 @@ export const adminApi = {
       body: JSON.stringify(payload),
     });
   },
-  deleteCorpus(corpusId: string) {
-    return apiFetch<{ status: string }>(`/admin/corpora/${encodeURIComponent(corpusId)}`, {
-      method: 'DELETE',
-    });
+  // tenant_id and project_id are REQUIRED query params here — omitting them 422s.
+  deleteCorpus(corpusId: string, tenantId: string, projectId: string) {
+    const q = new URLSearchParams({ tenant_id: tenantId, project_id: projectId });
+    return apiFetch<{ status: string }>(
+      `/admin/corpora/${encodeURIComponent(corpusId)}?${q}`,
+      { method: 'DELETE' },
+    );
   },
 
   // ── Workflow ledger (runs) ──
@@ -444,13 +451,23 @@ export const adminApi = {
     const qs = q.toString();
     return apiFetchRaw(`/admin/corpora/${encodeURIComponent(corpusId)}/export${qs ? `?${qs}` : ''}`);
   },
-  exportScoped(params?: { tenant_id?: string; project_id?: string; corpus_id?: string }) {
-    const q = new URLSearchParams();
-    if (params?.tenant_id) q.set('tenant_id', params.tenant_id);
-    if (params?.project_id) q.set('project_id', params.project_id);
-    if (params?.corpus_id) q.set('corpus_id', params.corpus_id);
-    const qs = q.toString();
-    return apiFetchRaw(`/admin/export${qs ? `?${qs}` : ''}`);
+  /** `scope` is REQUIRED by the backend (tenant | project | corpus | document)
+   *  and selects how the other filters are applied — omitting it 422s. */
+  exportScoped(params: {
+    scope: 'tenant' | 'project' | 'corpus' | 'document';
+    tenant_id?: string;
+    project_id?: string;
+    corpus_id?: string;
+    doc_id?: string;
+    format?: string;
+  }) {
+    const q = new URLSearchParams({ scope: params.scope });
+    if (params.tenant_id) q.set('tenant_id', params.tenant_id);
+    if (params.project_id) q.set('project_id', params.project_id);
+    if (params.corpus_id) q.set('corpus_id', params.corpus_id);
+    if (params.doc_id) q.set('doc_id', params.doc_id);
+    if (params.format) q.set('format', params.format);
+    return apiFetchRaw(`/admin/export?${q}`);
   },
   importCorpus(corpusId: string, payload: FormData) {
     return apiFetchRaw(`/admin/corpora/${encodeURIComponent(corpusId)}/import`, {

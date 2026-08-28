@@ -150,9 +150,9 @@ export function AdminGroupsPage() {
     }
   };
 
-  const handleDeleteProject = async (id: string) => {
+  const handleDeleteProject = async (id: string, tenantId: string) => {
     try {
-      await adminApi.deleteProject(id);
+      await adminApi.deleteProject(id, tenantId);
       toast.success(`Project "${id}" deleted`);
       loadAll();
       refreshAll();
@@ -161,9 +161,9 @@ export function AdminGroupsPage() {
     }
   };
 
-  const handleDeleteCorpus = async (id: string) => {
+  const handleDeleteCorpus = async (id: string, tenantId: string, projectId: string) => {
     try {
-      await adminApi.deleteCorpus(id);
+      await adminApi.deleteCorpus(id, tenantId, projectId);
       toast.success(`Collection "${id}" deleted`);
       loadAll();
       refreshAll();
@@ -329,7 +329,7 @@ export function AdminGroupsPage() {
                         description={`Delete project "${p.project_id}"?`}
                         confirmLabel="Delete"
                         variant="destructive"
-                        onConfirm={() => handleDeleteProject(p.project_id)}
+                        onConfirm={() => handleDeleteProject(p.project_id, p.tenant_id)}
                       >
                         <Button variant="ghost" size="icon" className="size-6">
                           <Trash2 className="size-3" />
@@ -430,7 +430,7 @@ export function AdminGroupsPage() {
                         description={`Delete collection "${c.corpus_id}"?`}
                         confirmLabel="Delete"
                         variant="destructive"
-                        onConfirm={() => handleDeleteCorpus(c.corpus_id)}
+                        onConfirm={() => handleDeleteCorpus(c.corpus_id, c.tenant_id, c.project_id)}
                       >
                         <Button variant="ghost" size="icon" className="size-6">
                           <Trash2 className="size-3" />

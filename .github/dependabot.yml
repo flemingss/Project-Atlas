@@ -26,6 +26,12 @@ updates:
       # - eslint 9+: flat-config rewrite (plus plugin compatibility).
       - dependency-name: eslint
         update-types: ["version-update:semver-major"]
+      # - eslint-plugin-react-hooks 7 ships the React Compiler analysis, which
+      #   triggers a flaky V8 JIT crash (TurboFan/Turboshaft "unreachable code",
+      #   core dump) during lint on node 20 AND 22 — intermittent red CI. 4.6.2
+      #   is stable across 5/5 runs. Revisit when the plugin or V8 fixes it.
+      - dependency-name: eslint-plugin-react-hooks
+        update-types: ["version-update:semver-major"]
       # - eslint-plugin-react-refresh 0.5+ peer-requires eslint 9/10 —
       #   part of the same migration.
       - dependency-name: eslint-plugin-react-refresh

@@ -24,6 +24,42 @@ assigned yet — pick the next version and bump both when it ships.
   against the live dev stack (see README "E2E Scenario Tests"). Everything
   else is recoverable from git history if a CI harness is revived.
 
+### Fixed (2026-08-28, Danger Zone + button audit)
+
+- **Scoped export never worked**: `GET /admin/export` requires a `scope` query
+  param (`tenant|project|corpus|document`) that the UI never sent — always
+  422'd. The UI now derives scope from the most specific filter the operator
+  filled in. Verified: 792KB archive returned.
+- **Delete project / delete collection never worked**: both endpoints take
+  required *query* params (`tenant_id`, and `project_id` for corpora) that the
+  UI omitted — always 422'd. Both now pass them from the row being deleted;
+  full create→delete round-trip verified against the live API.
+- **Appliance self-test always 500'd in containers**: it called itself at
+  `request.base_url`, i.e. the browser-facing published port (28080), which
+  does not exist inside the container — so it timed out waiting for its own
+  health check. It now calls `http://127.0.0.1:{ATLAS_PORT}`. All scenarios
+  pass (`ok: true`).
+- **Self-test is not read-only** — it ingests throwaway `e2e-*` documents,
+  creates workflow runs, and cycles config versions against the live stack.
+  It now sits behind a confirmation dialog explaining that, instead of looking
+  like a diagnostic read.
+- **`eslint-plugin-react-hooks` pinned back to 4.6.2**: v7's React Compiler
+  analysis triggers a *flaky* V8 JIT crash during lint (TurboFan/Turboshaft
+  "unreachable code", core dump) on node 20 and 22 alike — intermittent red CI
+  for no signal. 4.6.2 is stable 5/5. Deferred in Dependabot with that
+  rationale. The real bug v7 caught (the stale-closure recursion) stays fixed.
+- CI and the Dockerfile ui-build stage moved to **Node 22 LTS** (hygiene; not
+  the crash fix — v7 crashed on 22 as well).
+
+### Notes (2026-08-28, Danger Zone auth)
+
+- **Reset database and Restore stock config returning 401 "Admin token not
+  configured" is correct, intended behaviour**, not a bug: both use the
+  backend's *strict* admin dependency, which — unlike every other admin route
+  — refuses to run when `ATLAS_ADMIN_TOKEN` is unset, so a dev stack with open
+  admin endpoints can never wipe data by accident. The UI now says so on the
+  card and translates the 401 into an actionable hint (set the token and open
+  `/app?token=<token>`, or use `scripts/flush.ps1` for routine flushes).
 ### Fixed (2026-08-28, CI actually passing)
 
 - **CI had never passed on `main`.** Every run of the `ci.yml` workflow failed
