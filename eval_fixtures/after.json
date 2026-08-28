@@ -1,0 +1,40 @@
+[
+  {
+    "document": "atlas_synthetic.pdf",
+    "backend": "docling(table_extraction=True)",
+    "ok": true,
+    "elapsed_s": 5.041,
+    "error": "",
+    "chars": 1411,
+    "words": 206,
+    "headings": 4,
+    "tables": 1,
+    "extraction_method": "embedded_text",
+    "converter": "docling",
+    "expected_total": 7,
+    "expected_found": 4,
+    "missing": [
+      "ALPHA_BRAVO_CHARLIE",
+      "RAG_EVAL_SENTINEL_001",
+      "QDRANT_PAYLOAD_CHECK"
+    ],
+    "recall": 0.5714285714285714
+  },
+  {
+    "document": "regional_report.pdf",
+    "backend": "docling(table_extraction=True)",
+    "ok": true,
+    "elapsed_s": 1.567,
+    "error": "",
+    "chars": 1145,
+    "words": 56,
+    "headings": 3,
+    "tables": 1,
+    "extraction_method": "embedded_text",
+    "converter": "docling",
+    "expected_total": 5,
+    "expected_found": 5,
+    "missing": [],
+    "recall": 1.0
+  }
+]

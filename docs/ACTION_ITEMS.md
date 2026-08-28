@@ -1,8 +1,18 @@
 # Action items — remaining work
 
-**Status as of 2026-08-28.** `main` is healthy (CI green; latest `ci.yml` run **733 passed / 6 skipped**). GitHub currently has **zero open issues and zero open PRs**, so this file is the operational tracker until those items are filed as issues.
+**Status as of 2026-08-29 (end of day).** `main` is healthy (CI green). Open work is now tracked as **GitHub issues** — see the table below. This file remains the design/context backdrop; the issues are the actionable tracker.
 
-Design/history live in the existing docs. This file is only the **work that is still open**, with a recommended next action for each.
+## Open GitHub issues (the live tracker)
+
+| Issue | Item | State |
+|-------|------|-------|
+| #64 | P0-01 intermittent full-suite failure | **Reproduced** — order-dependent test-isolation flake (NOT resource pressure). See issue for ranked hypotheses. |
+| #65 | P1-02 Docling 2.123.1 upgrade | **Evaluated** — NO-GO on synthetic fixture (structural heading regression, recall unchanged). Needs a real-doc check. |
+| #66 | P1-07 bulk VLM auto-resume | Open — product decision (recommend manual resume). |
+
+## Completed 2026-08-29 (this session)
+
+P0-02 (Docling broken-vs-absent), P0-03 (prod compose `ATLAS_ENV=prod`), P0-04 (RAG 502 `str(e)` leak), P1-01 (layout parser page cap), P1-03 (coverage gate → `atlas.vlm_ingest`), P1-04 (explicit ruff `select`), P1-05 (non-root container), P1-06 (thumbnails pagination + web caller). Also fixed EXE001 exec-bit cross-platform bug. Full suite: **759 passed / 0 failed**, coverage 89.67% (gate 80%).
 
 | Doc | Role |
 |-----|------|
@@ -15,87 +25,61 @@ Design/history live in the existing docs. This file is only the **work that is s
 
 ---
 
-## Where to start
+## Where to start (resume here tomorrow)
 
-Do these in order. Later rows are not blocked on earlier ones except where noted.
+1. **P0-01 (#64)** — fix the order-dependent test-isolation flake (reproduced; ranked hypotheses in the issue). Highest value: it can redden CI at random.
+2. **P1-02 (#65)** — run a **real prod-like document** through Docling 2.76.0 vs 2.123.1 before deciding; the synthetic-fixture regression may not generalize.
+3. **P1-07 (#66)** — make the manual-vs-auto resume product call, then implement if warranted.
+4. **P2** — product features (12D VLM quality audit, HITL strip-and-rejudge, parallel VLM, etc.) below.
 
-1. **P0-01** — capture the intermittent full-suite failure (it can redden CI for no product signal).
-2. **P0-02** — stop Docling import failures looking like "not installed" and silently falling back to the layout parser.
-3. **P0-03 / P0-04** — two small prod-posture fixes (`ATLAS_ENV` default; RAG 502 bodies leaking `str(e)`).
-4. **P1-01** — enforce `atlas_pdf_max_pages` in the layout parser (unbounded memory on the fallback path).
-5. **P1-02** — evaluate the Docling pin the only valid way (lockfile bump + image rebuild + `ingest_quality.py` gate). Do not `pip install --upgrade` inside a running container.
-
-File a GitHub issue per P0/P1 item before starting it. GitHub Issues is currently empty, so nothing in this file is tracked there yet.
+The per-item detail sections are kept below for the open items; completed items (2026-08-29, listed above) are collapsed to their issue/commit references.
 
 ---
 
 ## P0 — correctness, safety, or CI reliability
 
-### P0-01 — Intermittent full-suite failure
-- **Status:** Open. Reproduces ~1 in 3–5 full-suite runs; never in isolation.
-- **Source:** `docs/WORKLOG.md` (2026-08-28 Docling entry). Earlier misread as `KeyError` in `test_export_empty`.
-- **What is known:** it *moves between tests*. Traces bottom out in a heavy lazy import compiling regexes. Hypothesis (untested): resource pressure while torch / Docling / onnxruntime are all loaded.
-- **Repro:** `for i in $(seq 8); do python -m pytest -q --no-cov --tb=long || break; done`
-- **Action:** capture a clean exception with `--tb=long`, then fix or isolate. Do not guess.
+### P0-01 — Intermittent full-suite failure → **issue #64**
+- **Status:** **Reproduced 2026-08-29** (run 6 of 8). Root cause narrowed: it is an **order-dependent test-isolation flake**, NOT the resource-pressure import crash previously hypothesized.
+- **Captured:** `tests/test_docling_ingest.py::test_rag_ingest_pdf_low_quality_returns_error_code` → `assert 502 == 200`. The test monkeypatches `parse_document_path` (Docling mocked), so it cannot be an import failure — shared state leaks between tests under full-suite ordering.
+- **Action:** reproduce deterministically (pairwise / seeded orders), then add an autouse reset for the Settings/config singletons. Ranked hypotheses in #64.
 
-### P0-02 — Docling failures reported as "not installed"
-- **Status:** Open.
-- **Location:** `src/atlas/ingest/docling_adapter.py` (`DoclingUnavailableError`).
-- **Risk:** any import exception (broken half-upgrade, missing transitive, corrupt install) becomes "Docling is not installed". With `pdf_parser.backend: auto` the pipeline then falls back to the layout parser and **succeeds at lower quality**. Silent quality drop behind a misleading message.
-- **Action:** distinguish missing package from import/`TypeError`/broken tree; fail loudly when the operator asked for Docling; do not let `auto` swallow a broken install as a successful layout parse.
+### P0-02 — Docling failures reported as "not installed" → ✅ **DONE 2026-08-29**
+`DoclingBrokenInstallError` now distinguished from `DoclingUnavailableError`; explicit backend fails loudly, `auto` logs a DEGRADED warning on broken install. Commit `584a657`.
 
-### P0-03 — `ATLAS_ENV` defaults to `dev` in the production compose
-- **Status:** Open. Confirmed.
-- **Location:** `docker-compose.yml` (`ATLAS_ENV: ${ATLAS_ENV:-dev}`).
-- **Risk:** a production stack brought up without an explicit env runs with dev semantics (auth bypass available, weaker startup requirements).
-- **Action:** default the production compose file to `prod` (or require the var). Keep the dev overlay as the place that sets `dev`.
+### P0-03 — `ATLAS_ENV` defaults to `dev` in the production compose → ✅ **DONE 2026-08-29**
+Base `docker-compose.yml` now defaults `ATLAS_ENV` to `prod`; dev flow sets `dev` via `.env`. Commit `a63fb44`.
 
-### P0-04 — RAG 502 bodies leak `str(e)`
-- **Status:** Open. Confirmed.
-- **Location:** `src/atlas/api_rag.py` (three 502 handlers).
-- **Risk:** upstream exception text reaches the client (hostnames, provider detail).
-- **Action:** return a stable error code/message; log the exception server-side.
+### P0-04 — RAG 502 bodies leak `str(e)` → ✅ **DONE 2026-08-29**
+Stable `_UPSTREAM_ERROR_DETAIL` returned; full exception logged server-side. Commit `590e61f`.
 
 ---
 
 ## P1 — scale, supply chain, and gates that would have caught real bugs
 
-### P1-01 — Page-cap asymmetry between parsers
-- **Status:** Open. Confirmed.
-- **Location:** `src/atlas/settings.py` (`atlas_pdf_max_pages = 2000`) vs `src/atlas/ingest/pdf_parser.py` (`to_page` default `100_000`, every selected page buffered as an image).
-- **Risk:** Docling refuses oversized PDFs; the layout parser does not. Raising the setting toward the 3,000-page target silently changes a clean rejection into unbounded memory growth — and `backend: auto` takes that path after a Docling miss.
-- **Action:** enforce the same cap in the layout parser; stream page handling the way commit now streams chunks.
+### P1-01 — Page-cap asymmetry between parsers → ✅ **DONE 2026-08-29**
+Layout parser now preflights page count via PyMuPDF and refuses oversized PDFs with the same `DoclingLimitsError` / `DOC_PAGE_LIMIT_EXCEEDED` contract Docling uses, before buffering any page image. Commit `78cf18d`.
 
-### P1-02 — Docling pin is 53 releases behind
-- **Status:** Open. Evaluation procedure only; upgrade not done.
-- **Pinned:** `2.76.0`. **Latest at last check:** `2.123.0`.
-- **Established:** installing the new version *into the existing image* leaves a broken tree (`docling.pipeline` present, `docling.document_converter` gone) and every parse fails. Sequential intermediate upgrades happened to drag transitives into a state where imports worked — that is **not** a green light.
-- **Not established:** whether a clean `pip-compile` of `2.123.0` parses, or at what quality.
-- **Action:** bump the pin → regenerate both lock files → rebuild the image → gate with `scripts/ingest_quality.py` against a baseline. Never upgrade Docling inside a running container. See `docs/TECHNICAL_DEBT.md` §7.
+### P1-02 — Docling pin is 53 releases behind → **issue #65**
+- **Status:** **Evaluated 2026-08-29** the valid way (clean `pip-compile` lock + throwaway image rebuild + `ingest_quality.py` gate). **NO-GO as-is.**
+- **Result:** gate fired a *structural* regression — 2.123.1 stops promoting `Section N — …` paragraphs to `#` headings on the synthetic fixture (−2 headings, −1963 chars); **content recall unchanged** on both fixtures. Build succeeds cleanly.
+- **Caveats:** may be fixture-shape specific (reportlab Heading2 is a weak signal) → run a **real prod-like doc** before deciding; a docling format option may restore promotion. Eval container needs `--user root` (2.123.1 reads `/root/.local/share/fonts`). Artifacts in `eval_fixtures/` (uncommitted).
+- **Action:** real-doc A/B, then decide. Never upgrade Docling inside a running container. See `docs/TECHNICAL_DEBT.md` §7.
 
-### P1-03 — Coverage gate covers only `atlas.pipeline`
-- **Status:** Open (partial). Whole-package coverage would add noise; `atlas.vlm_ingest` is the extension that would have caught the 2026-08-28 session-lifecycle defects.
-- **Location:** `pyproject.toml` `addopts`.
-- **Action:** add `--cov=atlas.vlm_ingest` (and only that, unless a later incident says otherwise).
+### P1-03 — Coverage gate covers only `atlas.pipeline` → ✅ **DONE 2026-08-29**
+Added `--cov=atlas.vlm_ingest`; 80% fail-under gate holds (pipeline ~91%, vlm_ingest ~93%). Commit `f5b4644`.
 
-### P1-04 — No explicit ruff `select`
-- **Status:** Open (reframed). The ignore list is *not* hollow — ruff's default set already includes the ignored codes. The real issue is that the enforced set is whatever the installed ruff version defaults to. `line-length = 100` is configured while `E501` is not enabled, so nothing enforces it.
-- **Action:** pin an explicit `select` in `pyproject.toml`.
+### P1-04 — No explicit ruff `select` → ✅ **DONE 2026-08-29**
+Pinned `select` = default base (E4/E7/E9/F) + exactly the debt-bearing codes named in the ignore list (selected individually so sibling rules like S101 are not pulled in). E501 stays off. Commit `f5b4644`.
 
-### P1-05 — Container runs as root
-- **Status:** Open. Confirmed.
-- **Location:** `Dockerfile` has no `USER` directive.
-- **Action:** add a non-root user in the runtime stage. Verify volume permissions for `artifacts/` and the Postgres/Qdrant sockets are unaffected.
+### P1-05 — Container runs as root → ✅ **DONE 2026-08-29**
+Runtime stage now `USER atlas` (uid 1000, matching dev host). `HOME`/`PIP_CACHE_DIR` point at root-owned baked caches read-only (no `chown -R`, so model layers stay cached). Devcontainer workspace keeps `user: root` override. Commit `6b38762`.
 
-### P1-06 — `/thumbnails` is unpaginated
-- **Status:** Open. Deliberately deferred at a few hundred pages; a problem at the 2,000–3,000-page target.
-- **Location:** `GET /api/editor/vlm-ingest/{session_id}/thumbnails` renders every page in one response (~48 KB/page ⇒ ~150 MB at 3k pages).
-- **Action:** paginate, or document that the Pages grid is not for thousand-page docs and keep operators on headless mode. Interactive wizard work is optional until a real thousand-page interactive job is required.
+### P1-06 — `/thumbnails` is unpaginated → ✅ **DONE 2026-08-29**
+Endpoint paginated (`limit`/`offset`, default 200 max 1000) returning `{pages,total,offset,limit,has_more}`. Web caller unwraps `.pages` with `limit=1000` to preserve current grid behavior; true incremental paging is a documented follow-up. Commit `786e6df`.
 
-### P1-07 — Bulk VLM does not auto-resume after API restart
+### P1-07 — Bulk VLM does not auto-resume after API restart → **issue #66**
 - **Status:** Open. Durability landed (ledger + checkpoints + rehydrate); the *loop* still does not restart itself.
-- **Source:** `docs/WORKLOG.md` 2026-08-27 scale audit, still true after the 2026-08-28 durability rewrite.
-- **Action:** after rehydrate, offer an operator "Resume processing" (UI already lists ledger sessions). Automatic restart of a bulk loop is a product choice — default should stay manual so a crash does not silently spend VLM tokens.
+- **Action:** product decision — offer an operator "Resume processing" (UI already lists ledger sessions). Default should stay manual so a crash does not silently spend VLM tokens.
 
 ---
 
