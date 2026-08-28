@@ -111,3 +111,146 @@ However, there are specific areas of technical debt and hidden dangers that shou
 | **Medium** | Pin dependencies with a lock file | ✅ Done — `requirements.lock` / `requirements-dev.lock` |
 | **Medium** | Harden Judge parsing | ✅ Done — `_extract_int()` regex parser |
 | **Low** | Extract LLM output guardrails | ✅ Done — `pipeline/guardrails.py` |
+
+---
+
+## 6. Open debt — carried forward from the 2026-08-28 agent scan
+
+A read-only multi-agent scan was run against the repo on 2026-08-28. Every
+claim was re-verified against source before being accepted; the items below
+are the ones that survived and remain **open**. Resolved items from the same
+scan are recorded in `WORKLOG.md` rather than duplicated here.
+
+Verdict key: `CONFIRMED` — reproduced from source · `PARTIAL` — real, but the
+framing or severity in the original report was off.
+
+### A. Page-cap asymmetry between the two parsers — CONFIRMED
+
+*   **Location:** `src/atlas/settings.py` (`atlas_pdf_max_pages = 2000`) vs
+    `src/atlas/ingest/pdf_parser.py`
+*   **Risk:** Docling refuses documents over `atlas_pdf_max_pages`; the layout
+    parser enforces **no cap at all** and buffers every page. The two paths
+    therefore disagree about what is too big, so raising the setting to reach
+    the 3,000-page target silently shifts the failure from a clean rejection
+    to unbounded memory growth.
+*   **Note:** The cap itself is a setting, not a code change — the original
+    report overstated this. The asymmetry is the real defect.
+*   **Mitigation:** Enforce the same cap in the layout parser, and stream page
+    handling there the way commit now streams chunks.
+
+### B. `ATLAS_ENV` defaults to `dev` in the production compose — CONFIRMED
+
+*   **Location:** `docker-compose.yml` (`ATLAS_ENV: ${ATLAS_ENV:-dev}`)
+*   **Risk:** A production stack brought up without an explicit `ATLAS_ENV`
+    runs with dev semantics.
+*   **Note:** The same report flagged the hardcoded local Postgres password
+    here as a security issue. On a single-host appliance that is low risk; the
+    environment default is the item worth fixing.
+
+### C. Coverage gate covers only `atlas.pipeline` — PARTIAL
+
+*   **Location:** `pyproject.toml` (`--cov=atlas.pipeline`)
+*   **Note:** Whole-package coverage would mostly add noise. Extending it to
+    `atlas.vlm_ingest` is the change that would actually have caught the
+    session-lifecycle defects fixed on 2026-08-28.
+
+### D. Error bodies leak `str(e)` — CONFIRMED
+
+*   **Location:** `src/atlas/api_rag.py` (502 handlers)
+*   **Risk:** Upstream exception text reaches the client, which can disclose
+    internal hostnames and provider detail.
+
+### E. No explicit ruff `select` — CONFIRMED (reframed)
+
+*   **Location:** `pyproject.toml`
+*   **The original claim — that the `ignore` list is therefore hollow — is
+    wrong**, and was tested directly: ruff's *default* rule set already
+    includes `B`, `C4`, `S110`, `BLE001` and `EXE002`, so every registered
+    ignore suppresses a genuinely enabled rule.
+*   **The real issue** is that with no `select`, the enforced rule set is
+    whatever the installed ruff version happens to default to, so an upgrade
+    can silently widen or narrow the gate. Evidence it already bites:
+    `line-length = 100` is configured while `E501` is not enabled, so nothing
+    enforces it.
+*   **Mitigation:** Pin an explicit `select` for reproducibility.
+
+### F. Lower-priority items — CONFIRMED
+
+*   **Container runs as root** — no `USER` directive in the `Dockerfile`.
+*   **`personal_configs/pipeline.yml` is tracked** (since `4a275ea`). Scanned:
+    **no secrets**, consistent with the git-history audit. Hygiene, not
+    exposure.
+*   **`/thumbnails` renders every page synchronously** and is unpaginated —
+    use headless mode past a few hundred pages.
+*   **The session cache can hold up to 50 source PDFs in RAM.** Bounded by LRU
+    and cold release, and only reachable with 50 concurrent sessions.
+
+### Rejected outright
+
+Nothing else from the scan was accepted. Two items were self-marked as
+hypotheses by the scanning agents and both needed exactly the verification
+they asked for — one (the ruff claim, §E above) turned out wrong.
+
+---
+
+## 7. Ingest stack — Docling
+
+### A. Docling is 53 releases behind — OPEN
+
+*   **Pinned:** `2.76.0` (`requirements.lock`). **Latest:** `2.123.0`.
+
+**What was actually established, and what was not.**
+
+*   Installing `2.123.0` into the existing image — whether by
+    `pip install --upgrade docling` or by exact pin — leaves a **broken
+    package tree**: `docling.pipeline` present, `docling.document_converter`
+    gone. The adapter then reports "Docling is not installed" and every parse
+    fails. Measured with `scripts/ingest_quality.py`: both fixtures went from
+    100% recall to a hard failure.
+*   Installing intermediate versions *in sequence* (2.85 → 2.100 → 2.114 →
+    2.120.2 → 2.123.0) ended with the adapter's imports working. That is not
+    evidence the target version is fine — it means the chain happened to drag
+    transitive dependencies (`docling-core` and friends) to compatible
+    versions along the way. Do not read it as a green light.
+*   **Not established:** whether a genuinely clean resolve of `2.123.0` — all
+    dependencies solved together, as `pip-compile` would — parses correctly
+    and at what quality. Nobody has run that.
+
+**The only valid way to evaluate the upgrade** is therefore to bump the pin in
+`pyproject.toml`, regenerate both lock files, rebuild the image, and then gate
+on measurement:
+
+```
+python scripts/ingest_quality.py --input-dir samples --out baseline.json
+#  ... bump pin, pip-compile, rebuild image ...
+python scripts/ingest_quality.py --input-dir samples --out after.json \
+    --baseline baseline.json     # non-zero exit on regression
+```
+
+Never upgrade Docling inside a running container — the result looks like a
+missing dependency, not a broken upgrade.
+
+### B. Docling failures are reported as "not installed" — OPEN
+
+*   **Location:** `src/atlas/ingest/docling_adapter.py`
+*   Any exception while importing Docling — a broken half-upgrade, a missing
+    transitive dependency, a corrupt install — is converted to
+    `DoclingUnavailableError` ("Docling is not installed"). The underlying
+    cause is now attached to the diagnostic, but the operator-facing message
+    still points at the wrong problem, and `backend: auto` then falls back to
+    the layout parser and *succeeds* with lower-quality output. A silent
+    quality drop is the worst version of this failure.
+*   This is the same swallow-and-mislead shape as the `huggingface_hub`
+    kwarg bug (see `WORKLOG.md`, 2026-08-28) and as a `TypeError` from a
+    changed adapter signature surfacing as `DOC_PARSE_FAILED`.
+
+### C. Table structure recognition: cost and fidelity — RESOLVED, documented
+
+*   `pdf_parser.table_extraction` was documented in `pipeline.yaml.example`
+    and **read by nothing** — setting it had no effect. Now wired through to
+    Docling's `do_table_structure`, with a test that fails if it goes inert.
+*   Measured on a 3x3 ruled table: **on** ~4.5s and real columns; **off**
+    ~0.65s with the whole table collapsed onto one line.
+*   TableFormer **normalises cell text** — it rewrites `1E-11` as `1e-11`.
+    Table content is not reproduced byte-for-byte, so never compare it
+    exactly.
