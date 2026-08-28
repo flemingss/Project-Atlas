@@ -299,7 +299,7 @@ Three chunking strategies available (configurable via `pipeline.yaml`). Default 
 
 ## Testing
 
-Current automated coverage (**698 tests across 54 test files**, 0 failures):
+Current automated coverage (**733 passed / 6 skipped across 60 test files** on the latest `ci.yml` run, 2026-08-28):
 - Schema creation and validation (incl. `CleanupResult`, `JudgeResult.sub_scores`)
 - Diagnostics and error handling
 - Pipeline state transitions (11 nodes)
@@ -327,13 +327,14 @@ Current automated coverage (**698 tests across 54 test files**, 0 failures):
 
 Run tests:
 ```bash
-pytest -q                    # All tests (698 passing)
+pytest -q                    # All tests (733 passed / 6 skipped on latest CI)
 pytest -m integration        # Integration tests only
 ```
 
 ## Next Steps
 
-The current implementation (v0.7.2) provides:
+Remaining work is tracked in `docs/ACTION_ITEMS.md`. The current implementation
+(unreleased work on top of v0.8.0) provides:
 - ✅ All core data models (incl. multi-dimensional judge, cleanup results, cleanup feedback)
 - ✅ Full 11-node pipeline (Ingest → Cleanup → Judge → Refine → Metadata → Embeddings → Chunking → Commit + HITL/COMPLETED/FAILED)
 - ✅ Config-driven cleanup rules engine (8 step types, first-match-wins, rule-tag routing)
@@ -349,15 +350,15 @@ The current implementation (v0.7.2) provides:
 - ✅ Enhanced chunking (3 strategies + QA)
 - ✅ Fidelity mode search filter
 
-All Phase 7–9 items are complete. Phase 10 (layout parser) complete. Phase 11 (quality improvements) in progress.
+All Phase 7–11 items are complete. Phase 12A–C and 12E are complete; 12D (VLM quality audit) is still open and was incorrectly closed as GitHub #30.
 - ✅ Layout-aware PDF parser (8 ONNX modules from RAGFlow deepdoc) with swappable backends
 - ✅ Refine content-safety guardrails, sectional refinement, LLM artifact stripping
 - ✅ Token utilities, dynamic max_tokens, section-count preservation guard
 - ✅ Normalize refactored to formatting-only; page-number and noise stripping moved to cleanup builtins
 - ✅ Runner consolidation (5 shared helpers, 37% line reduction)
 - 🔄 Prompt/rubric tuning as real-world usage data accumulates
-- 🔄 Retrieval upgrades (hybrid/rerank) deferred unless a measured failure mode requires them
-- ✅ **React SPA Control Center (Phase 12→13)** — Full operator console (`web/`, ~76 source files). Vite 6 + React 18 + TypeScript + shadcn/ui + Tailwind CSS. Routes under `/app`: Dashboard (index), `ingest`, `library`, `search`, `review`, `admin/{health,cleanup,groups,danger}`, and the Document Editor (PDF.js + CodeMirror 6) at `doc/:docId` / `run/:runId`. Builds to `static/app/`, served by FastAPI at `/app`.
+- 🔄 Retrieval upgrades (hybrid/rerank) deferred unless a measured failure mode requires them (`ACTION_ITEMS.md` P2-07)
+- ✅ **React SPA Control Center (Phase 12→13)** — Full operator console (`web/`, ~76 source files). Vite 8 + React 18 + TypeScript + shadcn/ui + Tailwind CSS. Routes under `/app`: Dashboard (index), `ingest`, `library`, `search`, `review`, `admin/{health,cleanup,groups,danger}`, and the Document Editor (PDF.js + CodeMirror 6) at `doc/:docId` / `run/:runId`. Builds to `static/app/`, served by FastAPI at `/app`.
 - ✅ **Vision Language Model (VLM) integration** — multimodal `ChatMessage`, `page_renderer.py` (PyMuPDF), `vision_model` role in `models.yaml`, unclosed `<think>` tag handling
 - ✅ **VLM-first parser backend (Phase 12E)** — `backend: vision` parser mode. `vlm_ingest` package (deterministic stitcher + session manager), 16-endpoint API router (`api_vlm_ingest.py`), unified React ingest wizard (`/app/ingest`), headless mode via `VisionParser` (`backend: vision`). Server-side config export; import is handled client-side.
 - ✅ **Hosted generation via LLM profiles** — `openrouter` (OpenAI-compatible) provider selected by the `api` profile, which is the default `active_profile`. `ATLAS_LLM_PROFILE` or `models.yaml → active_profile` patches both `models.yaml` and `pipeline.yaml`. Zero-data-retention enforced per request (`provider: {zdr: true}`). Embeddings pinned to the CPU `embeddings` sidecar (host `18090`) and excluded from profile switching. Atlas API on host `28080`.

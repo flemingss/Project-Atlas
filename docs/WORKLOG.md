@@ -1,5 +1,33 @@
 # Worklog
 
+## 2026-08-28 (remaining-work audit) — GitHub Issues empty; tracker is now `docs/ACTION_ITEMS.md`
+
+Read-only pass over the repo, all tracked docs, closed GitHub issues/PRs, CI,
+and Dependabot ignores. `main` is healthy (latest `ci.yml`: **733 passed / 6
+skipped**). Product work since v0.8.0 is on `main` and unreleased.
+
+The gap: **zero open GitHub issues**, while TECHNICAL_DEBT §6–7, WORKLOG
+deferrals, TECHNICAL_DESIGN Phase 12D/12E leftover checkboxes, and Dependabot
+ignores still listed real work. Those items are now IDed in
+`docs/ACTION_ITEMS.md` (P0–P3) with a recommended sequence.
+
+Tracking failures found, not invented:
+
+- **#30 (Phase 12D VLM quality audit) was closed as completed** without the
+  feature. Copilot PR #38 on `copilot/add-vlm-quality-audit` did per-page
+  status sync and was closed in favour of #37. No `quality_audit` module exists.
+- **#15** closed on mocked Docling tests; real converter coverage landed later
+  (`test_docling_e2e.py`) but still skips in CI without cached models.
+- **#34** VRAM monitoring landed then `concurrency.py` was deleted — do not
+  reopen.
+- CHANGELOG `[Unreleased]` had stopped before the afternoon durability /
+  Alembic / Docling-e2e / token-bootstrap work. Caught up in this pass.
+- Stale counts (698 tests / Vite 6 / "Phase 11 in progress") corrected where
+  they were still presented as current.
+
+Next engineering is the P0 sequence in ACTION_ITEMS, not more discovery.
+This environment cannot file GitHub issues (`gh` is read-only).
+
 ## 2026-08-28 (flush verification + DR) — flush.ps1 proven; backup/restore now exists
 
 Operator asked to verify `flush.ps1`. Because that destroys the real CANES

@@ -12,6 +12,88 @@ Version numbering note: the last tag is `v0.8.0` and `pyproject.toml` now reads
 was never released under that number). The work in this section has no version
 assigned yet — pick the next version and bump both when it ships.
 
+Remaining work is tracked in `docs/ACTION_ITEMS.md` (GitHub Issues is empty).
+
+### Added (2026-08-28, remaining-work tracker)
+
+- **`docs/ACTION_ITEMS.md`** is the operational backlog: P0–P3 items drawn from
+  TECHNICAL_DEBT, WORKLOG, TECHNICAL_DESIGN, Dependabot ignores, and a
+  re-check of closed GitHub issues. Notable tracking failure: Phase 12D
+  (#30) was closed as completed but the quality-audit feature was never
+  implemented.
+
+### Added (2026-08-28, Docling actually exercised)
+
+- **`tests/test_docling_e2e.py`** runs the real Docling converter against PDFs
+  generated at test time with known ground truth. It asserts a quality floor
+  (headings + body recovered), not an exact markdown string — Docling output
+  changes between releases. Marked `integration` and skipped unless models are
+  already cached, so CI never triggers a large download.
+- **`scripts/ingest_quality.py`** (logic in `atlas.eval.ingest_quality`)
+  measures a parse and diffs two runs, exiting non-zero on regression. It is
+  the gate for a parser upgrade, not a description of one.
+- **`pdf_parser.table_extraction`** is now wired through to Docling's
+  `do_table_structure`. It was documented and read by nothing; setting it had
+  no effect. A test fails if it goes inert again. TableFormer normalises cell
+  text (`1E-11` → `1e-11`) — never compare table content byte-for-byte.
+- Limits are enforced *before* the Docling import, so an oversized document
+  with Docling unavailable reports the limit it violated, not a missing
+  dependency.
+
+### Added (2026-08-28, VLM sessions on the ledger)
+
+- **`vlm_sessions` / `vlm_page_results` / `vlm_page_cache`** — VLM ingest no
+  longer treats the in-memory `SessionRegistry` as the system of record. Session
+  state and per-page outcomes are written when each page settles; the page
+  cache is content-addressed (source hash, page, DPI, crop, masks, prompt,
+  model). A re-run of the same page is a cache hit (measured 22.7s → 0.06s,
+  byte-identical). The source PDF is persisted next to checkpoints so a
+  released session rehydrates fully, previews included.
+- **`SessionRegistry` is a cache**: a miss rehydrates from the ledger. Eviction
+  is RAM reclaim and skips `bulk_active` sessions. Capacity pressure evicts LRU
+  instead of refusing new work. `GET /sessions` lists from the ledger.
+- **Alembic adopted.** `create_all` can only add tables; the first change to an
+  existing table had no path to production. Pre-Alembic databases are stamped
+  at the baseline rather than migrated.
+
+### Changed (2026-08-28, gates test what ships)
+
+- **Docker image installs `requirements.lock`**, matching CI. The image used to
+  resolve `pyproject.toml` ranges, so a green build said nothing about the
+  appliance.
+- **mypy** runs in CI across `src/atlas` (registered stub-driven debt in
+  `pyproject.toml`, same shape as ruff's ignore list). First run caught
+  `huggingface_hub` 1.x removing `local_dir_use_symlinks`, which broke runtime
+  deepdoc downloads on both the primary and fallback paths — unnoticed because
+  the image bakes those weights in, and because the image and the lock had
+  drifted onto different versions of the library.
+- **`FakeQdrantStore.search`** no longer returns a manufactured hit when a
+  filter matches nothing. That made "search returns empty" untestable.
+- **Commit streams in windows of 256 chunks** instead of embedding every chunk
+  and building every point before the first upsert. Peak memory no longer
+  scales with the whole document.
+- **CI lints `scripts/`** as well as `src/` and `tests/`.
+
+### Fixed (2026-08-28, VLM status vs lock)
+
+- **Session `status` is durable and descriptive; `bulk_active` is the
+  in-memory lock.** `process_page` used to set `PROCESSING` and never clear it,
+  so "Process all" returned 409 forever after a single interactive page. Once
+  status became durable that wedge survived restarts (previously a restart
+  cleared it by destroying the session). `save_session` refuses to persist a
+  transient status.
+- Operator hand-corrections survived cache release; `DELETE` during a bulk
+  loop no longer resurrects the rows it just removed; `source.pdf` is written
+  atomically.
+- **`configure_logging()` is called at startup**, so `atlas.*` logs are visible
+  under uvicorn.
+
+### Fixed (2026-08-28, admin token bootstrap)
+
+- The SPA consumes `?token=` **once** and scrubs it from the URL, so the
+  secret is not left in history, referrers, or screenshots after the first
+  load.
+
 ### Removed (2026-08-27, compose consolidation)
 - **Compose surface consolidated to two stacks — dev and prod.** Deleted
   `docker-compose.e2e.yml`, `docker-compose.optest.yml`,
