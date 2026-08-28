@@ -24,6 +24,20 @@ assigned yet — pick the next version and bump both when it ships.
   against the live dev stack (see README "E2E Scenario Tests"). Everything
   else is recoverable from git history if a CI harness is revived.
 
+### Added (2026-08-28, runtime/CI Python consistency guard)
+
+- **CI now fails if `Dockerfile`'s Python differs from `ci.yml`'s.** CI installs
+  its own Python and never builds the Dockerfile, so a base-image bump would go
+  green while testing a version the appliance does not actually run — exactly
+  what the python 3.11 → 3.14 Dependabot PR did. The two must be bumped
+  together, deliberately.
+- **Python 3.14 deferred** (PR #62): the locked dependencies install and the
+  full suite passes on 3.14.7 (697 passed / 1 skipped; the extra warnings are
+  `ResourceWarning: unclosed sqlite connection` from test fixtures, not
+  production issues). It is deferred anyway because the suite does not exercise
+  the heavy ML paths the image exists for — Docling parsing, onnxruntime
+  inference, PyMuPDF rendering — so adopting a runtime Python major needs a
+  full image build plus a real document ingest, not a drive-by merge.
 ### Changed (2026-08-28, guards on mutating admin actions)
 
 Swept every admin action for the case an unfamiliar operator would misread as

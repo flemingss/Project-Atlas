@@ -80,6 +80,15 @@ updates:
     schedule:
       interval: weekly
     ignore:
+      # - python 3.14: the locked deps install and the suite passes on it
+      #   (697 passed, verified 2026-08-28), but the suite does not exercise
+      #   the heavy ML paths this image exists for - Docling parsing,
+      #   onnxruntime inference, PyMuPDF rendering. Adopting a runtime Python
+      #   major needs a full image build plus a real document ingest, not a
+      #   drive-by merge. Bump Dockerfile and ci.yml python-version together
+      #   (CI enforces they match).
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
       # Node majors track LTS deliberately (25 is a non-LTS current release);
       # bump the Dockerfile ui-build stage to the next LTS by hand.
       - dependency-name: node

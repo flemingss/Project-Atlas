@@ -30,6 +30,19 @@ jobs:
       PIP_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
     steps:
       - uses: actions/checkout@v7
+      - name: Python version matches the runtime image
+        # CI installs its own Python and never builds the Dockerfile, so a base
+        # image bump (e.g. a Dependabot python 3.11 -> 3.14 PR) would go green
+        # here while testing a version the appliance does not run. Fail loudly
+        # instead: bump both together, deliberately.
+        run: |
+          image_py=$(grep -oP '^FROM python:\K[0-9]+\.[0-9]+' Dockerfile | head -1)
+          ci_py=$(grep -oP 'python-version: "\K[0-9]+\.[0-9]+' .github/workflows/ci.yml | head -1)
+          echo "Dockerfile: $image_py / CI: $ci_py"
+          if [ "$image_py" != "$ci_py" ]; then
+            echo "::error::Dockerfile python ($image_py) != CI python ($ci_py) — update both together."
+            exit 1
+          fi
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
