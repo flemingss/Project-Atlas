@@ -100,7 +100,13 @@ class DoclingParser(DocumentParser):
                 # responsive during a parse.
                 parsed = await asyncio.to_thread(
                     parse_document_path,
-                    doc_path=Path(tmp.name), source_mime_type=source_mime_type,
+                    doc_path=Path(tmp.name),
+                    source_mime_type=source_mime_type,
+                    # pipeline.yaml documents this knob under pdf_parser but
+                    # nothing read it, so setting it had no effect either way.
+                    table_extraction=bool(
+                        self.ctx.pdf_cfg.get("table_extraction", True)
+                    ),
                 )
 
             if not (parsed.markdown_projection or "").strip():

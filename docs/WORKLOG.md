@@ -584,3 +584,89 @@ Recorded because the run was also a test of the harness:
     guard against in a fan-out.
 *   **Self-marked hypotheses were honest** — both needed exactly the
     verification they asked for, and one turned out wrong. The marking worked.
+
+---
+
+## 2026-08-28 — Docling: real coverage, and a way to judge upgrades
+
+### Docling was never actually tested
+
+Every Docling test in the suite monkeypatched `parse_document_path`, so they
+covered the wiring — artifact persistence, error codes, fidelity flags — while
+never running Docling itself. A version bump, a model change, or a
+pipeline-option regression would have passed all of them.
+
+`tests/test_docling_e2e.py` runs the real converter against PDFs built at test
+time with known ground truth. It asserts a **quality floor, not exact output**:
+Docling's markdown changes between releases, and pinning the string would make
+every upgrade look like a regression. Fixtures are generated rather than
+committed — a checked-in PDF drifts from what the assertions claim it contains,
+and the real manuals are production material.
+
+Marked `integration` and skipped unless the models are already cached, so it
+never triggers a large download inside CI.
+
+### Three things writing those tests turned up
+
+*   **`pdf_parser.table_extraction` was inert.** Documented in
+    `pipeline.yaml.example`, read by nothing. Now wired to Docling's
+    `do_table_structure`, with a test that fails if it goes dead again. On a
+    ruled table: **on** ≈4.5s with real columns, **off** ≈0.65s with the table
+    collapsed onto one line.
+*   **TableFormer normalises cell text** — `1E-11` comes back as `1e-11`. Table
+    content is not byte-exact and must never be compared strictly.
+*   **Limits were enforced after the Docling import.** An oversized document
+    with Docling unavailable reported a missing dependency instead of the limit
+    it violated. Preflight uses PyMuPDF, so the guard now runs first.
+
+### Measuring instead of guessing
+
+`scripts/ingest_quality.py` (logic in `atlas.eval.ingest_quality`) measures a
+parse — chars, headings, tables, timing, and recall against optional
+per-document ground truth — writes JSON, and diffs two runs, exiting non-zero
+on regression. It is meant to *gate* a parser upgrade, not describe one.
+
+It earned that on first use: pointed at a Docling upgrade it caught both
+fixtures dropping from 100% recall to a hard parse failure.
+
+### Where the Docling upgrade actually stands
+
+Pinned `2.76.0`; latest `2.123.0`, 53 releases on. Established: installing the
+new version **into the existing image** — by `--upgrade` or by exact pin —
+leaves a half-upgraded tree (`docling.pipeline` present,
+`docling.document_converter` gone) and every parse fails. **Not** established:
+whether a clean `pip-compile` resolve of 2.123.0 parses correctly, or at what
+quality. Nobody has run that. Details and the evaluation procedure are in
+`TECHNICAL_DEBT.md` §7.
+
+The failure mode is worth remembering: a broken Docling reports "Docling is not
+installed", and with `backend: auto` the pipeline falls back to the layout
+parser and **succeeds at lower quality**. A silent quality drop behind a
+misleading message.
+
+### Open: an intermittent full-suite failure
+
+Not fixed, and deliberately not guessed at.
+
+*   Reproduces roughly 1 run in 3–5 of the **full** suite; never in isolation
+    (10 clean runs of the Docling E2E file alone, and `test_export_empty`
+    passes alone too).
+*   It moves between tests. It first appeared as
+    `test_cleanup_rules_import_export.py::test_export_empty`; after the Docling
+    tests were added it landed on
+    `test_docling_e2e.py::test_docling_recovers_headings_and_body_from_born_digital_pdf`.
+    Both traces bottom out in a heavy lazy module import compiling regexes.
+*   An earlier reading of this as a `KeyError` was wrong — that was a
+    source-context line (`except KeyError:` inside `re/__init__.py`), not a
+    raise. The actual exception has not been captured cleanly yet.
+*   Leading hypothesis, untested: resource pressure during the full suite,
+    which loads torch, Docling and onnxruntime across many app fixtures.
+
+Repro:
+
+```
+for i in $(seq 8); do python -m pytest -q --no-cov --tb=long || break; done
+```
+
+Worth resolving because it can redden CI at random, and because a test that
+fails for environmental reasons trains people to re-run rather than read.

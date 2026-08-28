@@ -156,8 +156,17 @@ cleanup_rules: []
 #   # auto_layout: try layout parser first, fall back to Docling on failure.
 #   backend: auto
 #   # Zoom factor for page rendering (higher = better OCR at cost of speed/RAM).
+#   # Applies to the layout parser only.
 #   zoom: 3.0
 #   # Minimum mean OCR confidence to accept layout parser output (0.0 - 1.0).
+#   # Applies to the layout parser only.
 #   ocr_confidence_min: 0.5
-#   # Enable table structure recognition.
+#   # Table structure recognition (Docling's TableFormer).
+#   #   true  — tables become real markdown tables with separate rows/columns.
+#   #   false — roughly 6x faster, but a table collapses onto a single line,
+#   #           which makes citing an individual cell impossible.
+#   # Leave this on for spec sheets and parameter tables. Turning it off is
+#   # only worthwhile for prose-heavy documents with no meaningful tables.
+#   # Note: TableFormer normalises cell text (it rewrites "1E-11" as "1e-11"),
+#   # so table content is not reproduced byte-for-byte.
 #   table_extraction: true

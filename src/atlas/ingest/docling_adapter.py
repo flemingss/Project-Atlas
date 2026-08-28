@@ -204,8 +204,19 @@ def _try_export_markdown(doc: Any) -> str | None:
     return None
 
 
-def parse_document_path(*, doc_path: Path, source_mime_type: str) -> DoclingParseResult:
+def parse_document_path(
+    *,
+    doc_path: Path,
+    source_mime_type: str,
+    table_extraction: bool = True,
+) -> DoclingParseResult:
     """Parse a document (PDF/Office) using Docling.
+
+    Args:
+      table_extraction: run TableFormer to recover table structure. Defaults to
+        True, matching Docling's own default. Disabling it is markedly faster
+        on table-heavy documents at the cost of tables flattening into loose
+        text.
 
     Raises:
       - DoclingUnavailableError if Docling isn't installed
@@ -214,18 +225,12 @@ def parse_document_path(*, doc_path: Path, source_mime_type: str) -> DoclingPars
     diagnostics = get_diagnostics()
     settings = Settings()
 
-    try:
-        from docling.document_converter import DocumentConverter  # type: ignore[import-not-found]
-    except Exception as e:
-        diagnostics.log_error(
-            component="ingest",
-            error_code=ErrorCode.DOC_PARSE_DEPENDENCY_MISSING,
-            message="Docling dependency is not available",
-            context={"dependency": "docling"},
-            exception=e,
-        )
-        raise DoclingUnavailableError() from e
-
+    # Limits are enforced before the dependency check on purpose. They are a
+    # policy guard on the document, not on the parser, so an oversized file
+    # should be rejected with a size/page error whether or not Docling happens
+    # to be importable — otherwise the operator is told to install a dependency
+    # that would have refused the document anyway. Preflight uses PyMuPDF, not
+    # Docling, so nothing here needs the converter.
     preflight: dict[str, Any] = {}
     if source_mime_type == "application/pdf":
         try:
@@ -256,6 +261,18 @@ def parse_document_path(*, doc_path: Path, source_mime_type: str) -> DoclingPars
             )
 
     try:
+        from docling.document_converter import DocumentConverter  # type: ignore[import-not-found]
+    except Exception as e:
+        diagnostics.log_error(
+            component="ingest",
+            error_code=ErrorCode.DOC_PARSE_DEPENDENCY_MISSING,
+            message="Docling dependency is not available",
+            context={"dependency": "docling", "detail": f"{type(e).__name__}: {e}"},
+            exception=e,
+        )
+        raise DoclingUnavailableError() from e
+
+    try:
         conversion = None
         method = "docling_default"
 
@@ -278,6 +295,7 @@ def parse_document_path(*, doc_path: Path, source_mime_type: str) -> DoclingPars
 
                 pdf_text_only = PdfPipelineOptions()
                 pdf_text_only.do_ocr = False
+                pdf_text_only.do_table_structure = table_extraction
 
                 converter = DocumentConverter(
                     format_options={
@@ -285,7 +303,13 @@ def parse_document_path(*, doc_path: Path, source_mime_type: str) -> DoclingPars
                     }
                 )
                 if prefer_ocr and not prefer_embedded:
-                    converter = DocumentConverter()
+                    pdf_ocr = PdfPipelineOptions()
+                    pdf_ocr.do_table_structure = table_extraction
+                    converter = DocumentConverter(
+                        format_options={
+                            InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_ocr),
+                        }
+                    )
                     conversion = _docling_convert(
                         converter=converter,
                         source=str(doc_path),
