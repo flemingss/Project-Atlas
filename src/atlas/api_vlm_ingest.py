@@ -236,7 +236,13 @@ def make_vlm_ingest_router(
     def _get_session(sid: str) -> VlmIngestSession:
         s = registry.get(sid)
         if s is None:
-            raise HTTPException(status_code=404, detail=f"Session '{sid}' not found or expired")
+            # Sessions no longer expire — the registry miss already tried a
+            # rehydrate from the ledger. Reaching here means the record is
+            # genuinely absent: discarded, or removed by a data reset.
+            raise HTTPException(
+                status_code=404,
+                detail=f"Session '{sid}' does not exist (discarded or reset)",
+            )
         return s
 
     def _arm_session(s: VlmIngestSession, pdf_bytes: bytes) -> str:

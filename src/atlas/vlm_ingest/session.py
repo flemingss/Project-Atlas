@@ -378,7 +378,7 @@ class SessionRegistry:
         headless: bool = False,
     ) -> VlmIngestSession:
         """Create a new session and return it."""
-        self._evict_expired()
+        self.release_cold_sessions()
         with self._lock:
             # Over capacity, drop the least-recently-used entry rather than
             # refusing the operator. Safe now that eviction is cache-only:
@@ -462,7 +462,7 @@ class SessionRegistry:
         with self._lock:
             return [s.summary() for s in self._sessions.values()]
 
-    def _evict_expired(self) -> None:
+    def release_cold_sessions(self) -> None:
         """Release cold sessions from RAM. Purely a memory reclaim.
 
         Nothing is destroyed: the ledger keeps page results, config and status,

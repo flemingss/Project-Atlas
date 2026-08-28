@@ -56,9 +56,9 @@ async def _maintenance_loop(
     while True:
         await asyncio.sleep(_MAINTENANCE_INTERVAL_S)
         try:
-            # ── VLM session eviction ──────────────────────────────
+            # ── Release cold VLM sessions from RAM ────────────────
             if vlm_registry is not None:
-                vlm_registry._evict_expired()
+                vlm_registry.release_cold_sessions()
 
             # ── Artifact age-based cleanup ────────────────────────
             artifacts_root = Path(settings.atlas_artifacts_dir).resolve()

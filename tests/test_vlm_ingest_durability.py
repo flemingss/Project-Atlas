@@ -224,7 +224,7 @@ def test_releasing_a_cold_session_does_not_lose_work() -> None:
     registry = SessionRegistry(ttl_seconds=0.0, loader=lambda sid: s)
     registry.put(s)
 
-    registry._evict_expired()
+    registry.release_cold_sessions()
     assert registry._sessions == {}
 
     recovered = registry.get("warm0001")
@@ -239,7 +239,7 @@ def test_a_processing_session_is_never_released() -> None:
 
     registry = SessionRegistry(ttl_seconds=0.0)
     registry.put(s)
-    registry._evict_expired()
+    registry.release_cold_sessions()
 
     assert "busy0001" in registry._sessions
 
