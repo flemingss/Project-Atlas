@@ -60,6 +60,11 @@ jobs:
           cp config/models.yaml.example config/models.yaml
       - name: Lint
         run: ruff check src tests
+      - name: Type check
+        # Registered debt lives in pyproject's mypy overrides; the line holds
+        # everywhere else. This gate found a real one on its first run —
+        # huggingface_hub 1.x dropped a kwarg the model downloader still passed.
+        run: mypy
       - name: Tests
         run: python -m pytest -q
 

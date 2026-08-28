@@ -8,7 +8,6 @@ Provides:
 
 from __future__ import annotations
 
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -77,6 +76,7 @@ class FakeQdrantStore:
     # Accumulated list of original point objects (supports .payload attribute access)
     last_points: list[Any] = []
     upsert_count: int = 0
+    upsert_calls: int = 0
     last_search_must: list[Any] = []
     last_set_payload_calls: list[dict[str, Any]] = []
 
@@ -92,6 +92,7 @@ class FakeQdrantStore:
         cls._storage = {}
         cls.last_points = []
         cls.upsert_count = 0
+        cls.upsert_calls = 0
         cls.last_search_must = []
         cls.last_set_payload_calls = []
 
@@ -110,6 +111,7 @@ class FakeQdrantStore:
             existing_by_id[getattr(p, "id", "")] = p
         FakeQdrantStore.last_points = list(existing_by_id.values())
         FakeQdrantStore.upsert_count += len(points)
+        FakeQdrantStore.upsert_calls += 1
 
     def _matches(self, payload: dict[str, Any], must: list[Any]) -> bool:
         for m in must or []:
@@ -168,16 +170,11 @@ class FakeQdrantStore:
             payload = dict(p.get("payload") or {})
             if self._matches(payload, must):
                 hits.append(QdrantHit(id=p["id"], score=1.0, payload=payload))
-        if not hits:
-            # Fallback: return a dummy hit so tests that call search without prior
-            # ingestion still receive a non-empty result list.
-            hits = [
-                QdrantHit(
-                    id=str(uuid.uuid4()),
-                    score=0.9,
-                    payload={"doc_id": "d1", "chunk_index": 0, "text": "hello"},
-                )
-            ]
+        # No fallback hit. A fake store that manufactures a result when the
+        # filter matches nothing makes "search returns empty" untestable, and
+        # that is precisely the shape of a scoping bug: a wrong tenant/project
+        # filter would return nothing in production while every test passed.
+        # An empty list is the honest answer.
         return hits[: int(limit)]
 
 

@@ -315,7 +315,7 @@ def register_maintenance_routes(
         scanned = len(points)
 
         for point in points:
-            payload = {}
+            payload: dict[str, Any] = {}
             if isinstance(point, dict):
                 payload = point.get("payload") or {}
             else:

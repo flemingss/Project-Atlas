@@ -208,10 +208,16 @@ class ModelManager:
             from huggingface_hub import snapshot_download
 
             self._models_dir.mkdir(parents=True, exist_ok=True)
+            # local_dir_use_symlinks was removed in huggingface_hub 1.x —
+            # passing it raised TypeError, which the except below swallowed
+            # into a "falling back" warning, and the fallback then hit the
+            # same TypeError uncaught. Downloading deepdoc weights at runtime
+            # was therefore broken outright; it only went unnoticed because
+            # the image bakes the weights in at build time. Since 1.x,
+            # local_dir already implies a real (non-symlinked) copy.
             snapshot_download(
                 repo_id=_HF_REPO_ID,
                 local_dir=str(self._models_dir),
-                local_dir_use_symlinks=False,
                 allow_patterns=[f"*{name}" for name in missing],
             )
             logger.info("snapshot_download completed for %s", _HF_REPO_ID)
@@ -233,6 +239,5 @@ class ModelManager:
                 repo_id=_HF_REPO_ID,
                 filename=name,
                 local_dir=str(self._models_dir),
-                local_dir_use_symlinks=False,
             )
             logger.info("Downloaded %s → %s", name, downloaded_path)

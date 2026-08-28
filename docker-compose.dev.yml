@@ -11,6 +11,10 @@ services:
       ATLAS_DEV_AUTO_RELOAD: ${ATLAS_DEV_AUTO_RELOAD:-false}
     volumes:
       - ./src:/app/src
+      # Migrations are read at startup; mounted so a new revision is picked up
+      # without an image rebuild, same as source.
+      - ./migrations:/app/migrations
+      - ./alembic.ini:/app/alembic.ini
       - ./config:/app/config
       - ./scripts:/app/scripts
       - ./artifacts:/app/artifacts

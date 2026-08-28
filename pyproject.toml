@@ -20,9 +20,13 @@ dependencies = [
   "httpx>=0.27",
   "python-multipart>=0.0.12",
   "sqlalchemy>=2.0",
+  "alembic>=1.13",
   "psycopg[binary]>=3.1",
   "qdrant-client>=1.9.0",
-  "docling",
+  # Floor matches requirements.lock. Leaving this fully unconstrained let a
+  # resolver pick any release at all, including ones predating APIs used in
+  # pipeline/docling_adapter.py.
+  "docling>=2.76",
   "onnxruntime>=1.17",
   "PyMuPDF>=1.24.0",
   "pdfplumber>=0.10",
@@ -39,6 +43,7 @@ dev = [
   "pytest-asyncio>=0.23",
   "pytest-cov>=5.0",
   "ruff>=0.6",
+  "mypy>=1.11",
 ]
 
 ui = [
@@ -93,6 +98,44 @@ ignore = [
 # within the same iteration (verified 2026-08-28); binding explicitly would
 # mean refactoring dense vendored OCR logic for no behavioral gain.
 "src/atlas/ingest/layout_recognizer.py" = ["B023"]
+
+[tool.mypy]
+# A type gate, not a type crusade. It runs over the whole package and must stay
+# clean, so a new type error fails CI rather than accumulating silently.
+#
+# It has already earned its place: it caught that huggingface_hub 1.x removed
+# `local_dir_use_symlinks`, which made the runtime deepdoc model download raise
+# TypeError on both its primary and fallback paths. Nothing else noticed,
+# because the image bakes those weights in at build time.
+python_version = "3.11"
+files = ["src/atlas"]
+# Third-party packages here ship no stubs (docling, pyclipper, deepdoc deps).
+ignore_missing_imports = true
+# Optional-strictness would add a few hundred findings that say nothing about
+# correctness in this codebase. Revisit once the modules below are clean.
+strict_optional = false
+
+[[tool.mypy.overrides]]
+# ── Registered debt (2026-08-28) ────────────────────────────────────────
+# These modules are exempt because their findings come from third-party stub
+# strictness rather than from anything wrong here: numpy dtype narrowing in
+# the vendored OCR/layout code, cv2 overloads, and qdrant-client's very wide
+# Filter unions (a list[FieldCondition] is genuinely valid). Each was read
+# before being listed. Remove a module from this list when it is fixed —
+# never add one to silence a new finding elsewhere.
+module = [
+  "atlas.ingest",
+  "atlas.ingest.ocr",
+  "atlas.ingest.postprocess",
+  "atlas.ingest.pdf_parser",
+  "atlas.ingest.page_renderer",
+  "atlas.ingest.layout_recognizer",
+  "atlas.ingest.table_recognizer",
+  "atlas.vectorstore.qdrant_store",
+  "atlas.llm.deterministic",
+  "atlas.admin.maintenance",
+]
+ignore_errors = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

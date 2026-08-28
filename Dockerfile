@@ -47,14 +47,21 @@ RUN apt-get update \
         libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
-# ---------- Dependency layer (cached until pyproject.toml changes) ----------
-# Copy only the project metadata + a tiny stub so pip can resolve deps
-# without needing the real source tree. This means editing files under src/
-# does NOT trigger a full pip re-install of docling, onnxruntime, etc.
-COPY pyproject.toml LICENSE README.md ./
+# ---------- Dependency layer (cached until the lock file changes) ----------
+# Install from requirements.lock, NOT from pyproject.toml.
+#
+# CI installs the lock and runs the suite against it. When this layer resolved
+# pyproject's ranges instead, the image could ship different versions from the
+# ones CI verified — a green build said nothing about what actually shipped,
+# and the gap widened silently over time. Same input here, same output there.
+#
+# The lock also carries `--extra-index-url .../whl/cpu`, so this pulls CPU
+# torch (~200MB) rather than the CUDA bundle (~6GB) an unpinned resolve picks.
+COPY pyproject.toml LICENSE README.md requirements.lock ./
 RUN mkdir -p src/atlas && echo '__version__ = "0.0.0"' > src/atlas/__init__.py \
     && pip install --no-cache-dir --upgrade pip \
-    && if [ -n "$ATLAS_PIP_EXTRAS" ]; then pip install --no-cache-dir ".[${ATLAS_PIP_EXTRAS}]"; else pip install --no-cache-dir .; fi
+    && pip install --no-cache-dir -r requirements.lock \
+    && if [ -n "$ATLAS_PIP_EXTRAS" ]; then pip install --no-cache-dir ".[${ATLAS_PIP_EXTRAS}]"; fi
 
 # ---------- Parse model weights (cached with the dependency layer) ----------
 # Without this, the FIRST PDF ingest of a fresh deployment downloads these at
@@ -74,6 +81,12 @@ snapshot_download('InfiniFlow/deepdoc', local_dir='/app/models/deepdoc', \
 # ---------- Source layer (rebuilds only on code changes — fast) ----------
 COPY src ./src
 RUN pip install --no-cache-dir --no-deps .
+
+# Schema migrations. Required at startup: atlas.db_init runs `upgrade head`
+# against these, so an image without them can only fall back to create_all and
+# would silently stop applying schema changes.
+COPY alembic.ini ./
+COPY migrations ./migrations
 
 # Runtime assets (loaded from ATLAS_CONFIG_DIR, default ./config)
 COPY config ./config

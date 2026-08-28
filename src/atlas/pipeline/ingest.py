@@ -192,7 +192,9 @@ class IngestNode:
                     text = bytes(content).decode("utf-8", errors="replace")
 
                 parsed_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-                docling_json = {"content": text, "mime_type": mime_type, "parsed_at": parsed_at}
+                docling_json: dict[str, Any] = {
+                    "content": text, "mime_type": mime_type, "parsed_at": parsed_at,
+                }
                 return IngestResult(
                     success=True,
                     markdown_projection=text,
@@ -208,7 +210,6 @@ class IngestNode:
                     html = bytes(content).decode("utf-8", errors="replace")
 
                 markdown: str
-                docling_json: dict[str, Any]
                 try:
                     parsed = parse_html_string(html=html, name=None)
                     markdown = parsed.markdown_projection

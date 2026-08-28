@@ -31,14 +31,60 @@ def test_rag_ingest_text_upserts_uuid_ids(tmp_path: Path, monkeypatch: Any) -> N
 
 
 def test_rag_search_returns_hits_and_applies_filters(tmp_path: Path, monkeypatch: Any) -> None:
+    """Search must find ingested content — and only within its own scope.
+
+    This test previously searched without ingesting anything and asserted the
+    result was non-empty. It passed only because the fake store manufactured a
+    hit when nothing matched, which made a scoping regression undetectable:
+    a filter that excluded everything looked identical to a filter that worked.
+    """
     app, _ = make_test_app(tmp_path, monkeypatch, include_admin=False)
     client = TestClient(app)
 
-    res = client.post("/rag/search", json={"query": "hello", "top_k": 3})
-    assert res.status_code == 200
-    data = res.json()
-    assert data["ok"] is True
-    assert data["hits"]
+    ingested = client.post(
+        "/rag/ingest/text",
+        json={
+            "doc_id": "scoped-doc",
+            "doc_version": "1",
+            "text": "The quick brown fox jumps over the lazy dog.",
+            "tenant_id": "t-alpha",
+            "project_id": "p-one",
+            "corpus_id": "c-main",
+        },
+    )
+    assert ingested.status_code == 200
+    assert ingested.json()["chunks_upserted"] > 0
+
+    in_scope = client.post(
+        "/rag/search",
+        json={
+            "query": "fox",
+            "top_k": 3,
+            "tenant_id": "t-alpha",
+            "project_id": "p-one",
+            "corpus_id": "c-main",
+        },
+    )
+    assert in_scope.status_code == 200
+    body = in_scope.json()
+    assert body["ok"] is True
+    assert body["hits"], "ingested content must be findable in its own scope"
+    assert body["hits"][0]["payload"]["doc_id"] == "scoped-doc"
+
+    # The assertion that the manufactured hit made impossible: another
+    # tenant must see nothing, not somebody else's document.
+    other_tenant = client.post(
+        "/rag/search",
+        json={
+            "query": "fox",
+            "top_k": 3,
+            "tenant_id": "t-beta",
+            "project_id": "p-one",
+            "corpus_id": "c-main",
+        },
+    )
+    assert other_tenant.status_code == 200
+    assert other_tenant.json()["hits"] == []
 
     # Sanity check: we pass tenant/project/finalized + fidelity filter to the store.
     assert len(FakeQdrantStore.last_search_must) == 6

@@ -55,6 +55,11 @@ def create_config_version(
 ) -> ConfigVersion:
     active = get_active_config_version(session)
 
+    # Annotated because the "active" branches put an int (active.id) in here;
+    # without it the first branch narrows the type to dict[str, str].
+    base_payload: dict[str, Any]
+    base_source: dict[str, Any]
+
     if req.base == "yaml":
         base_payload = {"pipeline": yaml_defaults.pipeline, "models": yaml_defaults.models}
         base_source = {"base": "yaml", "yaml_hash": yaml_defaults.hash}
