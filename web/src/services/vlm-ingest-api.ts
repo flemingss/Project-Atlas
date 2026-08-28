@@ -50,6 +50,15 @@ export interface ThumbnailEntry {
   error?: string;
 }
 
+/** Paginated envelope returned by `GET .../thumbnails` (backend wraps the array). */
+export interface ThumbnailsPage {
+  pages: ThumbnailEntry[];
+  total: number;
+  offset: number;
+  limit: number;
+  has_more: boolean;
+}
+
 export interface PageAnalysisResult {
   content_class: string; // 'text-native' | 'image-heavy' | 'image-only'
   text_chars: number;
@@ -183,11 +192,15 @@ export const vlmIngestApi = {
     });
   },
 
-  /** Get page thumbnails. */
-  getThumbnails(sid: string, dpi = 72) {
-    return apiFetch<ThumbnailEntry[]>(`${BASE}/${sid}/thumbnails?dpi=${dpi}`, {
-      headers: jsonHeaders(),
-    });
+  /** Get page thumbnails. The endpoint returns a paginated envelope; we request
+   *  the server max (limit=1000) up front so the Pages grid still sees every
+   *  page, then unwrap to the bare array the store/page expect. */
+  async getThumbnails(sid: string, dpi = 72): Promise<ThumbnailEntry[]> {
+    const page = await apiFetch<ThumbnailsPage>(
+      `${BASE}/${sid}/thumbnails?dpi=${dpi}&limit=1000`,
+      { headers: jsonHeaders() },
+    );
+    return page.pages;
   },
 
   /** Get preview image bytes for a page, with optional temporary rendering overrides. */

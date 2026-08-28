@@ -19,7 +19,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import sessionmaker
@@ -718,8 +718,19 @@ def make_vlm_ingest_router(
     # ------------------------------------------------------------------
 
     @r.get("/{session_id}/thumbnails")
-    async def get_thumbnails(session_id: str, dpi: int = 72) -> Response:
-        """Render all pages as low-res thumbnails and return as a JSON array of base64 PNGs."""
+    async def get_thumbnails(
+        session_id: str,
+        dpi: int = 72,
+        limit: int = Query(default=200, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+    ) -> dict[str, Any]:
+        """Render page thumbnails and return a page of base64 PNGs with pagination metadata.
+
+        ``limit`` / ``offset`` page over the session's pages. ``total`` is the
+        session page count and ``has_more`` tells the caller whether another page
+        is available. Response shape is an object: ``{"pages": [...], "total": N,
+        "offset": O, "limit": L, "has_more": bool}``.
+        """
         import json
         import time
         s = _get_session(session_id)
@@ -727,7 +738,11 @@ def make_vlm_ingest_router(
         started = time.perf_counter()
         error_count = 0
 
-        for p in range(s.page_count):
+        total = s.page_count
+        start = min(offset, total)
+        end = min(offset + limit, total)
+
+        for p in range(start, end):
             settings = s.config.settings_for_page(p)
             try:
                 png = await run_in_threadpool(
@@ -756,17 +771,20 @@ def make_vlm_ingest_router(
         _diag(
             "VLM thumbnails: sid=%s pages=%d dpi=%d errors=%d elapsed_ms=%.1f payload_kb=%.1f",
             session_id,
-            s.page_count,
+            len(thumbs),
             dpi,
             error_count,
             elapsed_ms,
             len(payload.encode("utf-8")) / 1024.0,
         )
 
-        return Response(
-            content=payload,
-            media_type="application/json",
-        )
+        return {
+            "pages": thumbs,
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "has_more": offset + len(thumbs) < total,
+        }
 
     @r.get("/{session_id}/preview/{page_num}")
     async def preview_page(

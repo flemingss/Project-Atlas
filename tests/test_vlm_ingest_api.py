@@ -703,3 +703,70 @@ class TestCommitPipelineWarning:
         rel_path = resp.json()["path"]
         artifact_path = tmp_path / "artifacts" / rel_path
         assert artifact_path.exists(), f"Artifact not found at {artifact_path}"
+
+
+# ---------------------------------------------------------------------------
+# Thumbnails pagination
+# ---------------------------------------------------------------------------
+
+
+def _three_page_pdf() -> bytes:
+    """Minimal 3-page PDF in the same style as ``_MINIMAL_PDF`` / two-page above."""
+    return (
+        b"%PDF-1.0\n"
+        b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+        b"2 0 obj<</Type/Pages/Kids[3 0 R 4 0 R 5 0 R]/Count 3>>endobj\n"
+        b"3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R>>endobj\n"
+        b"4 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R>>endobj\n"
+        b"5 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R>>endobj\n"
+        b"trailer<</Size 6/Root 1 0 R>>\n%%EOF"
+    )
+
+
+class TestThumbnailsPagination:
+    """Thumbnails endpoint must paginate with limit/offset and report metadata."""
+
+    def _start_3page_session(self, client: TestClient) -> str:
+        resp = client.post(
+            "/api/editor/vlm-ingest/start-upload",
+            files={"file": ("three.pdf", _three_page_pdf(), "application/pdf")},
+        )
+        if resp.status_code != 200:
+            pytest.skip("Minimal 3-page PDF not accepted by PyMuPDF")
+        return resp.json()["session_id"]
+
+    def test_first_page_returns_metadata_and_window(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        app, registry = _make_vlm_endpoint_app(tmp_path, monkeypatch)
+        client = TestClient(app)
+        sid = self._start_3page_session(client)
+
+        resp = client.get(
+            f"/api/editor/vlm-ingest/{sid}/thumbnails?limit=2&offset=0",
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["total"] == 3
+        assert body["offset"] == 0
+        assert body["limit"] == 2
+        assert body["has_more"] is True
+        assert len(body["pages"]) == 2
+        assert [p["page_num"] for p in body["pages"]] == [0, 1]
+
+    def test_second_page_continuity(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        app, registry = _make_vlm_endpoint_app(tmp_path, monkeypatch)
+        client = TestClient(app)
+        sid = self._start_3page_session(client)
+
+        resp2 = client.get(
+            f"/api/editor/vlm-ingest/{sid}/thumbnails?limit=2&offset=2",
+        )
+        assert resp2.status_code == 200, resp2.text
+        body = resp2.json()
+        assert body["total"] == 3
+        assert body["has_more"] is False
+        assert len(body["pages"]) == 1
+        assert body["pages"][0]["page_num"] == 2
