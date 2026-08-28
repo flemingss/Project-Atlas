@@ -3,6 +3,7 @@ import { useEffect } from 'react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { Toaster } from 'sonner';
 
+import { getAdminToken } from './services/shared';
 import { ThemeProvider } from './components/theme-provider';
 import { ErrorBoundary } from './components/error-boundary';
 import { AppLayout } from './layouts/app-layout';
@@ -29,15 +30,9 @@ const queryClient = new QueryClient({
 });
 
 function TokenBootstrap() {
+  // Consumes a one-time ?token= bootstrap and scrubs it from the URL.
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const token = (params.get('token') || '').trim();
-    if (!token) return;
-
-    const current = localStorage.getItem('atlas_admin_token') || '';
-    if (current !== token) {
-      localStorage.setItem('atlas_admin_token', token);
-    }
+    getAdminToken();
   }, []);
 
   return null;

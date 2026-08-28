@@ -3,17 +3,52 @@
  * Extracted from the original api.ts to avoid circular imports.
  */
 
-/** Read admin token from localStorage, falling back to ?token= query param. */
+export const ADMIN_TOKEN_KEY = 'atlas_admin_token';
+
+/**
+ * Read the admin token, accepting a one-time `?token=` bootstrap.
+ *
+ * The query parameter is consumed and immediately erased from the URL. A
+ * credential left sitting in the address bar ends up in browser history, in
+ * anything the operator copy-pastes, and in the referrer of any outbound link
+ * — so it is captured once and the URL is rewritten in place.
+ *
+ * This is the single implementation on purpose: the same read-and-store logic
+ * had been copied into four modules, and only one of them would ever have been
+ * remembered when the handling needed to change.
+ */
 export function getAdminToken(): string | null {
-  const stored = localStorage.getItem('atlas_admin_token');
+  let stored: string | null = null;
+  try {
+    stored = localStorage.getItem(ADMIN_TOKEN_KEY);
+  } catch {
+    /* storage unavailable (private mode) — fall through to the query param */
+  }
   if (stored && stored.trim()) return stored;
 
-  const token = (new URLSearchParams(window.location.search).get('token') || '').trim();
-  if (token) {
-    localStorage.setItem('atlas_admin_token', token);
-    return token;
+  const params = new URLSearchParams(window.location.search);
+  const token = (params.get('token') || '').trim();
+  if (!token) return null;
+
+  try {
+    localStorage.setItem(ADMIN_TOKEN_KEY, token);
+  } catch {
+    /* not persistable — still usable for this page load */
   }
-  return null;
+
+  // Strip it from the visible URL without adding a history entry.
+  try {
+    params.delete('token');
+    const qs = params.toString();
+    window.history.replaceState(
+      null,
+      '',
+      `${window.location.pathname}${qs ? `?${qs}` : ''}${window.location.hash}`,
+    );
+  } catch {
+    /* replaceState unavailable — the token is stored either way */
+  }
+  return token;
 }
 
 /** Build standard JSON headers, including admin token if available. */

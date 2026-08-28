@@ -14,6 +14,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useEditorStore } from '@/stores/editor-store';
+import { getAdminToken } from '@/services/shared';
 
 // Set worker src (Vite handles the import)
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
@@ -48,12 +49,7 @@ export function PdfViewer({ pdfUrl }: PdfViewerProps) {
     if (!pdfUrl) return;
     let cancelled = false;
 
-    const stored = localStorage.getItem('atlas_admin_token');
-    const queryToken = (new URLSearchParams(window.location.search).get('token') || '').trim();
-    const token = (stored && stored.trim()) ? stored : (queryToken || null);
-    if (!stored && token) {
-      localStorage.setItem('atlas_admin_token', token);
-    }
+    const token = getAdminToken();
     const loadingTask = pdfjs.getDocument({
       url: pdfUrl,
       httpHeaders: token ? { 'X-Atlas-Admin-Token': token } : undefined,

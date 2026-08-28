@@ -22,6 +22,8 @@ import type {
   StitchResponse,
   UpdateConfigRequest,
 } from './api-contracts';
+// Admin-token handling lives in exactly one place — see services/shared.ts.
+import { getAdminToken } from './shared';
 
 export type {
   StartSessionRequest,
@@ -87,18 +89,6 @@ export interface PreviewImageOptions {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
-
-function getAdminToken(): string | null {
-  const stored = localStorage.getItem('atlas_admin_token');
-  if (stored && stored.trim()) return stored;
-
-  const token = (new URLSearchParams(window.location.search).get('token') || '').trim();
-  if (token) {
-    localStorage.setItem('atlas_admin_token', token);
-    return token;
-  }
-  return null;
-}
 
 function jsonHeaders(): HeadersInit {
   const h: Record<string, string> = { 'Content-Type': 'application/json' };

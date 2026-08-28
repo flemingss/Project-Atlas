@@ -593,6 +593,20 @@ def make_vlm_ingest_router(
         """
         cached = registry.delete(session_id)
         durable = await run_in_threadpool(vlm_store.delete_session, session_factory, session_id)
+
+        # Reclaim the checkpoint directory too — the source PDF plus one file
+        # per page. Leaving these behind meant artifacts/vlm_sessions/ grew
+        # without bound across every discarded job.
+        def _purge_dir() -> None:
+            import shutil
+
+            d = artifacts_dir / "vlm_sessions" / session_id
+            # Guard against a session_id that could escape the parent.
+            if d.parent == artifacts_dir / "vlm_sessions" and d.is_dir():
+                shutil.rmtree(d, ignore_errors=True)
+
+        await run_in_threadpool(_purge_dir)
+
         if cached or durable:
             log.info("VLM session deleted by operator: sid=%s", session_id)
             return {"message": f"Session {session_id} deleted"}
