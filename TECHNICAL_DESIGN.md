@@ -187,7 +187,7 @@ Notes:
 - ✅ **React SPA Control Center** (`web/`, served at `/app`)
   - Routes (SPA `basename="/app"`, mounted only at `/app`): index → Dashboard, `ingest`, `library`, `search`, `review`, `admin/{health,cleanup,groups,danger}`, and the Document Editor at `doc/:docId` / `run/:runId`. `upload` and `vlm-ingest` are redirects to `ingest`; there is no `/app/editor` route
   - Admin sub-pages: Health/Diagnostics, Cleanup & Tuning, Groups, Danger Zone (DB reset)
-  - Stack: Vite 6 + React 18 + TypeScript + shadcn/ui + Tailwind CSS + Zustand + TanStack React Query
+  - Stack: Vite 8 + React 18 + TypeScript + shadcn/ui + Tailwind CSS + Zustand + TanStack React Query
   - Builds to `static/app/` via `npm run build`; Dockerfile multi-stage build
   - PDF.js viewer + CodeMirror 6 markdown editor with resizable panels
   - Tool palette: VLM Fix, LLM Refine, Strip Artifacts, Re-Judge, Save, Undo
@@ -323,7 +323,7 @@ Rationale:
    - ✅ LLM-assisted rule suggestion (on-demand endpoint to propose new cleanup rules from feedback patterns)
    - ✅ Admin UI "Cleanup & Tuning" page in React SPA
 9) **Operator UI**
-   - ✅ **React SPA Control Center** (`web/`, served at `/app`) — full operator console (Dashboard, Ingest, Library, Search, Review, Editor, Admin) with Vite 6 + React 18 + TypeScript + shadcn/ui + Tailwind CSS. Builds to `static/app/`.
+   - ✅ **React SPA Control Center** (`web/`, served at `/app`) — full operator console (Dashboard, Ingest, Library, Search, Review, Editor, Admin) with Vite 8 + React 18 + TypeScript + shadcn/ui + Tailwind CSS. Builds to `static/app/`.
    - ✅ **Document Editor** — PDF.js + CodeMirror 6 + VLM tools at `/app/doc/{docId}` and `/app/run/{runId}`. See `web/README.md`.
    - ✅ **Unified Ingest wizard** — 6-step ingest at `/app/ingest`, covering text, Docling and VLM methods. PDF preview with crop overlays and mask editor, session-expired recovery, auto-create workflow run on commit for uploads. Headless VLM mode via `VisionParser` (`backend: vision`).
 
@@ -381,7 +381,7 @@ This is sequenced to maximize repeatability and minimize fantasy risk.
 ### Phase 4 — Docling ingestion for PDFs/Office
 
 - ✅ Docling parsing implemented with PDF guardrails, preflight validation, timeout, and quality gates
-- 🟨 Deterministic regression tests on sample documents (E2E scenarios cover Docling path; dedicated regression corpus not yet built)
+- 🟨 Deterministic regression tests on sample documents (generated-PDF e2e exists in `tests/test_docling_e2e.py`, skipped in CI without cached models; dedicated real-manual corpus not built — `ACTION_ITEMS.md` P2-05)
 
 **Definition of done:** PDF ingestion is reliable enough for shakedown; failures produce actionable diagnostics.
 
@@ -461,7 +461,7 @@ This phase adds operator tooling for surgical document refinement and a vision-l
 - ✅ Zero-build-step HTML/JS page served by FastAPI at `/editor`. (Now replaced by React SPA — see 12C.)
 
 **Phase 12C — React SPA Document Editor ✅ (completed):**
-- ✅ 30-file Vite 6 + React 18 + TypeScript scaffold in `web/`.
+- ✅ 30-file Vite 8 + React 18 + TypeScript scaffold in `web/`.
 - ✅ shadcn/ui (Radix + CVA + Tailwind CSS) component library — 10 UI primitives.
 - ✅ Left panel: PDF.js viewer (page nav, zoom, DPI/crop controls for VLM).
 - ✅ Right panel: CodeMirror 6 editor (markdown syntax highlighting).
@@ -473,10 +473,11 @@ This phase adds operator tooling for surgical document refinement and a vision-l
 
 **Phase 12D — VLM quality audit (~1 day):**
 - 🔲 Automated post-ingest page-level comparison: VLM renders each page → diff against parsed markdown → flag pages with high divergence for HITL review.
+- **Not done.** GitHub #30 was closed as completed (2026-03-04) without this feature; Copilot PR #38 on that branch shipped per-page status sync instead. Tracked as `docs/ACTION_ITEMS.md` P2-01 — reopen or replace #30 before implementing.
 
 **Phase 12E — VLM-first parser backend ✅ (completed):**
 - ✅ `backend: vision` mode in `pdf_parser.backend`: render all pages → VLM → stitch markdown.
-- ✅ `vlm_ingest` package: deterministic page stitcher (dedup, table merge, heading merge) + session manager (in-memory registry, TTL, config serialization).
+- ✅ `vlm_ingest` package: deterministic page stitcher (dedup, table merge, heading merge) + session manager. The in-memory registry is a cache; durable state lives in `vlm_sessions` / `vlm_page_results` / `vlm_page_cache` (2026-08-28).
 - ✅ 16-endpoint API router (`/api/editor/vlm-ingest/*`): start session (run ID or upload), list/get/delete sessions, configure, export config, page analysis, thumbnails, preview (with crop overlay params), process page, process all, stitch, commit, get/update per-page result. There is no import route — config import is client-side.
 - ✅ Interactive wizard folded into the unified React ingest page (`/app/ingest`): 6-step workflow (method + upload → configure → pages → process → review/stitch → commit). PDF preview with crop guide overlays and mask editor, Fit Page/Width/Actual zoom modes, auto-advance processing, per-page markdown correction.
 - ✅ Headless VLM parse via `VisionParser` in `pipeline/parsers.py` — per-page isolation, deterministic stitch, config from `pipeline.yaml`.
@@ -485,8 +486,8 @@ This phase adds operator tooling for surgical document refinement and a vision-l
 - ✅ Session-expired recovery: red banner UI on backend session loss (404), conditional polling stop, `isSessionNotFoundError()` helper across all mutation hooks.
 - ✅ E2E wiring audit: fixed page-correction flicker, commit `runId` update for uploads, polling stop on 404.
 - ✅ Auto-create workflow run on commit for uploaded PDFs (no pre-existing `run_id`).
-- 🔲 Batch/parallel page processing for throughput.
-- 🔲 Cost/latency analysis vs Docling for representative corpus.
+- 🔲 Batch/parallel page processing for throughput (`ACTION_ITEMS.md` P2-03).
+- 🔲 Cost/latency analysis vs Docling for representative corpus (`ACTION_ITEMS.md` P2-04).
 
 ### Phase 13 — Retrieval-time upgrades (optional / scoped)
 
@@ -593,11 +594,11 @@ The minimum “human shakedown ready” bar:
 Project documentation was consolidated in v0.7.3-dev to reduce maintenance burden:
 
 - **Removed**: `HLD.md` (superseded by this doc + ARCHITECTURE.md), `PDF_OVERHAUL_PLAN.md` (completed — absorbed into Phases 10-11), `VALIDATION_REPORT.md` (frozen v0.7.0 snapshot), `CAPABILITIES_AUDIT.md` (extreme maintenance burden — capability status tracked here and in CHANGELOG).
-- **Authoritative docs**: This file (build-continuity/roadmap), `ARCHITECTURE.md` (current system state), `README.md` (quickstart), `config/PIPELINE_REFERENCE.md` (config reference).
-- **Supplementary**: `PIPELINE_QUALITY_IMPROVEMENTS.md`, `web/README.md`, `web/STYLE_GUIDE.md`. (`E2E_TEST_GUIDE.md`, `OPTEST.md`, `BUILD_VARIANTS.md` removed 2026-08-27 with the dev/prod compose consolidation — see CHANGELOG.)
+- **Authoritative docs**: This file (build-continuity/roadmap), `ARCHITECTURE.md` (current system state), `README.md` (quickstart), `config/PIPELINE_REFERENCE.md` (config reference), `docs/ACTION_ITEMS.md` (remaining work).
+- **Supplementary**: `PIPELINE_QUALITY_IMPROVEMENTS.md`, `web/README.md`, `web/STYLE_GUIDE.md`, `docs/TECHNICAL_DEBT.md`, `docs/WORKLOG.md`. (`E2E_TEST_GUIDE.md`, `OPTEST.md`, `BUILD_VARIANTS.md` removed 2026-08-27 with the dev/prod compose consolidation — see CHANGELOG.)
 
 ---
 
 ## 10) Capabilities Audit
 
-*Removed.* The per-capability status checklist was previously maintained in `CAPABILITIES_AUDIT.md` (deleted — extreme maintenance burden; line-number references stale within days of any code change). Current capability status is tracked in this document's roadmap (§6) and in `CHANGELOG.md`. Git history preserves the final snapshot.
+*Removed.* The per-capability status checklist was previously maintained in `CAPABILITIES_AUDIT.md` (deleted — extreme maintenance burden; line-number references stale within days of any code change). Current capability status is tracked in this document's roadmap (§6), in `CHANGELOG.md`, and remaining work in `docs/ACTION_ITEMS.md`. Git history preserves the final snapshot.

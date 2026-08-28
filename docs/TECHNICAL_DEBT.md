@@ -4,6 +4,9 @@ This repository implements **Project Atlas**, a sophisticated RAG (Retrieval-Aug
 
 However, there are specific areas of technical debt and hidden dangers that should be addressed.
 
+**Open items from this file are indexed in `docs/ACTION_ITEMS.md`** (P0–P3).
+GitHub Issues is empty as of 2026-08-28; that file is the operational tracker.
+
 ---
 
 ## 1. Technical Debt & Refactoring Targets
@@ -49,6 +52,9 @@ However, there are specific areas of technical debt and hidden dangers that shou
 ---
 
 ## 2. "Foot Guns" (Potential Dangers)
+
+Still open: A (sectional-refinement context loss, `ACTION_ITEMS.md` P2-06) and
+B (`merge_hardwrapped` remains opt-in — keep it that way). C is remediated.
 
 ### A. Sectional Refinement Context Loss
 
@@ -119,7 +125,9 @@ However, there are specific areas of technical debt and hidden dangers that shou
 A read-only multi-agent scan was run against the repo on 2026-08-28. Every
 claim was re-verified against source before being accepted; the items below
 are the ones that survived and remain **open**. Resolved items from the same
-scan are recorded in `WORKLOG.md` rather than duplicated here.
+scan are recorded in `WORKLOG.md` rather than duplicated here. Indexed as
+P0-03, P0-04, P1-01, P1-03, P1-04, P1-05, P1-06, P3-13, P3-14 in
+`docs/ACTION_ITEMS.md`.
 
 Verdict key: `CONFIRMED` — reproduced from source · `PARTIAL` — real, but the
 framing or severity in the original report was off.
@@ -195,7 +203,7 @@ they asked for — one (the ruff claim, §E above) turned out wrong.
 
 ## 7. Ingest stack — Docling
 
-### A. Docling is 53 releases behind — OPEN
+### A. Docling is 53 releases behind — OPEN (`ACTION_ITEMS.md` P1-02)
 
 *   **Pinned:** `2.76.0` (`requirements.lock`). **Latest:** `2.123.0`.
 
@@ -230,7 +238,7 @@ python scripts/ingest_quality.py --input-dir samples --out after.json \
 Never upgrade Docling inside a running container — the result looks like a
 missing dependency, not a broken upgrade.
 
-### B. Docling failures are reported as "not installed" — OPEN
+### B. Docling failures are reported as "not installed" — OPEN (`ACTION_ITEMS.md` P0-02)
 
 *   **Location:** `src/atlas/ingest/docling_adapter.py`
 *   Any exception while importing Docling — a broken half-upgrade, a missing

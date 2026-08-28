@@ -1,12 +1,12 @@
 # Atlas React UI (`web/`)
 
-The React SPA that powers the Atlas Document Editor and (future) operator console.
-Built with **Vite + React 18 + TypeScript + shadcn/ui + Tailwind CSS**.
+The React SPA that powers the Atlas operator console.
+Built with **Vite 8 + React 18 + TypeScript + shadcn/ui + Tailwind CSS**.
 
-> **Status (Jul 2025):** The React SPA is the sole operator UI, fully replacing
+> **Status:** The React SPA is the sole operator UI, fully replacing
 > the previous Streamlit console (`ui/`, now removed). All operator workflows
-> (Dashboard, Upload, Library, Search, Review, Editor, VLM Ingest, Admin) are
-> served from this app at `/app`.
+> (Dashboard, Ingest, Library, Search, Review, Editor, Admin) are
+> served from this app at `/app`. Remaining UI work: `docs/ACTION_ITEMS.md`.
 
 ---
 
@@ -45,8 +45,8 @@ npm install
 npm run dev          # Vite dev server at http://localhost:5173
 ```
 
-The Vite dev server proxies `/api/*` and `/health` to `http://127.0.0.1:18080`
-(the running Atlas backend). Start the backend first:
+The Vite dev server proxies `/api/*`, `/health`, `/rag`, and `/admin` to `http://127.0.0.1:28080`
+(the running Atlas backend, host-published compose port). Start the backend first:
 
 ```bash
 # In the repo root
@@ -84,7 +84,7 @@ The VLM Ingest Configure step uses a standardized preview strategy to prevent cl
 - Manual zoom (`+/-`) switches mode to `manual`
 - Fit modes auto-recompute on viewport resize (via `ResizeObserver`) so preview remains usable without bespoke page-level configs
 
-This behavior is implemented in `web/src/pages/vlm-ingest/index.tsx` and should be kept consistent for future preview surfaces.
+This behavior is implemented in the ingest wizard (`web/src/pages/ingest/ingest-page.tsx`) and should be kept consistent for future preview surfaces.
 
 ---
 
@@ -92,18 +92,18 @@ This behavior is implemented in `web/src/pages/vlm-ingest/index.tsx` and should 
 
 | Layer | Library | Purpose |
 |-------|---------|---------|
-| Build | Vite 6 | Dev server, HMR, production bundler |
+| Build | Vite 8 | Dev server, HMR, production bundler (rolldown) |
 | Framework | React 18 | UI framework |
 | Language | TypeScript 5 | Type safety |
 | Routing | React Router 7 | Client-side routing (basename `/app`) |
 | Styling | Tailwind CSS 3 + CSS custom properties | Utility-first CSS with semantic design tokens |
 | Components | shadcn/ui (Radix + CVA) | Accessible, composable UI primitives |
-| State | Zustand 4 | Lightweight global store for editor state |
+| State | Zustand 5 | Lightweight global store for editor state |
 | Data fetching | TanStack React Query 5 | Async state with caching, retries, mutations |
 | PDF viewer | pdfjs-dist 4.9 | PDF rendering to canvas |
 | Markdown editor | CodeMirror 6 | Syntax-highlighted markdown editing |
 | Split panes | react-resizable-panels 3 | Draggable panel layout |
-| Notifications | Sonner | Toast notifications |
+| Notifications | Sonner 2 | Toast notifications |
 | Icons | Lucide React | Consistent icon set |
 
 ---

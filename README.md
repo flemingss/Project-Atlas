@@ -4,7 +4,7 @@ Local-first RAG system with a running FastAPI service (admin + RAG MVP), config 
 
 Pipeline: **Ingest → Cleanup → Judge → Refine → Metadata → Embeddings → Chunking → Commit** (11 nodes). Features config-driven cleanup rules engine, cleanup feedback API, metrics aggregation, LLM-assisted rule suggestion, Cleanup & Tuning UI, multi-dimensional judge rubric with per-dimension rationale, rich judge-to-refine context injection (sub-scores + iteration context), score regression rollback, diminishing-returns detection, cleanup-rejudge cycle guard, refine content-safety guardrails (min_preservation_ratio), failed-refines-don't-burn-retries semantics, rich HITL task context with resume loop guard, retry/backoff on all external calls, chunk QA with automatic fallback, Docling health scoring, unified routing with fail-fast and rule-tag escalation, fidelity mode search filtering, and five configurable builtin extraction-artifact fixes.
 
-Design source of truth: `TECHNICAL_DESIGN.md` (build-continuity plan; current reality vs target end-state). `ARCHITECTURE.md` covers the current system architecture.
+Design source of truth: `TECHNICAL_DESIGN.md` (build-continuity plan; current reality vs target end-state). `ARCHITECTURE.md` covers the current system architecture. Remaining work: `docs/ACTION_ITEMS.md`.
 
 ## Prereqs
 
@@ -237,7 +237,7 @@ Atlas includes a full-featured React SPA served at `/app` that replaces the prev
 redirects to the Dashboard. `/app` is the only SPA mount — there is no `/editor`
 route.
 
-**Stack:** Vite 6, React 18, TypeScript, shadcn/ui, Tailwind CSS, Zustand, TanStack React Query.
+**Stack:** Vite 8, React 18, TypeScript, shadcn/ui, Tailwind CSS, Zustand, TanStack React Query.
 
 ```powershell
 # Development (live reload, proxies API to :28080)
@@ -279,7 +279,7 @@ Fast unit/breadcrumb tests (no Docker/LM Studio required):
 & ".\.venv\Scripts\python.exe" -m pytest -q
 ```
 
-698 tests across 54 files. `pyproject.toml` sets
+733 tests across 60 files (latest CI: 733 passed / 6 skipped). `pyproject.toml` sets
 `addopts = "--cov=atlas.pipeline --cov-report=term-missing --cov-fail-under=80"`, so a
 **partial** run (a single file, a marker filter, a `-k` selection) reports near-zero
 coverage and exits non-zero even when every selected test passes. Append `--no-cov`

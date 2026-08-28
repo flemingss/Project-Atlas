@@ -1,8 +1,8 @@
 # Pipeline Quality Improvements — Tracking & Adjudication
 
 **Created**: 2026-03-01
-**Status**: In Progress (Layer 2)
-**Version**: Project-Atlas v0.7.3-dev
+**Status**: Layers 1–2 complete. Layer 3A open (`docs/ACTION_ITEMS.md` P2-02). Layer 3B superseded by the React editor (Phase 12C).
+**Version**: shipped in the unreleased work on top of v0.8.0; this file is historical for Layers 1–2.
 
 ---
 
@@ -35,7 +35,7 @@ contaminate the final knowledge base:
 
 ## Improvement Strategy — Three Layers
 
-### Layer 1: Post-Refine Artifact Stripping + Prompt Hardening ← **CURRENT**
+### Layer 1: Post-Refine Artifact Stripping + Prompt Hardening ← **DONE**
 
 **Goal**: Eliminate LLM conversation artifacts from refined output.
 **Effort**: ~1 day | **Risk**: Low (deterministic post-processing, prompt-only LLM change)
@@ -82,7 +82,7 @@ rules)" entries above point.
 
 ---
 
-### Layer 3A: Strip & Re-judge HITL Enhancement (Recommended)
+### Layer 3A: Strip & Re-judge HITL Enhancement (Recommended) — OPEN (`ACTION_ITEMS.md` P2-02)
 
 **Goal**: Let HITL operators select sections to strip, then kick back to Judge for automatic
 re-evaluation instead of full manual editing.
@@ -97,12 +97,11 @@ re-evaluation instead of full manual editing.
 
 ---
 
-### Layer 3B: Document Editor with VLM Integration (Planned)
+### Layer 3B: Document Editor with VLM Integration — SUPERSEDED
 
 **Goal**: Standalone HTML/JS editor (PDF.js + CodeMirror 6) with LLM/VLM-assisted
 refine, diff view, and accept/reject per-section. Replaces the deferred "VS Code-Style"
 concept with a concrete architecture.
-**Effort**: ~1 week | **Risk**: Medium
 
 **Decision**: Planned as Phase 12 in `TECHNICAL_DESIGN.md`. Architecture: standalone
 HTML/JS page served by FastAPI at `/editor` (Path A — no build toolchain, designed for
@@ -110,7 +109,7 @@ future React migration). See Phase 12A-12D for sub-tasks.
 
 **Superseded**: the React migration happened in v0.8.0. The editor is now a page in
 the React SPA at `/app/doc/:docId` (and `/app/run/:runId`); the standalone `/editor`
-mount no longer exists.
+mount no longer exists. Do not implement 3B.
 
 ---
 

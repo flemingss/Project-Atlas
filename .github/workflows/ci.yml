@@ -3,7 +3,7 @@
 # backend: installs from the Linux-compiled lockfile (CPU torch via the
 #   pytorch index — ~200MB instead of the ~6GB CUDA bundle), runs a clean
 #   `ruff check` (debt is registered in pyproject, the line holds here) and
-#   the full pytest suite (698 tests, 80% coverage gate from pyproject).
+#   the full pytest suite (733 passed / 6 skipped on 2026-08-28, 80% coverage gate from pyproject).
 #   Integration tests self-skip when Qdrant/Postgres are unreachable.
 #
 # web: npm ci + eslint + `npm run build` — the build runs `tsc -b`, which is
