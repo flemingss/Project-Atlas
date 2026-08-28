@@ -1640,6 +1640,12 @@ function VlmProcessingStep() {
   const progress = enabledPages.length > 0 ? Math.round((donePages.length / enabledPages.length) * 100) : 0;
 
   // ── Page-by-page callbacks ────────────────────────────────────
+  // Auto-advance is self-recursive. Route the recursion through a ref so each
+  // step invokes the CURRENT callback: capturing processNext directly pins the
+  // chain to the binding from first render, so once processPage changed
+  // identity the recursion would keep calling a stale mutation.
+  const processNextRef = useRef<() => void>(() => {});
+
   const processNext = useCallback(async () => {
     const current = useVlmIngestStore.getState();
     if (!current.sessionId) return;
@@ -1655,12 +1661,16 @@ function VlmProcessingStep() {
         onSuccess: () => {
           const latest = useVlmIngestStore.getState();
           if (latest.autoProcess && !abortRef.current) {
-            setTimeout(() => processNext(), 100);
+            setTimeout(() => processNextRef.current(), 100);
           }
         },
       },
     );
   }, [processPage]);
+
+  useEffect(() => {
+    processNextRef.current = processNext;
+  }, [processNext]);
 
   const handleStart = useCallback(() => { abortRef.current = false; processNext(); }, [processNext]);
   const handleStop = useCallback(() => { abortRef.current = true; store.setProcessing(false); }, [store]);

@@ -1,5 +1,38 @@
 # Worklog
 
+## 2026-08-28 (CI truth + build tooling) — CI was never green; fixed both jobs
+
+**Correction to the previous entry.** CI had *never* passed on main. The
+"green" readings came from `actions/runs?branch=main`, which also returns
+Dependabot's own workflow runs — those succeed, so the query looked healthy
+while every `ci.yml` run failed. **Query `actions/workflows/ci.yml/runs`**
+for the real status; `actions/runs` is not workflow-specific.
+
+Two genuine causes, both fixed and verified against a real clean checkout
+(`git archive HEAD` into a scratch dir, then the exact CI recipe):
+
+1. **backend**: 8 tests load `config/pipeline.yaml`/`models.yaml`, which are
+   gitignored operator-local files — a fresh checkout only has `*.example`.
+   The earlier "clean-room" run mounted the working tree, which has them, so
+   it proved nothing about CI. CI now seeds them from `.example` before the
+   test step. Clean-checkout result: ruff clean, 697 passed / 1 skipped.
+2. **web**: `eslint-plugin-react-hooks` 7 enables new rules. 11
+   `set-state-in-effect` findings (registered as debt with the React Query
+   migration named) and one *real* bug — the VLM page-by-page auto-advance
+   recursed through a stale closure of itself, so once `processPage` changed
+   identity the chain kept calling a stale mutation. Now routed through a ref.
+
+**Build tooling**: adopted Vite 8 + `@vitejs/plugin-react` 6 (rolldown —
+build ~19s → ~8s, bundle ~50KB smaller). Deferred TypeScript 7: it builds
+fine, but `typescript-eslint` does not support TS 7.0 (upstream #10940, needs
+≥7.1) so it breaks the lint gate. Did the `tsconfig.json` half of that
+migration anyway (drop `baseUrl`, relative `paths`) — TS 5 accepts it, so the
+future bump is one line.
+
+**Method note for future sessions**: verify a CI fix by exporting a clean
+checkout and running the workflow's exact steps against it. Mounting the
+working tree hides every gitignored-file dependency.
+
 ## 2026-08-28 (CI + debt burn-down) — Actions pipeline live; ruff clean; locks actually work now
 
 - **CI** (.github/workflows/ci.yml): backend = lockfile install (CPU torch

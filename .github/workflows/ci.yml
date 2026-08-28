@@ -39,6 +39,12 @@ jobs:
         run: |
           pip install -r requirements-dev.lock
           pip install --no-deps .
+      - name: Seed operator config
+        # config/*.yaml are gitignored operator-local files (only *.example is
+        # committed); tests load them. Mirrors .devcontainer/post-create.sh.
+        run: |
+          cp config/pipeline.yaml.example config/pipeline.yaml
+          cp config/models.yaml.example config/models.yaml
       - name: Lint
         run: ruff check src tests
       - name: Tests
