@@ -277,6 +277,10 @@ export function AdminDangerPage() {
           <CardTitle className="text-sm">Reload YAML from disk</CardTitle>
           <CardDescription className="text-xs">
             Re-read pipeline.yaml and models.yaml without restarting
+            <span className="mt-1 block text-text-muted">
+              Safe and non-destructive: it refreshes the YAML layer only. An active
+              config version (below) still takes precedence over it.
+            </span>
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -316,9 +320,16 @@ export function AdminDangerPage() {
                   </p>
                 </div>
                 {!cv.is_active && (
-                  <Button variant="outline" size="sm" onClick={() => handleActivateVersion(cv.id)}>
-                    Activate
-                  </Button>
+                  <ConfirmDialog
+                    title={`Activate config version ${cv.id}?`}
+                    description="This swaps the pipeline and model configuration for every future ingest — chunking, judge thresholds, cleanup rules and model roles all come from this snapshot. Already-indexed documents are unaffected."
+                    confirmLabel="Activate"
+                    onConfirm={() => handleActivateVersion(cv.id)}
+                  >
+                    <Button variant="outline" size="sm">
+                      Activate
+                    </Button>
+                  </ConfirmDialog>
                 )}
               </div>
             ))
@@ -370,6 +381,11 @@ export function AdminDangerPage() {
           </CardTitle>
           <CardDescription className="text-xs">
             Import a previously exported collection archive (.zip)
+            <span className="mt-1 block text-text-muted">
+              Each document is re-ingested through the full pipeline — it re-embeds and
+              re-runs judge/refine, so it costs LLM calls and can route documents to
+              Review. Chunks for a doc id + version already present are replaced.
+            </span>
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">

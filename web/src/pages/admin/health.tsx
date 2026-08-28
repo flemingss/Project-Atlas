@@ -127,18 +127,20 @@ export function AdminHealthPage() {
           </Button>
           {/* Self-test is NOT read-only: it runs the full E2E scenario suite
               against this live stack, which ingests throwaway e2e-* documents,
-              creates workflow runs, and cycles config versions. Everything is
-              cleaned up on success, but a mid-run failure can leave residue —
-              so it gets a confirmation, not a bare button. */}
+              creates workflow runs, and cycles config versions. Observed to take
+              a corpus from 78 to 95 points. It cleans up on success, but a
+              mid-run failure leaves residue — hence the destructive styling and
+              an explicit confirmation. */}
           <ConfirmDialog
-            title="Run appliance self-test?"
-            description="This exercises the live stack end to end: it ingests temporary e2e-* documents, creates workflow runs, and activates then restores config versions. Residue may remain if it fails mid-run. Prefer running it against an empty stack."
-            confirmLabel="Run self-test"
+            title="Self-test writes to this live stack"
+            description="This is a write operation, not a read-only diagnostic. It ingests temporary e2e-* documents into the CURRENT corpus, creates workflow runs, and activates then restores config versions. It cleans up after itself on success, but a failure part-way through leaves those documents and runs behind for you to remove by hand. Run it against an empty stack, or take a backup first (scripts/backup.ps1)."
+            confirmLabel="I understand — run it"
+            variant="destructive"
             onConfirm={runSelfTest}
           >
-            <Button variant="outline" size="sm" disabled={selfTestRunning}>
-              {selfTestRunning ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : <Server className="mr-1.5 size-3.5" />}
-              Self-test
+            <Button variant="outline" size="sm" disabled={selfTestRunning} className="border-state-warning/50 text-state-warning">
+              {selfTestRunning ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : <AlertTriangle className="mr-1.5 size-3.5" />}
+              Self-test (writes data)
             </Button>
           </ConfirmDialog>
         </div>

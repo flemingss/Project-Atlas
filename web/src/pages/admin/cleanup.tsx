@@ -183,15 +183,33 @@ export function AdminCleanupPage() {
     }
   };
 
-  const handleImportRules = async (file: File) => {
+  /** Import is NOT additive by default on the backend: mode="replace" discards
+   *  every existing cleanup rule. Either mode also creates AND activates a new
+   *  DB config version, i.e. it changes the pipeline for all future ingests.
+   *  Default to "merge" and make "replace" an explicit, confirmed choice. */
+  const handleImportRules = async (file: File, mode: 'merge' | 'replace') => {
     try {
       // Backend takes the YAML as a JSON string field, not a file upload.
       const rulesYaml = await file.text();
-      await adminApi.importRules({ rules_yaml: rulesYaml, mode: 'replace' });
-      toast.success('Rules imported');
+      const res = await adminApi.importRules({ rules_yaml: rulesYaml, mode });
+      toast.success(
+        `Imported ${res.imported?.length ?? 0} rule(s) (${mode}); ` +
+          `config version ${res.config_version_id} is now active`,
+      );
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Import failed');
     }
+  };
+
+  const pickRulesFile = (mode: 'merge' | 'replace') => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,.yaml,.yml';
+    input.onchange = (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (file) handleImportRules(file, mode);
+    };
+    input.click();
   };
 
   return (
@@ -391,10 +409,17 @@ export function AdminCleanupPage() {
             placeholder="rule_name:&#10;  pattern: ..."
             className="font-mono text-xs"
           />
-          <Button size="sm" onClick={handleApplyRule} disabled={applying || !ruleYaml.trim()}>
-            {applying ? <Loader2 className="mr-1.5 size-3 animate-spin" /> : <Plus className="mr-1.5 size-3" />}
-            Apply rule
-          </Button>
+          <ConfirmDialog
+            title="Apply cleanup rule?"
+            description="This creates and ACTIVATES a new config version: the rule takes effect for every future ingest, and rules with the same name are replaced. Roll back from Danger zone → Config version history."
+            confirmLabel="Apply & activate"
+            onConfirm={handleApplyRule}
+          >
+            <Button size="sm" disabled={applying || !ruleYaml.trim()}>
+              {applying ? <Loader2 className="mr-1.5 size-3 animate-spin" /> : <Plus className="mr-1.5 size-3" />}
+              Apply rule
+            </Button>
+          </ConfirmDialog>
         </CardContent>
       </Card>
 
@@ -442,23 +467,29 @@ export function AdminCleanupPage() {
             <Download className="mr-1.5 size-3" />
             Export rules
           </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              const input = document.createElement('input');
-              input.type = 'file';
-              input.accept = '.json,.yaml,.yml';
-              input.onchange = (e) => {
-                const file = (e.target as HTMLInputElement).files?.[0];
-                if (file) handleImportRules(file);
-              };
-              input.click();
-            }}
+          <ConfirmDialog
+            title="Import rules (merge)?"
+            description="Adds the file's rules to the current set, replacing any with the same name and keeping the rest. This creates and ACTIVATES a new config version, so it changes the cleanup pipeline for all future ingests."
+            confirmLabel="Choose file & merge"
+            onConfirm={() => pickRulesFile('merge')}
           >
-            <Upload className="mr-1.5 size-3" />
-            Import rules
-          </Button>
+            <Button variant="outline" size="sm">
+              <Upload className="mr-1.5 size-3" />
+              Import rules (merge)
+            </Button>
+          </ConfirmDialog>
+          <ConfirmDialog
+            title="Replace ALL cleanup rules?"
+            description="This DISCARDS every existing cleanup rule and keeps only the ones in the file. It creates and ACTIVATES a new config version, changing the cleanup pipeline for all future ingests. Export the current rules first if you may need them back."
+            confirmLabel="Choose file & replace all"
+            variant="destructive"
+            onConfirm={() => pickRulesFile('replace')}
+          >
+            <Button variant="destructive" size="sm">
+              <Upload className="mr-1.5 size-3" />
+              Replace all rules
+            </Button>
+          </ConfirmDialog>
         </CardContent>
       </Card>
     </PageShell>

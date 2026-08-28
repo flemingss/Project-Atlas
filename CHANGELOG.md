@@ -24,6 +24,43 @@ assigned yet — pick the next version and bump both when it ships.
   against the live dev stack (see README "E2E Scenario Tests"). Everything
   else is recoverable from git history if a CI harness is revived.
 
+### Changed (2026-08-28, guards on mutating admin actions)
+
+Swept every admin action for the case an unfamiliar operator would misread as
+read-only or harmless. Each now states its real blast radius up front, and the
+genuinely destructive ones are confirmed:
+
+- **Self-test** was the worst offender — it reads like a diagnostic but ingests
+  `e2e-*` documents into the *current* corpus, creates workflow runs, and
+  cycles config versions (observed taking a live corpus 78 → 95 points). Now
+  labelled **"Self-test (writes data)"** in warning styling, behind a
+  destructive confirmation that says it is a write operation, that residue is
+  left behind if it fails mid-run, and to back up first.
+- **Import rules silently replaced everything.** The UI hardcoded
+  `mode: "replace"`, which discards *every* existing cleanup rule — behind a
+  button that just said "Import rules". Split into **"Import rules (merge)"**
+  (the safe default: same-named rules replaced, others kept) and a destructive
+  **"Replace all rules"**, each confirmed and each stating that the import also
+  creates and *activates* a new config version.
+- **Apply cleanup rule** creates and activates a config version, changing the
+  pipeline for every future ingest — it read like a local edit. Now confirmed,
+  and the toast reports the resulting config version id.
+- **Activate config version** now spells out that it swaps chunking, judge
+  thresholds, cleanup rules and model roles for all future ingests (indexed
+  documents are unaffected).
+- **Set doc active version** now says search will start answering from that
+  version immediately and other versions stop being returned.
+- **Collection import** now says each document is re-ingested through the full
+  pipeline — re-embedding *and* re-running judge/refine, so it costs LLM calls
+  and can route documents to Review.
+- **Reload YAML** confirmed harmless and now says so, including that an active
+  config version still takes precedence over the YAML layer.
+
+Audited and deliberately left as-is: orphan scan/delete and adopt (already
+confirmed, and the scan defaults to `dry_run`), HITL complete/skip/reject and
+"Resume pipeline" (honestly labelled inside a review workflow), Groups
+create/delete (confirmed), and Danger-zone reset/restore (strict-token guarded
+and already explained).
 ### Added (2026-08-28, backup/restore + flush verification)
 
 - **`scripts/backup.ps1` / `scripts/restore.ps1`** close the disaster-recovery

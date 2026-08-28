@@ -371,8 +371,16 @@ export const adminApi = {
     // Backend streams a YAML file download, not JSON.
     return apiFetchRaw('/admin/cleanup-rules/export');
   },
+  /** NOTE: mode "replace" discards all existing cleanup rules. Either mode
+   *  creates AND activates a new config version (global pipeline change). */
   importRules(payload: ImportCleanupRulesRequest) {
-    return apiFetch<{ ok: boolean }>('/admin/cleanup-rules/import', {
+    return apiFetch<{
+      ok: boolean;
+      mode: string;
+      config_version_id: number;
+      rules_count: number;
+      imported: string[];
+    }>('/admin/cleanup-rules/import', {
       method: 'POST',
       body: JSON.stringify(payload),
     });

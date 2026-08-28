@@ -386,9 +386,16 @@ export function LibraryPage() {
             <Button variant="outline" size="sm" onClick={handleShowVersion} disabled={!versionDocId}>
               Show current version
             </Button>
-            <Button variant="outline" size="sm" onClick={handleSetVersion} disabled={!versionDocId}>
-              Set version
-            </Button>
+            <ConfirmDialog
+              title="Change the version used for answers?"
+              description={`Search and retrieval will start answering from version ${versionValue} of "${versionDocId}". Other versions stay indexed but stop being returned. This takes effect immediately for every query.`}
+              confirmLabel="Set active version"
+              onConfirm={handleSetVersion}
+            >
+              <Button variant="outline" size="sm" disabled={!versionDocId}>
+                Set version
+              </Button>
+            </ConfirmDialog>
           </div>
         </CardContent>
       </Card>
