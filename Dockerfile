@@ -8,7 +8,7 @@ RUN npm run build
 # Output lands in /ui/../static/app → /static/app
 
 # ── Stage 2: Python runtime ──
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
