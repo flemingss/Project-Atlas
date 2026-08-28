@@ -77,6 +77,35 @@ line-length = 100
 # case-by-case judgment (most BLE001/S110 sites are deliberate best-effort
 # guards). Remove a code from this list when its findings are fixed —
 # never add one to silence a new finding.
+#
+# Pinned select: explicit so the enforced rule set does not drift with the
+# installed ruff version's defaults. It is the default base (E4/E7/E9/F) PLUS
+# exactly the rule codes named in the ignore list and per-file-ignores below —
+# selected individually, NOT by family, so we do not pull in sibling rules that
+# were never enforced (e.g. S101 assert-in-tests) and would be a mass reformat.
+# This keeps the registered debt genuinely enforced: each ignore below is a live
+# exemption to a rule that IS selected, and removing the debt lets the code leave
+# the ignore list. E501 stays out (344 violations; line-length=100 is still
+# respected by the formatter, just not lint-enforced).
+select = [
+  "E4", "E7", "E9",  # pycodestyle checkable subsets (E501 line-length excluded)
+  "F",               # pyflakes
+  # Debt-bearing codes, selected so the ignores below stay meaningful:
+  "EXE002",          # shebang-missing-executable (ignored: Windows 0777 mounts)
+  "B008",            # function-call-in-default
+  "B017",            # assert-raises-Exception
+  "B023",            # loop-var closure (per-file-ignored for layout_recognizer)
+  "BLE001",          # blind except
+  "G201",            # logging .error(exc_info) vs .exception
+  "PLC0206",         # dict-index-missing-items
+  "RUF012",          # mutable-class-default
+  "RUF059",          # unused unpacked variable
+  "S110",            # try-except-pass
+  "S112",            # try-except-continue
+  "SIM102",          # collapsible-if
+  "TRY004",          # raise-TypeError-for-type-checks
+  "TRY201",          # verbose raise
+]
 ignore = [
   "EXE002",
   "B008",    # 3× function-call-in-default (FastAPI File(...) idiom)
