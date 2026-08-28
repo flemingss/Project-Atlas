@@ -246,3 +246,88 @@ async def test_normal_content_is_unaffected(monkeypatch) -> None:
         lambda *a, **k: _StubClient(payload),
     )
     assert await provider.chat(model="m", messages=[], params={}) == "ok"
+
+
+# ---------------------------------------------------------------------------
+# Layout parser page-limit guard
+# ---------------------------------------------------------------------------
+
+
+def _make_pdf(num_pages: int) -> bytes:
+    """Minimal multi-page PDF built with PyMuPDF (same as test_docling_e2e)."""
+    import fitz
+
+    doc = fitz.open()
+    for i in range(num_pages):
+        doc.new_page().insert_text((72, 72), f"Page {i}", fontsize=11)
+    return doc.tobytes()
+
+
+class _FakeTextExtractor:
+    def extract_page(self, img_np, chars, page_number, zoom):
+        return [], 10.0
+
+    @staticmethod
+    def assign_columns(boxes):
+        return boxes, 1
+
+    @staticmethod
+    def merge_text_horizontal(boxes, mean_heights):
+        return boxes
+
+    @staticmethod
+    def merge_text_vertical(boxes, mean_heights, is_english=True):
+        return boxes
+
+
+class _FakeLayoutRecognizer:
+    def __call__(self, images, ocr_boxes, scale_factor, thr, drop):
+        return [], []
+
+
+class _FakeTableRecognizer:
+    def __call__(self, imgs, thr):
+        return []
+
+
+def _parser_with_stubs():
+    """Real LayoutPdfParser with stubbed OCR/layout/table sub-components.
+
+    __init__ pulls ONNX models, so we bypass it and wire the three
+    sub-components the parse pipeline needs. This gives a real at-cap parse
+    without heavyweight deps.
+    """
+    from atlas.ingest.pdf_parser import LayoutPdfParser
+
+    parser = LayoutPdfParser.__new__(LayoutPdfParser)
+    parser.text_extractor = _FakeTextExtractor()
+    parser.layout_recognizer = _FakeLayoutRecognizer()
+    parser.table_recognizer = _FakeTableRecognizer()
+    return parser
+
+
+def test_layout_parser_rejects_pdf_over_page_cap(monkeypatch) -> None:
+    """Over-cap PDFs are refused with the same error Docling raises, pre-render."""
+    from atlas.diagnostics import ErrorCode
+    from atlas.ingest.docling_adapter import DoclingLimitsError
+    from atlas.ingest.pdf_parser import LayoutPdfParser
+
+    monkeypatch.setenv("ATLAS_PDF_MAX_PAGES", "3")
+
+    # Bypassing __init__ skips ONNX; the guard raises before any sub-component
+    # is touched, so a bare instance is enough.
+    parser = LayoutPdfParser.__new__(LayoutPdfParser)
+
+    with pytest.raises(DoclingLimitsError) as excinfo:
+        parser(_make_pdf(4))
+
+    assert excinfo.value.error_code == ErrorCode.DOC_PAGE_LIMIT_EXCEEDED
+
+
+def test_layout_parser_accepts_pdf_at_page_cap(monkeypatch, tmp_path) -> None:
+    """Under-cap PDFs pass the preflight and still parse end-to-end."""
+    monkeypatch.setenv("ATLAS_PDF_MAX_PAGES", "3")
+
+    result = _parser_with_stubs()(_make_pdf(2))
+
+    assert result.page_count == 2

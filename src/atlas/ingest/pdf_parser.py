@@ -19,6 +19,9 @@ from typing import Any
 
 import numpy as np
 
+from atlas.diagnostics import ErrorCode
+from atlas.settings import Settings
+
 try:
     from .layout_recognizer import LayoutRecognizer
 except ImportError:
@@ -116,6 +119,13 @@ class LayoutPdfParser:
         -------
         :class:`PDFParseResult` with regions, tables, markdown, and
         confidence metrics.
+
+        Raises
+        ------
+        DoclingLimitsError:
+            If the PDF exceeds ``settings.atlas_pdf_max_pages``. Reuses the
+            Docling adapter's oversized-document error so callers see one
+            consistent contract regardless of which backend parsed the file.
         """
         try:
             import pdfplumber
@@ -124,6 +134,25 @@ class LayoutPdfParser:
                 "pdfplumber is required for PDF parsing. "
                 "Install it with: pip install pdfplumber"
             ) from exc
+
+        # Importing the Docling error type lazily keeps the layout module
+        # importable in VLM-only/slim builds where docling deps are absent.
+        from atlas.ingest.docling_adapter import DoclingLimitsError
+
+        # Pre-flight the page limit before rendering. Both backends must reject
+        # oversized PDFs identically (backend=auto falls to this path), and
+        # buffering every page image below makes the fallback path O(pages) in
+        # memory — so refuse the document up front rather than after rendering.
+        max_pages = int(Settings().atlas_pdf_max_pages)
+        page_count = self._page_count(pdf_bytes_or_path)
+        if page_count and page_count > max_pages:
+            raise DoclingLimitsError(
+                error_code=ErrorCode.DOC_PAGE_LIMIT_EXCEEDED,
+                message=(
+                    f"PDF exceeds page limit ({page_count} pages > "
+                    f"{max_pages} pages)"
+                ),
+            )
 
         t0 = timer()
 
@@ -394,6 +423,32 @@ class LayoutPdfParser:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _page_count(pdf_bytes_or_path: bytes | str | Path) -> int:
+        """Cheap page count via PyMuPDF; 0 if PyMuPDF/file is unreadable."""
+        try:
+            import fitz  # PyMuPDF
+        except Exception:
+            logger.debug("PyMuPDF unavailable; skipping page-count preflight")
+            return 0
+
+        doc = None
+        try:
+            if isinstance(pdf_bytes_or_path, (str, Path)):
+                doc = fitz.open(str(pdf_bytes_or_path))
+            else:
+                doc = fitz.open(stream=BytesIO(pdf_bytes_or_path), filetype="pdf")
+            return int(doc.page_count)
+        except Exception:
+            logger.debug("Page-count preflight failed", exc_info=True)
+            return 0
+        finally:
+            if doc is not None:
+                try:
+                    doc.close()
+                except Exception:
+                    pass
 
     def _process_tables(
         self,
