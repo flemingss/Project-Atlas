@@ -29,6 +29,27 @@ class DoclingUnavailableError(DoclingIngestError):
         )
 
 
+class DoclingBrokenInstallError(DoclingIngestError):
+    """Docling is installed but cannot be imported (corrupt/partial install).
+
+    Distinct from :class:`DoclingUnavailableError`: the package resolved, but
+    importing it (or a submodule) failed — a transitive dependency failure,
+    an AttributeError/TypeError from a partially-upgraded tree, etc. This is
+    an operator-actionable condition that must not read as "not installed".
+    """
+
+    def __init__(self, *, underlying: BaseException) -> None:
+        super().__init__(
+            error_code=ErrorCode.DOC_PARSE_DEPENDENCY_MISSING,
+            message=(
+                "Docling is installed but its install is broken/corrupt: "
+                f"{type(underlying).__name__}: {underlying}. "
+                "Reinstall dependencies with: pip install -e ."
+            ),
+        )
+        self.underlying = underlying
+
+
 class DoclingParseError(DoclingIngestError):
     def __init__(self, message: str) -> None:
         super().__init__(error_code=ErrorCode.DOC_PARSE_FAILED, message=message)
@@ -53,6 +74,43 @@ class DoclingParseResult:
     parse_profile: ParseProfile
     docling_schema_version: str
     meta: dict[str, Any]
+
+
+def _classify_docling_import_error(e: BaseException) -> None:
+    """Raise the appropriate dependency error for a failed docling import.
+
+    - Genuinely absent (ModuleNotFoundError for the top-level ``docling``
+      package) → :class:`DoclingUnavailableError` ("not installed").
+    - Present but broken — a transitive import failure, a missing submodule
+      (e.g. ``docling.document_converter`` on a partially-upgraded tree), or
+      an AttributeError/TypeError at import time →
+      :class:`DoclingBrokenInstallError`, which names the underlying exception.
+    """
+    diagnostics = get_diagnostics()
+    absent = isinstance(e, ModuleNotFoundError) and getattr(e, "name", None) == "docling"
+    diagnostics.log_error(
+        component="ingest",
+        error_code=ErrorCode.DOC_PARSE_DEPENDENCY_MISSING,
+        message=(
+            "Docling dependency is not available"
+            if absent
+            else "Docling install is broken/corrupt"
+        ),
+        context={"dependency": "docling", "detail": f"{type(e).__name__}: {e}"},
+        exception=e,
+    )
+    if absent:
+        raise DoclingUnavailableError() from e
+    raise DoclingBrokenInstallError(underlying=e) from e
+
+
+def _import_docling_document_converter() -> Any:
+    """Import Docling's DocumentConverter via :func:`_classify_docling_import_error`."""
+    try:
+        from docling.document_converter import DocumentConverter  # type: ignore[import-not-found]
+    except Exception as e:
+        _classify_docling_import_error(e)
+    return DocumentConverter
 
 
 def _pdf_preflight(*, pdf_path: Path) -> dict[str, Any]:
@@ -220,6 +278,7 @@ def parse_document_path(
 
     Raises:
       - DoclingUnavailableError if Docling isn't installed
+      - DoclingBrokenInstallError if Docling is installed but unimportable
       - DoclingParseError for parsing/export failures
     """
     diagnostics = get_diagnostics()
@@ -261,18 +320,8 @@ def parse_document_path(
             )
 
     try:
-        from docling.document_converter import DocumentConverter  # type: ignore[import-not-found]
-    except Exception as e:
-        diagnostics.log_error(
-            component="ingest",
-            error_code=ErrorCode.DOC_PARSE_DEPENDENCY_MISSING,
-            message="Docling dependency is not available",
-            context={"dependency": "docling", "detail": f"{type(e).__name__}: {e}"},
-            exception=e,
-        )
-        raise DoclingUnavailableError() from e
+        DocumentConverter = _import_docling_document_converter()
 
-    try:
         conversion = None
         method = "docling_default"
 
@@ -338,8 +387,14 @@ def parse_document_path(
                         method = "ocr"
             except DoclingIngestError:
                 raise
+            except (ImportError, AttributeError, TypeError) as e:
+                # Docling's modules/symbols exist on some versions; a missing
+                # name here means the installed tree is broken, not that the
+                # options path is optional. Surface it loudly.
+                _classify_docling_import_error(e)
             except Exception:
-                # Any docling API drift or option mismatch shouldn't break ingestion; fall back to defaults.
+                # Any other docling API drift or option mismatch shouldn't break
+                # ingestion; fall back to defaults.
                 converter = DocumentConverter()
                 conversion = _docling_convert(
                     converter=converter,
@@ -402,7 +457,8 @@ def parse_html_string(*, html: str, name: str | None = None) -> DoclingParseResu
     """Parse an HTML string using Docling.
 
     This uses Docling's `convert_string` path (HTML only). It intentionally raises
-    DoclingUnavailableError if Docling isn't installed.
+    DoclingUnavailableError if Docling isn't installed and DoclingBrokenInstallError
+    if the install is corrupt.
     """
     diagnostics = get_diagnostics()
 
@@ -410,14 +466,7 @@ def parse_html_string(*, html: str, name: str | None = None) -> DoclingParseResu
         from docling.datamodel.base_models import InputFormat  # type: ignore[import-not-found]
         from docling.document_converter import DocumentConverter  # type: ignore[import-not-found]
     except Exception as e:
-        diagnostics.log_error(
-            component="ingest",
-            error_code=ErrorCode.DOC_PARSE_DEPENDENCY_MISSING,
-            message="Docling dependency is not available",
-            context={"dependency": "docling"},
-            exception=e,
-        )
-        raise DoclingUnavailableError() from e
+        _classify_docling_import_error(e)
 
     try:
         converter = DocumentConverter()

@@ -277,6 +277,40 @@ def test_rag_ingest_docling_unavailable_returns_error_code(tmp_path: Path, monke
     assert data["error_message"]
 
 
+def test_rag_ingest_docling_broken_install_returns_distinct_message(tmp_path: Path, monkeypatch: Any) -> None:
+    """A broken/corrupt Docling install must NOT read as 'not installed'."""
+    from atlas.ingest.docling_adapter import DoclingBrokenInstallError
+
+    app, _session_factory = _make_test_app(tmp_root=tmp_path, monkeypatch=monkeypatch)
+    client = TestClient(app)
+
+    # Force backend=docling so auto-fallback to layout parser doesn't mask the error.
+    monkeypatch.setenv("ATLAS_PDF_PARSER_BACKEND", "docling")
+
+    def _raise_broken(
+        *, doc_path: Path, source_mime_type: str, table_extraction: bool = True
+    ) -> None:
+        raise DoclingBrokenInstallError(
+            underlying=ModuleNotFoundError("No module named 'docling.document_converter'")
+        )
+
+    monkeypatch.setattr(pipeline_parsers, "parse_document_path", _raise_broken)
+
+    res = client.post(
+        "/rag/ingest/file",
+        data={"doc_id": "pdf-brokendocling", "doc_version": "v1"},
+        files={"file": ("broken_docling.pdf", b"%PDF-1.4\n%fake\n", "application/pdf")},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["ok"] is False
+    assert data["chunks_upserted"] == 0
+    assert data["error_code"] == "DOC_PARSE_DEPENDENCY_MISSING"
+    assert data["error_message"]
+    assert "not installed" not in data["error_message"]
+    assert "broken" in data["error_message"]
+
+
 def test_rag_ingest_file_fidelity_flag_in_payload(tmp_path: Path, monkeypatch: Any) -> None:
     """Committed chunks must include fidelity_flag in their Qdrant payload."""
     app, _session_factory = _make_test_app(tmp_root=tmp_path, monkeypatch=monkeypatch)

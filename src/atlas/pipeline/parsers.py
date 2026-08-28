@@ -19,7 +19,11 @@ from tempfile import NamedTemporaryFile
 from typing import TYPE_CHECKING, Any
 
 from atlas.diagnostics import ErrorCode
-from atlas.ingest.docling_adapter import DoclingIngestError, parse_document_path
+from atlas.ingest.docling_adapter import (
+    DoclingBrokenInstallError,
+    DoclingIngestError,
+    parse_document_path,
+)
 from atlas.schemas import ParseProfile
 from atlas.settings import Settings
 
@@ -131,6 +135,29 @@ class DoclingParser(DocumentParser):
                     ),
                     meta=parsed.meta,
                 )
+        except DoclingBrokenInstallError as e:
+            # Broken install must never read as "not installed". Surface it so
+            # the fallback decision can distinguish corruption from absence.
+            self.ctx.diagnostics.log_error(
+                component="ingest",
+                error_code=e.error_code,
+                message=str(e),
+                context={"filename": filename or ""},
+                exception=e,
+            )
+            return IngestResult(
+                success=False,
+                markdown_projection="",
+                docling_json={},
+                parse_profile=ParseProfile.PDF_TEXT,
+                docling_schema_version="unknown",
+                error_code=e.error_code,
+                error_message=str(e),
+                meta={
+                    "extraction_backend": "docling",
+                    "docling_install_state": "broken",
+                },
+            )
         except DoclingIngestError as e:
             return IngestResult(
                 success=False,
@@ -418,18 +445,45 @@ class FallbackParser(DocumentParser):
         filename: str | None,
     ) -> IngestResult | None:
         first_result = None
+        saw_broken_docling = False
         for parser in self._parsers:
             result = await parser.parse(doc_bytes, source_mime_type, filename)
             if first_result is None:
                 first_result = result
+            if result is not None and _is_broken_docling_result(result):
+                saw_broken_docling = True
+                # A broken Docling install slipping to a lower-quality parser
+                # must not look like a clean fallback: the operator needs a
+                # prominent signal that extraction quality is degraded because
+                # the configured install is corrupt.
+                self.ctx.diagnostics.log_error(
+                    component="ingest",
+                    error_code=ErrorCode.DOC_PARSE_DEPENDENCY_MISSING,
+                    message=(
+                        "Docling is installed but broken/corrupt; falling back to a "
+                        "lower-quality parser. Extraction quality is DEGRADED until "
+                        "Docling is reinstalled. Underlying error: "
+                        + (result.error_message or "")
+                    ),
+                    context={"filename": filename or "", "parser": type(parser).__name__},
+                )
             if result is not None and result.success:
+                if saw_broken_docling:
+                    meta = result.meta if isinstance(result.meta, dict) else {}
+                    meta["docling_install_state"] = "broken"
+                    result.meta = meta
                 return result
-            parser_name = type(parser).__name__
             _logger.info(
                 "%s failed/unavailable for %s — trying next",
-                parser_name, filename or "unnamed",
+                type(parser).__name__, filename or "unnamed",
             )
         return first_result
+
+
+def _is_broken_docling_result(result: Any) -> bool:
+    """True when a parser result reports a broken (not absent) Docling install."""
+    meta = getattr(result, "meta", None)
+    return isinstance(meta, dict) and meta.get("docling_install_state") == "broken"
 
 
 def build_parser(backend: str, ctx: ParserContext) -> DocumentParser:
