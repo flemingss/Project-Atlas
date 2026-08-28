@@ -98,6 +98,29 @@ COPY static ./static
 # Overlay the React SPA build output
 COPY --from=ui-build /static/app ./static/app
 
+# ---------- Non-root runtime user ----------
+# `atlas` (uid 1000) matches the dev host's owner (apex-admin), so writes to
+# the bind-mounted ./artifacts land as the host user's files instead of root's.
+# Environments where host uid 1000 is the wrong choice can override the user
+# per service: `user: "501"` in compose, or `docker run --user 501`.
+#
+# Create the dir the app writes to while still root. umask 022 keeps the rest
+# of /app world-readable, so the app stays loadable without opening up the
+# baked files. Runtime artifacts/ is usually a bind/volume mount over this;
+# when it isn't (e.g. `docker run` with no -v), the chown below is what lets
+# the first write succeed.
+RUN useradd --uid 1000 --no-create-home atlas \
+    && mkdir -p /app/artifacts \
+    && chown atlas:atlas /app/artifacts /tmp
+USER atlas
+
+# The root-owned caches below must NOT be chown'd — `chown -R` rewrites the
+# cached layers byte-for-byte and turns every image rebuild into a full
+# re-download of the pip/HF model caches. HOME only *names* the baked model
+# and pip caches so the runtime user resolves them read-only.
+ENV HOME=/root \
+    PIP_CACHE_DIR=/root/.cache/pip
+
 EXPOSE 8080
 
 CMD ["python", "-m", "atlas"]
