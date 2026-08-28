@@ -102,7 +102,13 @@ services:
       embeddings:
         condition: service_healthy
     environment:
-      ATLAS_ENV: ${ATLAS_ENV:-dev}
+      # This base file is the production stack, so default to prod semantics:
+      # bringing it up without an explicit env must not silently enable dev
+      # behaviours (auth bypass available, weaker startup requirements). The dev
+      # flow sets ATLAS_ENV=dev via .env (see .env.example), so this default only
+      # bites when neither the environment nor .env sets it — exactly the prod
+      # cold-start case that must fail safe.
+      ATLAS_ENV: ${ATLAS_ENV:-prod}
       ATLAS_LOG_LEVEL: ${ATLAS_LOG_LEVEL:-INFO}
       # OpenAI-compatible base URL (LM Studio on the host). Use host.docker.internal on Docker Desktop.
       ATLAS_OPENAI_BASE_URL: ${ATLAS_OPENAI_BASE_URL:-http://host.docker.internal:1234}
