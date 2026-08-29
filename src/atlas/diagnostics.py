@@ -161,7 +161,7 @@ class DiagnosticsManager:
         error_code: ErrorCode,
         message: str,
         context: dict[str, Any] | None = None,
-        exception: Exception | None = None,
+        exception: BaseException | None = None,
     ) -> None:
         """Log a structured error."""
         ctx = context or {}
