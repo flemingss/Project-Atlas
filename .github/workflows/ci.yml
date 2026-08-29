@@ -96,7 +96,11 @@ jobs:
           cp config/pipeline.yaml.example config/pipeline.yaml
           cp config/models.yaml.example config/models.yaml
       - name: Tests (integration shard)
-        run: python -m pytest -q -m integration
+        # Integration tests are typically skipped in a fresh CI container (they
+        # require pre-cached Docling/Qdrant). The base addopts already include
+        # --cov=atlas.pipeline --cov-fail-under=80, which would fail at 0% when
+        # everything skips — opt out with --no-cov for this shard.
+        run: python -m pytest -q -m integration --no-cov
 
   web:
     runs-on: ubuntu-latest
