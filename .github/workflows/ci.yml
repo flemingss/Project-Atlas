@@ -68,8 +68,35 @@ jobs:
         # everywhere else. This gate found a real one on its first run —
         # huggingface_hub 1.x dropped a kwarg the model downloader still passed.
         run: mypy
-      - name: Tests
-        run: python -m pytest -q
+      - name: Tests (unit shard)
+        # Integration tests are sharded below — they pull torch/onnx/docling
+        # into the same process as ~750 unit tests and we have seen intermittent
+        # 502s (P0-01) whose root cause is process-level resource pressure, not
+        # test leakage. Splitting guarantees unit coverage is unaffected by the
+        # heavy shard.
+        run: python -m pytest -q -m "not integration"
+
+  integration:
+    runs-on: ubuntu-latest
+    env:
+      PIP_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
+      - name: Install (locked)
+        run: |
+          pip install -r requirements-dev.lock
+          pip install --no-deps .
+      - name: Seed operator config
+        run: |
+          cp config/pipeline.yaml.example config/pipeline.yaml
+          cp config/models.yaml.example config/models.yaml
+      - name: Tests (integration shard)
+        run: python -m pytest -q -m integration
 
   web:
     runs-on: ubuntu-latest
