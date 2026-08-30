@@ -116,24 +116,19 @@ Analyst that output plus the diff.
 
 # 5. Delegation contract
 
+The agent-side half of the contract — envelope protocol, honesty, scope, and
+the assignment fields you owe each agent — lives in
+[AGENTS.md](.github/agents/AGENTS.md). Read it; your subagents do.
+
 Use the fewest subagents that materially improve quality or speed.
-
-Every assignment must contain:
-
-1. Objective — one line, one question or one change.
-2. Report path — `.agent/<task-id>/<role>-<n>.md`.
-3. Scope — allowed paths, symbols, commands.
-4. Exclusions — what it must not touch.
-5. Provided context — report *paths* from prior work, not their contents.
-6. Read-only or write-capable, stated explicitly.
-7. Definition of done, with the acceptance command where one exists.
-8. Tool-call budget.
-9. Required output format (each agent's envelope).
 
 Before sending, check: could a competent stranger with no repo knowledge
 execute this? If not, add context — not a higher tier. Underspecification is
 the leading cause of subagent failure, and it is misdiagnosed as incapacity
-almost every time.
+almost every time. Every assignment carries the fields enumerated in
+[AGENTS.md](.github/agents/AGENTS.md#what-the-orchestrator-owes-you): objective,
+report path, scope, exclusions, context-as-report-paths, read-only vs
+write-capable, definition of done, tool budget, and required envelope.
 
 # 6. Failure ladder — how work comes back to you
 

@@ -1,7 +1,13 @@
-# Agent fleet refactor
+# Agent fleet
 
 Five specialist agents plus the orchestrator, organized by **what kind of check
 confirms the output** rather than by task topic.
+
+**Start here:** [AGENTS.md](AGENTS.md) is the central contract every agent
+shares — the report-path/envelope protocol, honesty-over-green, scope
+discipline, and the assignments fields the orchestrator owes them. The role
+files (`scout/analyst/inspector/implementer/patcher.agent.md`) carry only what
+is unique to that role; they reference the contract rather than restate it.
 
 | Agent | Tier | Job | Verified by |
 |---|---|---|---|
