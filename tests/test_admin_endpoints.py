@@ -71,3 +71,44 @@ def test_config_versions_create_and_activate_updates_effective_config(tmp_path: 
     effective = client.get("/admin/config/effective").json()
     assert effective["source"]["db"]["active_id"] == created["id"]
     assert effective["models"]["roles"]["embed_model"]["model_name"] == "embed-v2"
+
+
+def test_cleanup_dry_run_uses_candidate_rule_yaml(tmp_path: Path) -> None:
+    app = _make_test_app(tmp_root=tmp_path)
+    client = TestClient(app)
+
+    # A rule that would NOT match the active (empty) rule set: matches any doc
+    # and strips lines containing "CANDIDATE_MARKER".
+    rule_yaml = (
+        "- name: candidate-rule\n"
+        "  match: {}\n"
+        "  steps:\n"
+        "    - kind: strip_lines_matching\n"
+        "      pattern: CANDIDATE_MARKER\n"
+    )
+    sample = "keep me\nCANDIDATE_MARKER line\nkeep me too\n"
+
+    res = client.post(
+        "/admin/cleanup-rules/dry-run",
+        json={"markdown_sample": sample, "rule_yaml": rule_yaml},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["config_source"].startswith("provided:")
+    assert data["matched_rule"] == "candidate-rule"
+    assert "CANDIDATE_MARKER" not in data["cleaned_markdown"]
+    assert "keep me" in data["cleaned_markdown"]
+
+
+def test_cleanup_dry_run_invalid_rule_yaml_returns_errors(tmp_path: Path) -> None:
+    app = _make_test_app(tmp_root=tmp_path)
+    client = TestClient(app)
+
+    res = client.post(
+        "/admin/cleanup-rules/dry-run",
+        json={"markdown_sample": "x", "rule_yaml": "cleanup_rules: [unclosed"},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["matched"] is False
+    assert data["errors"]

@@ -13,8 +13,10 @@ the orchestrator's context and is reprocessed every turn.
 - Envelope word cap: Scout 400 · Inspector 400 · Patcher 300 · Analyst 500 ·
   Implementer 400.
 - The envelope is the deliverable. One-line fields, no prose paragraphs.
-- If the report path is missing from your assignment, return the envelope
-  inline and note it in one line.
+- **Report-path fallback.** If your toolset is read-only and the framework
+  blocks the write, return the full envelope inline (the report content folded
+  into it) and note "report written inline — no write capability" in one line.
+  This is expected for read-only Scout/Analyst; do not fail on it.
 
 ## Honesty over green
 

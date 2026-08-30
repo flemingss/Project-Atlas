@@ -5,6 +5,7 @@ import { useState, useEffect } from 'react';
 import {
   Download,
   FileWarning,
+  FlaskConical,
   Loader2,
   MessageSquare,
   Plus,
@@ -39,6 +40,7 @@ import {
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import {
   adminApi,
+  type CleanupDryRunResult,
   type CleanupFeedback,
   type CleanupFeedbackSummary,
   type CleanupRuleSuggestion,
@@ -66,6 +68,11 @@ export function AdminCleanupPage() {
   // Rule apply
   const [ruleYaml, setRuleYaml] = useState('');
   const [applying, setApplying] = useState(false);
+
+  // Rule dry run (preview against a sample, no config change)
+  const [dryRunSample, setDryRunSample] = useState('');
+  const [dryRunning, setDryRunning] = useState(false);
+  const [dryRunResult, setDryRunResult] = useState<CleanupDryRunResult | null>(null);
 
   // Rule remove
   const [removeRuleName, setRemoveRuleName] = useState('');
@@ -152,6 +159,26 @@ export function AdminCleanupPage() {
       toast.error(e instanceof Error ? e.message : 'Apply failed');
     } finally {
       setApplying(false);
+    }
+  };
+
+  /** Preview the ACTIVE cleanup rules against a sample — read-only, no config
+   *  version is created. The backend evaluates the currently active rule set
+   *  (no rule_yaml field), so a rule must be applied before it shows up here. */
+  const handleDryRunRule = async () => {
+    if (!ruleYaml.trim() || !dryRunSample.trim()) return;
+    setDryRunning(true);
+    setDryRunResult(null);
+    try {
+      const res = await adminApi.dryRunRule({ markdown_sample: dryRunSample });
+      setDryRunResult(res);
+      if (!res.changed) {
+        toast.info('Dry run: no changes to the sample');
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Dry run failed');
+    } finally {
+      setDryRunning(false);
     }
   };
 
@@ -409,17 +436,80 @@ export function AdminCleanupPage() {
             placeholder="rule_name:&#10;  pattern: ..."
             className="font-mono text-xs"
           />
-          <ConfirmDialog
-            title="Apply cleanup rule?"
-            description="This creates and ACTIVATES a new config version: the rule takes effect for every future ingest, and rules with the same name are replaced. Roll back from Danger zone → Config version history."
-            confirmLabel="Apply & activate"
-            onConfirm={handleApplyRule}
-          >
-            <Button size="sm" disabled={applying || !ruleYaml.trim()}>
-              {applying ? <Loader2 className="mr-1.5 size-3 animate-spin" /> : <Plus className="mr-1.5 size-3" />}
-              Apply rule
+          <div className="space-y-1">
+            <Label className="text-[11px]">Sample markdown (dry run)</Label>
+            <Textarea
+              value={dryRunSample}
+              onChange={(e) => setDryRunSample(e.target.value)}
+              rows={4}
+              placeholder="Paste a markdown sample to preview the active cleanup rules against"
+              className="font-mono text-xs"
+            />
+          </div>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleDryRunRule}
+              disabled={dryRunning || !ruleYaml.trim() || !dryRunSample.trim()}
+            >
+              {dryRunning ? <Loader2 className="mr-1.5 size-3 animate-spin" /> : <FlaskConical className="mr-1.5 size-3" />}
+              Dry run
             </Button>
-          </ConfirmDialog>
+            <ConfirmDialog
+              title="Apply cleanup rule?"
+              description="This creates and ACTIVATES a new config version: the rule takes effect for every future ingest, and rules with the same name are replaced. Roll back from Danger zone → Config version history."
+              confirmLabel="Apply & activate"
+              onConfirm={handleApplyRule}
+            >
+              <Button size="sm" disabled={applying || !ruleYaml.trim()}>
+                {applying ? <Loader2 className="mr-1.5 size-3 animate-spin" /> : <Plus className="mr-1.5 size-3" />}
+                Apply rule
+              </Button>
+            </ConfirmDialog>
+          </div>
+
+          {dryRunResult && (
+            <div className="space-y-2 rounded-md border border-border p-3">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Badge variant="outline" className="text-[10px]">
+                  {dryRunResult.changed ? 'Sample changed' : 'No changes'}
+                </Badge>
+                <Badge variant="secondary" className="text-[10px]">
+                  Matched rule: {dryRunResult.matched_rule ?? 'none'}
+                </Badge>
+                <Badge variant="outline" className="text-[10px] text-text-muted">
+                  {dryRunResult.input_length} → {dryRunResult.output_length} chars
+                </Badge>
+                {dryRunResult.rules_applied.map((r) => (
+                  <Badge key={r} variant="secondary" className="text-[10px]">
+                    applied: {r}
+                  </Badge>
+                ))}
+                {Object.entries(dryRunResult.fix_counts).map(([step, n]) => (
+                  <Badge key={step} variant="outline" className="text-[10px]">
+                    {step}: {n}
+                  </Badge>
+                ))}
+                {dryRunResult.rule_tags.map((t) => (
+                  <Badge key={t} variant="outline" className="text-[10px]">
+                    tag: {t}
+                  </Badge>
+                ))}
+              </div>
+              <p className="text-[11px] text-text-muted">
+                Rules available: {dryRunResult.rules_available}
+                {dryRunResult.rules_names.length > 0 && ` (${dryRunResult.rules_names.join(', ')})`}
+                {' · '}source: {dryRunResult.config_source}
+              </p>
+              <div className="space-y-1">
+                <p className="text-xs font-medium text-text-primary">Cleaned markdown</p>
+                <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-bg-card p-3 font-mono text-xs leading-relaxed">
+                  {dryRunResult.cleaned_markdown}
+                </pre>
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
 

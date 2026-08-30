@@ -60,6 +60,8 @@ class CleanupDryRunRequest(BaseModel):
     corpus_id: str = "default"
     mime_type: str = "application/pdf"
     filename: str = ""
+    rule_yaml: str = ""
+    """Candidate rule YAML to preview; if set, it is used instead of the active rules."""
 
 
 # ── Route registration ───────────────────────────────────────────────
@@ -224,21 +226,39 @@ def register_cleanup_routes(
     @r.post("/cleanup-rules/dry-run")
     async def cleanup_rules_dry_run(req: CleanupDryRunRequest) -> dict[str, Any]:
         """Test the active cleanup rules against a markdown sample."""
+        import yaml as _yaml
+
         from atlas.pipeline.cleanup import CleanupNode
         from atlas.pipeline.cleanup_rules import DocContext, find_matching_rule, parse_rules
 
-        yaml_defaults = config_manager.get()
-        with session_factory() as session:
-            active = get_active_config_version(session)
-
-        if active is not None:
-            pipeline_cfg = active.payload.get("pipeline", {})
-            source = f"db:config_version#{active.id}"
+        if req.rule_yaml.strip():
+            try:
+                candidate = _yaml.safe_load(req.rule_yaml)
+            except _yaml.YAMLError as exc:
+                return {"matched": False, "errors": [f"invalid rule_yaml: {exc}"]}
+            if isinstance(candidate, dict):
+                raw_rules = list(candidate.get("cleanup_rules", []) or [])
+            elif isinstance(candidate, list):
+                raw_rules = list(candidate)
+            else:
+                raw_rules = []
+            if not raw_rules:
+                return {"matched": False, "errors": ["no cleanup_rules found in rule_yaml"]}
+            source = "provided:rule_yaml"
+            pipeline_cfg = {"cleanup_rules": raw_rules}
         else:
-            pipeline_cfg = yaml_defaults.pipeline
-            source = "yaml-defaults"
+            yaml_defaults = config_manager.get()
+            with session_factory() as session:
+                active = get_active_config_version(session)
 
-        raw_rules = list(pipeline_cfg.get("cleanup_rules", []) or [])
+            if active is not None:
+                pipeline_cfg = active.payload.get("pipeline", {})
+                source = f"db:config_version#{active.id}"
+            else:
+                pipeline_cfg = yaml_defaults.pipeline
+                source = "yaml-defaults"
+
+            raw_rules = list(pipeline_cfg.get("cleanup_rules", []) or [])
         parsed_rules = parse_rules(raw_rules)
 
         doc_ctx = DocContext(

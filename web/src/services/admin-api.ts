@@ -7,6 +7,7 @@ import type {
   AdoptOrphanGroupRequest,
   ApplyCleanupRuleRequest,
   ArtifactRefResponse,
+  CleanupDryRunRequest,
   ConfigVersionCreateRequest,
   ConfigVersionResponse,
   FeedbackCreateRequest,
@@ -88,6 +89,30 @@ export interface CleanupRuleSuggestion {
   rule_yaml: string;
   rationale: string;
   warnings?: string[];
+}
+
+/** POST /admin/cleanup-rules/dry-run — untyped dict on the backend, hand-typed
+ *  to exactly the fields the cleanup page renders (cleanup_rules.py:267-285). */
+export interface CleanupDryRunResult {
+  config_source: string;
+  rules_available: number;
+  rules_names: string[];
+  doc_context: {
+    tenant_id: string;
+    project_id: string;
+    corpus_id: string;
+    mime_type: string;
+    filename: string;
+  };
+  matched_rule: string | null;
+  matched_rule_steps: number;
+  rules_applied: string[];
+  rule_tags: string[];
+  fix_counts: Record<string, number>;
+  input_length: number;
+  output_length: number;
+  changed: boolean;
+  cleaned_markdown: string;
 }
 
 export interface DocInfo {
@@ -358,6 +383,16 @@ export const adminApi = {
   },
   applyRule(payload: ApplyCleanupRuleRequest) {
     return apiFetch<{ status: string }>('/admin/cleanup-rules/apply', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+  /** Dry-run the ACTIVE cleanup rules against a markdown sample — no ingest,
+   *  no config change. NOTE: the backend evaluates the currently active rule
+   *  set (it has no rule_yaml field), so a rule must be applied first to be
+   *  visible here. */
+  dryRunRule(payload: CleanupDryRunRequest) {
+    return apiFetch<CleanupDryRunResult>('/admin/cleanup-rules/dry-run', {
       method: 'POST',
       body: JSON.stringify(payload),
     });
