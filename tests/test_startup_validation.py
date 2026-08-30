@@ -13,6 +13,7 @@ from atlas.settings import Settings
 from atlas.startup_validation import (
     _validate_admin_token,
     _validate_builtin_cleanup,
+    _warn_parse_model_cache,
     validate_cleanup_rules,
 )
 
@@ -46,6 +47,33 @@ def test_validate_admin_token_accepts_real_token_in_prod() -> None:
     """ATLAS_ENV=prod with a real secret should not raise."""
     settings = _settings(atlas_env="prod", atlas_admin_token="a-real-secret-token-xyz")
     _validate_admin_token(settings=settings)  # must not raise
+
+
+def test_parse_model_cache_ok_when_docling_models_present(tmp_path) -> None:
+    (tmp_path / "models--docling-project--docling-layout-heron").mkdir()
+    assert _warn_parse_model_cache(cache_dir=tmp_path) is None
+
+
+def test_parse_model_cache_warns_when_missing(tmp_path) -> None:
+    msg = _warn_parse_model_cache(cache_dir=tmp_path / "nope")
+    assert msg is not None and "does not exist" in msg
+
+
+def test_parse_model_cache_warns_when_empty(tmp_path) -> None:
+    msg = _warn_parse_model_cache(cache_dir=tmp_path)
+    assert msg is not None and "no Docling models" in msg
+
+
+def test_parse_model_cache_warns_when_unreadable(tmp_path, monkeypatch) -> None:
+    """The /root-is-0700 case: stat on the cache raises PermissionError."""
+    from pathlib import Path
+
+    def _deny(self: Path) -> bool:
+        raise PermissionError(13, "Permission denied", str(self))
+
+    monkeypatch.setattr(Path, "is_dir", _deny)
+    msg = _warn_parse_model_cache(cache_dir=tmp_path / "hub")
+    assert msg is not None and "not readable" in msg and "PermissionError" in msg
 
 
 def test_validate_paths_missing_config_dir(tmp_path) -> None:

@@ -51,11 +51,24 @@ TABLE_ROWS = [
 
 
 def _models_cached() -> bool:
-    """True when Docling's models are already on disk (no network needed)."""
-    hub = Path.home() / ".cache" / "huggingface" / "hub"
-    if not hub.is_dir():
+    """True when Docling's models are already on disk (no network needed).
+
+    Resolves the cache the way huggingface_hub does (``HF_HOME`` / ``HF_HUB_CACHE``),
+    not via ``Path.home()``: the image bakes the models under the runtime user's
+    home, and the devcontainer shell runs as root with HOME=/root.
+    """
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        hub = Path(HF_HUB_CACHE)
+    except Exception:
+        hub = Path.home() / ".cache" / "huggingface" / "hub"
+    try:
+        if not hub.is_dir():
+            return False
+        names = {p.name for p in hub.iterdir()}
+    except OSError:
         return False
-    names = {p.name for p in hub.iterdir()}
     return any("docling" in n for n in names)
 
 

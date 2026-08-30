@@ -14,6 +14,23 @@ assigned yet — pick the next version and bump both when it ships.
 
 Remaining work is tracked as GitHub issues, indexed in `docs/ACTION_ITEMS.md`.
 
+### Fixed (2026-08-30, Docling dead in the non-root image)
+
+- **Every Docling parse failed in the shipped image** since the container
+  went non-root (`6b38762`, P1-05): the baked model cache lived under
+  `/root`, which is mode 0700, so uid 1000 could not read it;
+  huggingface_hub then tried to re-download and died with
+  `PermissionError: /root/.cache/huggingface/token`. Nothing caught it —
+  CI never builds the image, and the devcontainer shell runs as root. The
+  `atlas` user is now created before the model download, the models are
+  downloaded *as* that user into `HF_HOME=/home/atlas/.cache/huggingface`,
+  and `HOME` is a real home. No `chown -R` layer.
+- `atlas.startup_validation` now warns at boot when the parse-model cache is
+  missing, empty, or unreadable by the runtime uid, so this class of failure
+  shows up in the startup log instead of at the first ingest.
+- `tests/test_docling_e2e.py` resolves the cache via `HF_HUB_CACHE`, not
+  `Path.home()`, so it still finds the baked models from a root shell.
+
 ### Changed (2026-08-30, handover cleanup)
 
 - CI: the integration shard prints skip reasons (`-rs`) and the workflow

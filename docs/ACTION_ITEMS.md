@@ -75,8 +75,8 @@ Added `--cov=atlas.vlm_ingest`; 80% fail-under gate holds (pipeline ~91%, vlm_in
 ### P1-04 — No explicit ruff `select` → ✅ **DONE 2026-08-29**
 Pinned `select` = default base (E4/E7/E9/F) + exactly the debt-bearing codes named in the ignore list (selected individually so sibling rules like S101 are not pulled in). E501 stays off. Commit `f5b4644`.
 
-### P1-05 — Container runs as root → ✅ **DONE 2026-08-29**
-Runtime stage now `USER atlas` (uid 1000, matching dev host). `HOME`/`PIP_CACHE_DIR` point at root-owned baked caches read-only (no `chown -R`, so model layers stay cached). Devcontainer workspace keeps `user: root` override. Commit `6b38762`.
+### P1-05 — Container runs as root → ✅ **DONE 2026-08-29**, regression fixed 2026-08-30
+Runtime stage is `USER atlas` (uid 1000, matching dev host). Commit `6b38762` pointed `HOME` at the root-owned caches "read-only" — but `/root` is 0700, so **every Docling parse failed in the shipped image** until 2026-08-30. Now the user is created before the model download and the models are downloaded as that user into `HF_HOME=/home/atlas/.cache/huggingface`; startup warns if the cache is unreadable. Devcontainer workspace keeps `user: root` and inherits `HF_HOME`. See `WORKLOG.md` 2026-08-30 (stack readiness).
 
 ### P1-06 — `/thumbnails` is unpaginated → ✅ **DONE 2026-08-29**
 Endpoint paginated (`limit`/`offset`, default 200 max 1000) returning `{pages,total,offset,limit,has_more}`. Web caller unwraps `.pages` with `limit=1000` to preserve current grid behavior; true incremental paging is a documented follow-up. Commit `786e6df`.
@@ -112,7 +112,7 @@ Endpoint paginated (`limit`/`offset`, default 200 max 1000) returning `{pages,to
 
 ### P2-05 — Dedicated ingest regression corpus
 - **Status:** Partial. #15 was closed with *mocked* Docling tests (`parse_document_path` patched). `tests/test_docling_e2e.py` now runs the real converter against generated PDFs (quality floor, not exact string) and is skipped unless models are cached — so CI still does not exercise it. `scripts/ingest_quality.py` is the upgrade gate, not a corpus.
-- **Action:** keep generated fixtures (do not commit production manuals). Optionally add a nightly/manual job that is *not* skipped, on an image that has the baked models.
+- **Action:** keep generated fixtures (do not commit production manuals). Add a manual/nightly job that builds the image and runs one real ingest *as the runtime user* — the 2026-08-30 non-root regression (Docling dead in the shipped image, invisible to the suite) is exactly what such a job exists to catch. Until then: any Dockerfile change touching users, `HOME`, or caches gets a rebuilt-image parse before it is called done.
 
 ### P2-06 — Sectional refinement context loss
 - **Status:** Open. Foot-gun, not a bug in current defaults.

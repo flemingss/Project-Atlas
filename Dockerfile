@@ -63,20 +63,48 @@ RUN mkdir -p src/atlas && echo '__version__ = "0.0.0"' > src/atlas/__init__.py \
     && pip install --no-cache-dir -r requirements.lock \
     && if [ -n "$ATLAS_PIP_EXTRAS" ]; then pip install --no-cache-dir ".[${ATLAS_PIP_EXTRAS}]"; fi
 
+# ---------- Runtime user ----------
+# Created *before* the model download so the files it produces are owned by
+# the user that has to read them at runtime.
+#
+# `atlas` (uid 1000) matches the dev host's owner (apex-admin), so writes to
+# the bind-mounted ./artifacts land as the host user's files instead of root's.
+# Environments where host uid 1000 is the wrong choice can override the user
+# per service: `user: "501"` in compose, or `docker run --user 501`.
+#
+# The baked model cache has to live somewhere the runtime user can READ. It
+# used to sit under /root, which is mode 700 — the non-root process could not
+# open a single file in there, so every Docling parse tried to re-download
+# and died with PermissionError on /root/.cache (found 2026-08-30, one day
+# after USER atlas landed). Downloading *as* the runtime user puts the files
+# in its home with the right owner from the start; no `chown -R` layer, which
+# would copy the ~600MB cache into a second layer.
+# chmod 755: useradd creates the home 0700, which would lock the cache away
+# from any `user:` override exactly the way /root did.
+RUN useradd --uid 1000 --create-home atlas \
+    && chmod 755 /home/atlas \
+    && mkdir -p /app/models /app/artifacts \
+    && chown atlas:atlas /app/models /app/artifacts /tmp
+ENV HOME=/home/atlas \
+    HF_HOME=/home/atlas/.cache/huggingface
+
 # ---------- Parse model weights (cached with the dependency layer) ----------
 # Without this, the FIRST PDF ingest of a fresh deployment downloads these at
 # request time — minutes of added latency, and a hard failure wherever egress
 # to the HF CDN is restricted. Bake them in instead:
-# - Docling layout (heron) + table models into the HF cache, where
+# - Docling layout (heron) + table models into the HF cache ($HF_HOME), where
 #   docling.StandardPdfPipeline resolves them at runtime.
 # - deepdoc's ONNX set into ./models/deepdoc, where atlas.ingest.model_manager
 #   expects it (fallback layout parser).
+# atlas.startup_validation warns at boot if this cache is missing or unreadable.
+USER atlas
 RUN python -c "\
 from huggingface_hub import snapshot_download; \
 snapshot_download('docling-project/docling-layout-heron'); \
 snapshot_download('docling-project/docling-models'); \
 snapshot_download('InfiniFlow/deepdoc', local_dir='/app/models/deepdoc', \
     allow_patterns=['layout.onnx', 'det.onnx', 'rec.onnx', 'ocr.res', 'tsr.onnx'])"
+USER root
 
 # ---------- Source layer (rebuilds only on code changes — fast) ----------
 COPY src ./src
@@ -98,28 +126,14 @@ COPY static ./static
 # Overlay the React SPA build output
 COPY --from=ui-build /static/app ./static/app
 
-# ---------- Non-root runtime user ----------
-# `atlas` (uid 1000) matches the dev host's owner (apex-admin), so writes to
-# the bind-mounted ./artifacts land as the host user's files instead of root's.
-# Environments where host uid 1000 is the wrong choice can override the user
-# per service: `user: "501"` in compose, or `docker run --user 501`.
-#
-# Create the dir the app writes to while still root. umask 022 keeps the rest
-# of /app world-readable, so the app stays loadable without opening up the
-# baked files. Runtime artifacts/ is usually a bind/volume mount over this;
-# when it isn't (e.g. `docker run` with no -v), the chown below is what lets
-# the first write succeed.
-RUN useradd --uid 1000 --no-create-home atlas \
-    && mkdir -p /app/artifacts \
-    && chown atlas:atlas /app/artifacts /tmp
+# ---------- Drop to the runtime user ----------
+# The `atlas` user and its model cache were set up above, before the model
+# download. Everything COPY'd since is root-owned; umask 022 keeps /app
+# world-readable, so the app stays loadable without opening up the baked
+# files. /app/artifacts is usually a bind/volume mount over the atlas-owned
+# dir created above; when it isn't (e.g. `docker run` with no -v), that
+# ownership is what lets the first write succeed.
 USER atlas
-
-# The root-owned caches below must NOT be chown'd — `chown -R` rewrites the
-# cached layers byte-for-byte and turns every image rebuild into a full
-# re-download of the pip/HF model caches. HOME only *names* the baked model
-# and pip caches so the runtime user resolves them read-only.
-ENV HOME=/root \
-    PIP_CACHE_DIR=/root/.cache/pip
 
 EXPOSE 8080
 

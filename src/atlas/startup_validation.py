@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,7 @@ def _is_non_dev(env: str) -> bool:
 def validate_startup(*, settings: Settings, config_manager: ConfigManager, engine: Engine) -> None:
     _validate_admin_token(settings=settings)
     _validate_paths(settings=settings)
+    _warn_parse_model_cache()
     _validate_config_shapes(config_manager=config_manager)
     _validate_providers(settings=settings, config_manager=config_manager)
     _validate_db_connection(settings=settings, engine=engine)
@@ -63,6 +65,49 @@ def _validate_paths(*, settings: Settings) -> None:
 
     artifacts_dir = Path(settings.atlas_artifacts_dir)
     artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _warn_parse_model_cache(*, cache_dir: Path | None = None) -> str | None:
+    """Warn when the baked Docling model cache is missing or unreadable.
+
+    The image downloads the parse models at build time so the first PDF ingest
+    never has to. If the cache is not readable by the runtime uid (wrong owner
+    or mode), huggingface_hub falls through to a download that fails wherever
+    egress is blocked — and failed outright with PermissionError while the
+    cache lived under /root (2026-08-30, one day after the container went
+    non-root). Say so at startup, not at the first ingest.
+
+    Returns the warning text (also logged) or ``None`` when the cache looks
+    usable. ``cache_dir`` overrides huggingface_hub's resolved cache for tests.
+    """
+    if cache_dir is None:
+        try:
+            from huggingface_hub.constants import HF_HUB_CACHE
+        except Exception:  # huggingface_hub absent: nothing to check
+            return None
+        cache_dir = Path(HF_HUB_CACHE)
+
+    uid = getattr(os, "getuid", lambda: "?")()
+    try:
+        if not cache_dir.is_dir():
+            msg = (
+                f"Parse-model cache {cache_dir} does not exist; the first PDF ingest "
+                "will try to download the Docling models (fails without egress to the HF CDN)."
+            )
+        elif not any("docling" in p.name for p in cache_dir.iterdir()):
+            msg = (
+                f"Parse-model cache {cache_dir} has no Docling models; the first PDF ingest "
+                "will try to download them (fails without egress to the HF CDN)."
+            )
+        else:
+            return None
+    except OSError as e:  # PermissionError on the dir or a parent (e.g. /root is 0700)
+        msg = (
+            f"Parse-model cache {cache_dir} is not readable by uid {uid} ({e.__class__.__name__}: {e}); "
+            "Docling parsing will fail. Rebuild the image or fix the cache ownership."
+        )
+    _log.warning(msg)
+    return msg
 
 
 def _validate_config_shapes(*, config_manager: ConfigManager) -> None:

@@ -1,5 +1,34 @@
 # Worklog
 
+## 2026-08-30 (stack readiness) — Docling was dead in the shipped image; fixed in the Dockerfile
+
+Operator asked to confirm the stack was ready for the #65 GUI test. Health
+was green, Docling imported, `backend=auto` — and a real parse of
+`eval_fixtures/atlas_synthetic.pdf` inside `atlas-api` failed:
+`PermissionError: /root/.cache/huggingface/token`.
+
+Cause: P1-05 (`6b38762`) switched the runtime to `USER atlas` (uid 1000)
+and pointed `HOME=/root` at the baked caches "read-only". `/root` is
+0700, so nothing under it was readable at all; huggingface_hub could not
+see the cached snapshots, tried the network path, and failed reading the
+token file. With `backend=auto` this would have surfaced to the operator
+as a `DOC_PARSE_FAILED` on every PDF — the primary parser had been dead
+since 08-29. Two reasons nobody noticed: CI never builds the image, and
+the devcontainer shell (where the e2e test runs) is root with
+`HOME=/root`, so it read the cache fine.
+
+Fix (Dockerfile): create `atlas` *before* the model download, download as
+that user into `HF_HOME=/home/atlas/.cache/huggingface`, `HOME=/home/atlas`.
+Files are owned correctly from the start, so no `chown -R` layer. Plus a
+startup warning (`_warn_parse_model_cache`) when the cache is missing,
+empty, or unreadable by the runtime uid, and the e2e test's cache probe
+now follows `HF_HUB_CACHE`. Verified after rebuild: parse as uid 1000 in
+`atlas-api` succeeds; startup log shows no cache warning.
+
+Lesson, recorded in ACTION_ITEMS P2-05: a Dockerfile change that touches
+users, HOME, or caches needs a real ingest in the rebuilt image before it
+is called done. The suite cannot see it.
+
 ## 2026-08-30 (handover + cleanup) — Re-verified the agent-fleet session; closed #64/#66; stack back up
 
 Claude resumed after a third-party agent fleet (`.github/agents/`, GLM via

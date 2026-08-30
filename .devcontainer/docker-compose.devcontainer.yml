@@ -73,9 +73,11 @@ services:
     container_name: atlas-workspace
     command: ["sleep", "infinity"]
     working_dir: /workspace
-    # The Dockerfile now sets USER atlas (a non-root runtime hardening) and
-    # HOME=/root. This dev shell needs root (devcontainer.json remoteUser=root;
-    # installs, docker-proxy execs in tests).
+    # The Dockerfile sets USER atlas (a non-root runtime hardening) with
+    # HOME=/home/atlas. This dev shell needs root (devcontainer.json
+    # remoteUser=root; installs, docker-proxy execs in tests). HOME is
+    # overridden below; HF_HOME is inherited from the image, so root still
+    # finds the baked Docling models in /home/atlas/.cache/huggingface.
     user: root
     # Whole repo bind-mounted so edits land on the host and `git` sees them.
     volumes:
