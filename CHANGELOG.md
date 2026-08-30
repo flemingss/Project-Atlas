@@ -7,12 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Version numbering note: the last tag is `v0.8.0` and `pyproject.toml` now reads
-`0.8.0` to match it (it had been left at `0.7.2`; the `0.7.3-dev` section below
-was never released under that number). The work in this section has no version
-assigned yet — pick the next version and bump both when it ships.
-
 Remaining work is tracked as GitHub issues, indexed in `docs/ACTION_ITEMS.md`.
+
+## [0.9.0] - 2026-08-30
 
 ### Fixed (2026-08-30, the image could not parse without network)
 
