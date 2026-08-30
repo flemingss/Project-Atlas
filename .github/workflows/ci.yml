@@ -2,9 +2,14 @@
 #
 # backend: installs from the Linux-compiled lockfile (CPU torch via the
 #   pytorch index — ~200MB instead of the ~6GB CUDA bundle), runs a clean
-#   `ruff check` (debt is registered in pyproject, the line holds here) and
-#   the full pytest suite (733 passed / 6 skipped on 2026-08-28, 80% coverage gate from pyproject).
-#   Integration tests self-skip when Qdrant/Postgres are unreachable.
+#   `ruff check` (debt is registered in pyproject, the line holds here), mypy,
+#   and the unit shard of the pytest suite (753 tests; 80% coverage gate from
+#   pyproject).
+#
+# integration: the ~6 `integration`-marked tests in their own job. They self-skip
+#   without cached Docling models / a reachable Qdrant, so today this job is a
+#   placeholder that proves the marker split works — it does not exercise the
+#   real converter (ACTION_ITEMS P2-05).
 #
 # web: npm ci + eslint + `npm run build` — the build runs `tsc -b`, which is
 #   the API-contract drift gate (src/api-types.gen.ts is generated from the
@@ -69,11 +74,12 @@ jobs:
         # huggingface_hub 1.x dropped a kwarg the model downloader still passed.
         run: mypy
       - name: Tests (unit shard)
-        # Integration tests are sharded below — they pull torch/onnx/docling
-        # into the same process as ~750 unit tests and we have seen intermittent
-        # 502s (P0-01) whose root cause is process-level resource pressure, not
-        # test leakage. Splitting guarantees unit coverage is unaffected by the
-        # heavy shard.
+        # Integration tests are sharded below. The intermittent full-suite 502
+        # (issue #64) was never reproduced deterministically; the two candidate
+        # causes — process-level resource pressure from torch/onnx/docling
+        # sharing a process with ~750 unit tests, and singleton state leaking
+        # between tests — are both addressed (this split + the autouse reset in
+        # tests/conftest.py). If it recurs, reopen #64 with the captured order.
         run: python -m pytest -q -m "not integration"
 
   integration:
@@ -99,8 +105,9 @@ jobs:
         # Integration tests are typically skipped in a fresh CI container (they
         # require pre-cached Docling/Qdrant). The base addopts already include
         # --cov=atlas.pipeline --cov-fail-under=80, which would fail at 0% when
-        # everything skips — opt out with --no-cov for this shard.
-        run: python -m pytest -q -m integration --no-cov
+        # everything skips — opt out with --no-cov for this shard. -rs prints
+        # the skip reasons so an all-skipped run is visibly a no-op in the log.
+        run: python -m pytest -q -rs -m integration --no-cov
 
   web:
     runs-on: ubuntu-latest

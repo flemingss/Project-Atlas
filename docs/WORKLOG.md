@@ -1,5 +1,93 @@
 # Worklog
 
+## 2026-08-30 (handover + cleanup) — Re-verified the agent-fleet session; closed #64/#66; stack back up
+
+Claude resumed after a third-party agent fleet (`.github/agents/`, GLM via
+OpenRouter) ran the 08-29 burn-down. Their commits are all on `main` under the
+operator's name, so this pass treated every 08-29 claim as needing a re-read
+rather than as settled.
+
+What was checked and held up: the eight P-item commits do what their messages
+say; `d05184f`'s autouse `_reset_singletons` fixture targets real singletons
+(`ModelManager.reset_instance`, `atlas.diagnostics._global_diagnostics`); ruff,
+mypy, and the unit shard are green in the devcontainer (`ruff check src tests
+scripts`, `mypy`, `pytest -m "not integration"`).
+
+What did not hold up, and was corrected:
+
+- **#64's root cause was stated two contradictory ways** — "isolation leak,
+  not resource pressure" in `ACTION_ITEMS.md`, "resource pressure, not a
+  leak" in the issue and commit. Neither was reproduced; both were argued
+  from code reading. The remediation covers both, CI has been green since,
+  so the issue is closed as *remediated, cause unproven* with a reopen
+  recipe. The test it surfaced in was also only passing through `min_words`
+  (a 24-char projection disables the alpha gate); it now uses a ≥100-char
+  symbol projection so the alpha-ratio gate is what it asserts.
+- **The integration CI shard is a no-op**: all six `integration` tests skip
+  without cached Docling models. `9ae3dec` made that pass with `--no-cov`;
+  this pass adds `-rs` so the skip reasons are in the log, and says so in
+  the workflow header. Exercising the real converter in CI stays P2-05.
+- **#66 asked for a resume feature that already exists.** Startup starts
+  nothing, `bulk_active` is process-local, rehydrate resets `PROCESSING`
+  pages, and the Ingest page lists ledger sessions with a Start/Resume
+  button that calls `process-all`. Decision recorded with the operator:
+  manual resume by design — a restart is a pause point to look at, not a
+  silent re-spend of VLM tokens. Closed; no config flag.
+- Tree hygiene: seven `*:Zone.Identifier` files (Windows download markers)
+  removed; `.agent/` (the fleet's ledger dir) gitignored as its own README
+  asks; an orphaned two-line `BaseException → Exception` narrowing in
+  `docling_adapter.py` discarded (it undid the type the mypy fix in
+  `57df6ed` was written for). The agent-fleet refactor itself is committed
+  as-is — it is tooling config, not product code.
+- Docs: 08-29 had no WORKLOG or CHANGELOG entry; added. Stale test counts
+  (733/60) → 759/58 in README and ARCHITECTURE. TECHNICAL_DEBT §6 A–F and
+  §7B marked fixed with commits; §7A carries the 2.123.1 verdict.
+
+Stale remote branches — the sandbox here could not push deletes, so the
+operator runs `git push origin --delete <branch>...` for these (tips
+recorded; all reachable via their closed PRs):
+`copilot/add-headless-field-to-response` a7a6fd7 ·
+`copilot/add-vlm-quality-audit` 341e90d ·
+`copilot/fix-setsession-page-progress` cefb961 ·
+`copilot/implement-vram-monitoring` f65e676 ·
+`copilot/remove-dead-code-vlm-ingest` f4402b3 ·
+`copilot/top-down-review-e2e-testing` f94e7dd ·
+`docs/technical-debt-review` 636a364.
+
+Stack: `atlas-api`, `atlas-postgres`, `atlas-docker-proxy` were all
+`Exited (127)` — Docker Desktop had restarted under them, not an app fault
+(Postgres logged a clean crash recovery). `docker compose up -d` brought the
+dev stack back healthy for the operator's #65 GUI comparison.
+
+Method note: the WSL host shell has only Python 3.9 and an ad-hoc ruff that
+cannot parse `pyproject.toml`. Run checks in the `workspace` container
+(`docker compose exec workspace ...`); `post-create.sh` installs the test
+toolchain there and is idempotent.
+
+## 2026-08-29 (agent-fleet burn-down) — P0-02…P1-06 landed; #64/#65/#66 opened
+
+Recorded on 2026-08-30 from the commits and issue comments; the session
+itself left no worklog entry. Nine commits, one per item, all on `main`:
+
+- `584a657` P0-02 `DoclingBrokenInstallError` vs `DoclingUnavailableError`.
+- `590e61f` P0-04 stable 502 detail; full exception logged server-side.
+- `a63fb44` P0-03 production compose defaults `ATLAS_ENV=prod`.
+- `78cf18d` P1-01 layout parser preflights page count via PyMuPDF and
+  refuses with the same `DOC_PAGE_LIMIT_EXCEEDED` contract Docling uses.
+- `f5b4644` P1-03/P1-04 `--cov=atlas.vlm_ingest`; explicit ruff `select`.
+- `786e6df` P1-06 `/thumbnails` paginated (`limit`/`offset`, default 200,
+  max 1000); web caller uses `limit=1000`, incremental paging deferred.
+- `6b38762` P1-05 `USER atlas` (uid 1000) in the runtime stage; caches stay
+  root-owned read-only so model layers are not invalidated.
+- `57df6ed` `DiagnosticsManager.log_error` accepts `BaseException` (mypy).
+- `d05184f` + `9ae3dec` #64 remediation: autouse singleton reset; CI split
+  into unit and integration shards, the latter with `--no-cov`.
+
+Also: `9e1ceba` exec bit on `scripts/pre_commit_config_check.py` (EXE001,
+invisible on Windows/Docker Desktop), and `ffdf4af` committed the Docling
+2.76.0-vs-2.123.1 synthetic evaluation (`eval_fixtures/`), which is the
+evidence behind the #65 NO-GO.
+
 ## 2026-08-28 (remaining-work audit) — GitHub Issues empty; tracker is now `docs/ACTION_ITEMS.md`
 
 Read-only pass over the repo, all tracked docs, closed GitHub issues/PRs, CI,

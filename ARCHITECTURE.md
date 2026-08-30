@@ -299,7 +299,7 @@ Three chunking strategies available (configurable via `pipeline.yaml`). Default 
 
 ## Testing
 
-Current automated coverage (**733 passed / 6 skipped across 60 test files** on the latest `ci.yml` run, 2026-08-28):
+Current automated coverage (**759 tests across 58 files** — 753 in the CI unit shard, 6 `integration`-marked tests in a separate job that skip without cached models; 2026-08-30):
 - Schema creation and validation (incl. `CleanupResult`, `JudgeResult.sub_scores`)
 - Diagnostics and error handling
 - Pipeline state transitions (11 nodes)
@@ -327,8 +327,9 @@ Current automated coverage (**733 passed / 6 skipped across 60 test files** on t
 
 Run tests:
 ```bash
-pytest -q                    # All tests (733 passed / 6 skipped on latest CI)
-pytest -m integration        # Integration tests only
+pytest -q                    # All tests (759; CI shards them, see .github/workflows/ci.yml)
+pytest -m "not integration"  # Unit shard (what CI's backend job runs)
+pytest -m integration --no-cov   # Integration shard (skips without cached Docling models)
 ```
 
 ## Next Steps

@@ -4,8 +4,8 @@ This repository implements **Project Atlas**, a sophisticated RAG (Retrieval-Aug
 
 However, there are specific areas of technical debt and hidden dangers that should be addressed.
 
-**Open items from this file are indexed in `docs/ACTION_ITEMS.md`** (P0–P3).
-GitHub Issues is empty as of 2026-08-28; that file is the operational tracker.
+**Open items from this file are indexed in `docs/ACTION_ITEMS.md`** (P0–P3),
+which also maps them to GitHub issues (the live tracker since 2026-08-29).
 
 ---
 
@@ -124,15 +124,19 @@ B (`merge_hardwrapped` remains opt-in — keep it that way). C is remediated.
 
 A read-only multi-agent scan was run against the repo on 2026-08-28. Every
 claim was re-verified against source before being accepted; the items below
-are the ones that survived and remain **open**. Resolved items from the same
-scan are recorded in `WORKLOG.md` rather than duplicated here. Indexed as
-P0-03, P0-04, P1-01, P1-03, P1-04, P1-05, P1-06, P3-13, P3-14 in
-`docs/ACTION_ITEMS.md`.
+are the ones that survived. Resolved items from the same scan are recorded in
+`WORKLOG.md` rather than duplicated here. Indexed as P0-03, P0-04, P1-01,
+P1-03, P1-04, P1-05, P1-06, P3-13, P3-14 in `docs/ACTION_ITEMS.md`.
+
+**Status 2026-08-30:** A–E and the first and third bullets of F were fixed on
+2026-08-29 (commits `78cf18d`, `a63fb44`, `f5b4644`, `590e61f`, `6b38762`,
+`786e6df`). The text below is kept as the evidence record; the remaining open
+bullets in F are P3-13 and P3-14 in `ACTION_ITEMS.md`.
 
 Verdict key: `CONFIRMED` — reproduced from source · `PARTIAL` — real, but the
 framing or severity in the original report was off.
 
-### A. Page-cap asymmetry between the two parsers — CONFIRMED
+### A. Page-cap asymmetry between the two parsers — CONFIRMED → ✅ fixed `78cf18d`
 
 *   **Location:** `src/atlas/settings.py` (`atlas_pdf_max_pages = 2000`) vs
     `src/atlas/ingest/pdf_parser.py`
@@ -146,7 +150,7 @@ framing or severity in the original report was off.
 *   **Mitigation:** Enforce the same cap in the layout parser, and stream page
     handling there the way commit now streams chunks.
 
-### B. `ATLAS_ENV` defaults to `dev` in the production compose — CONFIRMED
+### B. `ATLAS_ENV` defaults to `dev` in the production compose — CONFIRMED → ✅ fixed `a63fb44`
 
 *   **Location:** `docker-compose.yml` (`ATLAS_ENV: ${ATLAS_ENV:-dev}`)
 *   **Risk:** A production stack brought up without an explicit `ATLAS_ENV`
@@ -155,20 +159,20 @@ framing or severity in the original report was off.
     here as a security issue. On a single-host appliance that is low risk; the
     environment default is the item worth fixing.
 
-### C. Coverage gate covers only `atlas.pipeline` — PARTIAL
+### C. Coverage gate covers only `atlas.pipeline` — PARTIAL → ✅ fixed `f5b4644`
 
 *   **Location:** `pyproject.toml` (`--cov=atlas.pipeline`)
 *   **Note:** Whole-package coverage would mostly add noise. Extending it to
     `atlas.vlm_ingest` is the change that would actually have caught the
     session-lifecycle defects fixed on 2026-08-28.
 
-### D. Error bodies leak `str(e)` — CONFIRMED
+### D. Error bodies leak `str(e)` — CONFIRMED → ✅ fixed `590e61f`
 
 *   **Location:** `src/atlas/api_rag.py` (502 handlers)
 *   **Risk:** Upstream exception text reaches the client, which can disclose
     internal hostnames and provider detail.
 
-### E. No explicit ruff `select` — CONFIRMED (reframed)
+### E. No explicit ruff `select` — CONFIRMED (reframed) → ✅ fixed `f5b4644`
 
 *   **Location:** `pyproject.toml`
 *   **The original claim — that the `ignore` list is therefore hollow — is
@@ -182,9 +186,11 @@ framing or severity in the original report was off.
     enforces it.
 *   **Mitigation:** Pin an explicit `select` for reproducibility.
 
-### F. Lower-priority items — CONFIRMED
+### F. Lower-priority items — CONFIRMED (two of four fixed)
 
 *   **Container runs as root** — no `USER` directive in the `Dockerfile`.
+    ✅ fixed `6b38762` (`USER atlas`, uid 1000). The `/thumbnails` bullet
+    below is ✅ fixed `786e6df` (paginated, `limit`/`offset`).
 *   **`personal_configs/pipeline.yml` is tracked** (since `4a275ea`). Scanned:
     **no secrets**, consistent with the git-history audit. Hygiene, not
     exposure.
@@ -203,9 +209,15 @@ they asked for — one (the ruff claim, §E above) turned out wrong.
 
 ## 7. Ingest stack — Docling
 
-### A. Docling is 53 releases behind — OPEN (`ACTION_ITEMS.md` P1-02)
+### A. Docling is 53 releases behind — OPEN (`ACTION_ITEMS.md` P1-02, issue #65)
 
-*   **Pinned:** `2.76.0` (`requirements.lock`). **Latest:** `2.123.0`.
+*   **Pinned:** `2.76.0` (`requirements.lock`). **Latest:** `2.123.1`.
+*   **2026-08-29:** the clean-resolve evaluation described below was run
+    (throwaway lock + image + `ingest_quality.py`). Verdict **NO-GO on the
+    synthetic fixture**: 2.123.1 stops promoting `Section N — …` paragraphs to
+    `#` headings (−2 headings); content recall unchanged. Evidence in
+    `eval_fixtures/{baseline,after}.json`. Whether that generalises to real
+    documents is the open question — see #65.
 
 **What was actually established, and what was not.**
 
@@ -238,8 +250,14 @@ python scripts/ingest_quality.py --input-dir samples --out after.json \
 Never upgrade Docling inside a running container — the result looks like a
 missing dependency, not a broken upgrade.
 
-### B. Docling failures are reported as "not installed" — OPEN (`ACTION_ITEMS.md` P0-02)
+### B. Docling failures are reported as "not installed" — ✅ fixed `584a657` (P0-02)
 
+*   **Remediation:** `DoclingBrokenInstallError` is raised (and named in the
+    diagnostic) for any import failure other than a top-level
+    `ModuleNotFoundError: docling`. An explicit `backend: docling` fails
+    loudly; `backend: auto` still falls back to the layout parser but logs a
+    DEGRADED-quality error and tags `meta`. `tests/test_docling_broken_install.py`
+    covers the classification. The original analysis is kept below.
 *   **Location:** `src/atlas/ingest/docling_adapter.py`
 *   Any exception while importing Docling — a broken half-upgrade, a missing
     transitive dependency, a corrupt install — is converted to

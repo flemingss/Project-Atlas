@@ -12,7 +12,56 @@ Version numbering note: the last tag is `v0.8.0` and `pyproject.toml` now reads
 was never released under that number). The work in this section has no version
 assigned yet — pick the next version and bump both when it ships.
 
-Remaining work is tracked in `docs/ACTION_ITEMS.md` (GitHub Issues is empty).
+Remaining work is tracked as GitHub issues, indexed in `docs/ACTION_ITEMS.md`.
+
+### Changed (2026-08-30, handover cleanup)
+
+- CI: the integration shard prints skip reasons (`-rs`) and the workflow
+  header says plainly that the shard is a placeholder until Docling models
+  are cached in CI. `tests/test_docling_ingest.py` low-quality test now
+  exercises the alpha-ratio gate rather than passing through `min_words`.
+- `.agent/` gitignored; Windows `Zone.Identifier` markers removed; agent-fleet
+  definitions in `.github/agents/` replaced with the six-role set described in
+  `.github/agents/README.md`.
+- Docs caught up for 2026-08-29 (WORKLOG, ACTION_ITEMS, TECHNICAL_DEBT) and
+  test counts corrected (759 across 58 files). Issues #64 and #66 closed —
+  see `docs/ACTION_ITEMS.md` P0-01 and P1-07 for what was and was not
+  established.
+
+### Fixed (2026-08-29, P0/P1 burn-down)
+
+- **Docling broken install is no longer reported as "not installed"**
+  (P0-02, `584a657`). `DoclingBrokenInstallError` names the underlying
+  exception; an explicit `backend: docling` fails loudly, and `backend: auto`
+  logs a DEGRADED-quality error before falling back to the layout parser.
+- **RAG 502 responses no longer include `str(e)`** (P0-04, `590e61f`). A
+  stable generic detail is returned; the full exception is logged.
+- **Production compose defaults `ATLAS_ENV=prod`** (P0-03, `a63fb44`). The
+  dev stack sets `dev` via `.env`.
+- **Layout parser enforces `atlas_pdf_max_pages`** (P1-01, `78cf18d`),
+  preflighting the page count via PyMuPDF and refusing with the same
+  `DOC_PAGE_LIMIT_EXCEEDED` contract Docling uses, before any page is
+  rendered.
+- **`GET /api/editor/vlm-ingest/{id}/thumbnails` is paginated** (P1-06,
+  `786e6df`): `limit`/`offset` (default 200, max 1000), returning
+  `{pages, total, offset, limit, has_more}`. The web grid requests
+  `limit=1000`; incremental paging is a follow-up.
+- **Test isolation** (`d05184f`): an autouse fixture resets `ModelManager`
+  and the diagnostics singleton between tests; CI runs `integration`-marked
+  tests in their own job.
+- `scripts/pre_commit_config_check.py` has its exec bit (EXE001, `9e1ceba`).
+
+### Changed (2026-08-29, gates and hardening)
+
+- **The API container runs as `atlas` (uid 1000), not root** (P1-05,
+  `6b38762`). Baked model caches stay root-owned and read-only.
+- **Coverage gate includes `atlas.vlm_ingest`** and **ruff has an explicit
+  `select`** (P1-03/P1-04, `f5b4644`), so the enforced rule set no longer
+  drifts with the installed ruff version.
+- `DiagnosticsManager.log_error` accepts `BaseException` (`57df6ed`).
+- Docling 2.123.1 was evaluated with a clean lock + throwaway image:
+  **not adopted** (heading promotion regressed on the synthetic fixture).
+  Evidence in `eval_fixtures/`; decision pending a real-document check (#65).
 
 ### Added (2026-08-28, remaining-work tracker)
 

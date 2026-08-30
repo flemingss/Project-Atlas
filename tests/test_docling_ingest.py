@@ -221,11 +221,17 @@ def test_rag_ingest_pdf_low_quality_returns_error_code(tmp_path: Path, monkeypat
     monkeypatch.setenv("ATLAS_PDF_QUALITY_MIN_WORDS", "5")
     monkeypatch.setenv("ATLAS_PDF_QUALITY_ALPHA_RATIO_MIN", "0.90")
 
+    # Long enough (>=100 chars) that IngestNode enforces the alpha-ratio gate,
+    # and with enough "words" that the min_chars/min_words gate does NOT fire —
+    # so this test proves the symbols check itself, not the length check. The
+    # previous 24-char projection passed purely via min_words (issue #64).
+    mostly_symbols = "@@@@@@ !!!! $$$$$ ###### " * 5
+
     def _fake_parse_document_path_low_quality(
         *, doc_path: Path, source_mime_type: str, table_extraction: bool = True
     ) -> DoclingParseResult:
         return DoclingParseResult(
-            markdown_projection="@@@@@@ !!!! $$$$$ ######",  # mostly symbols
+            markdown_projection=mostly_symbols,
             docling_json={"schema_version": "test", "pages": 1, "text": ""},
             parse_profile=ParseProfile.PDF_TEXT,
             docling_schema_version="test",

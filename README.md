@@ -279,7 +279,8 @@ Fast unit/breadcrumb tests (no Docker/LM Studio required):
 & ".\.venv\Scripts\python.exe" -m pytest -q
 ```
 
-733 tests across 60 files (latest CI: 733 passed / 6 skipped). `pyproject.toml` sets
+759 tests across 58 files (CI runs 753 in a unit shard and the 6 `integration`-marked
+tests in their own job, where they skip without cached models). `pyproject.toml` sets
 `addopts = "--cov=atlas.pipeline --cov-report=term-missing --cov-fail-under=80"`, so a
 **partial** run (a single file, a marker filter, a `-k` selection) reports near-zero
 coverage and exits non-zero even when every selected test passes. Append `--no-cov`

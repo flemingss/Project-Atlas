@@ -1,18 +1,18 @@
 # Action items — remaining work
 
-**Status as of 2026-08-29 (end of day).** `main` is healthy (CI green). Open work is now tracked as **GitHub issues** — see the table below. This file remains the design/context backdrop; the issues are the actionable tracker.
+**Status as of 2026-08-30.** `main` is healthy (CI green). Open work is tracked as **GitHub issues** — see the table below. This file remains the design/context backdrop; the issues are the actionable tracker.
 
 ## Open GitHub issues (the live tracker)
 
 | Issue | Item | State |
 |-------|------|-------|
-| #64 | P0-01 intermittent full-suite failure | **Reproduced** — order-dependent test-isolation flake (NOT resource pressure). See issue for ranked hypotheses. |
-| #65 | P1-02 Docling 2.123.1 upgrade | **Evaluated** — NO-GO on synthetic fixture (structural heading regression, recall unchanged). Needs a real-doc check. |
-| #66 | P1-07 bulk VLM auto-resume | Open — product decision (recommend manual resume). |
+| #65 | P1-02 Docling 2.123.1 upgrade | **Open.** NO-GO on the synthetic fixture (heading promotion regressed, recall unchanged). Operator to run a real document through the GUI on both versions before deciding — procedure in P1-02 below. |
 
-## Completed 2026-08-29 (this session)
+Closed 2026-08-30: **#64** (P0-01 — both candidate causes remediated in `d05184f`; reopen on recurrence) and **#66** (P1-07 — decision: manual resume, which is what the code already does; no feature work needed).
 
-P0-02 (Docling broken-vs-absent), P0-03 (prod compose `ATLAS_ENV=prod`), P0-04 (RAG 502 `str(e)` leak), P1-01 (layout parser page cap), P1-03 (coverage gate → `atlas.vlm_ingest`), P1-04 (explicit ruff `select`), P1-05 (non-root container), P1-06 (thumbnails pagination + web caller). Also fixed EXE001 exec-bit cross-platform bug. Full suite: **759 passed / 0 failed**, coverage 89.67% (gate 80%).
+## Completed 2026-08-29
+
+P0-02 (Docling broken-vs-absent), P0-03 (prod compose `ATLAS_ENV=prod`), P0-04 (RAG 502 `str(e)` leak), P1-01 (layout parser page cap), P1-03 (coverage gate → `atlas.vlm_ingest`), P1-04 (explicit ruff `select`), P1-05 (non-root container), P1-06 (thumbnails pagination + web caller), P0-01 remediation (singleton reset + CI shards). Also fixed EXE001 exec-bit cross-platform bug. Full suite: **759 passed / 0 failed**, coverage 89.67% (gate 80%). That work was driven by a third-party agent fleet (`.github/agents/`); its claims were re-verified on 2026-08-30 (see `WORKLOG.md`).
 
 | Doc | Role |
 |-----|------|
@@ -25,12 +25,11 @@ P0-02 (Docling broken-vs-absent), P0-03 (prod compose `ATLAS_ENV=prod`), P0-04 (
 
 ---
 
-## Where to start (resume here tomorrow)
+## Where to start
 
-1. **P0-01 (#64)** — fix the order-dependent test-isolation flake (reproduced; ranked hypotheses in the issue). Highest value: it can redden CI at random.
-2. **P1-02 (#65)** — run a **real prod-like document** through Docling 2.76.0 vs 2.123.1 before deciding; the synthetic-fixture regression may not generalize.
-3. **P1-07 (#66)** — make the manual-vs-auto resume product call, then implement if warranted.
-4. **P2** — product features (12D VLM quality audit, HITL strip-and-rejudge, parallel VLM, etc.) below.
+1. **P1-02 (#65)** — operator runs a **real prod-like document** through the GUI on 2.76.0 (current stack) and on a 2.123.1 candidate image, then decides. The synthetic-fixture regression may not generalise.
+2. **P3-17** — assign the next version and ship `[Unreleased]`; everything since `v0.8.0` is unversioned.
+3. **P2** — product features (12D VLM quality audit, HITL strip-and-rejudge, parallel VLM, etc.) below. Measure before building: P2-04 (cost/latency) and P2-07 (retrieval eval) are cheap and decide whether the others are worth doing.
 
 The per-item detail sections are kept below for the open items; completed items (2026-08-29, listed above) are collapsed to their issue/commit references.
 
@@ -38,10 +37,12 @@ The per-item detail sections are kept below for the open items; completed items 
 
 ## P0 — correctness, safety, or CI reliability
 
-### P0-01 — Intermittent full-suite failure → **issue #64**
-- **Status:** **Reproduced 2026-08-29** (run 6 of 8). Root cause narrowed: it is an **order-dependent test-isolation flake**, NOT the resource-pressure import crash previously hypothesized.
-- **Captured:** `tests/test_docling_ingest.py::test_rag_ingest_pdf_low_quality_returns_error_code` → `assert 502 == 200`. The test monkeypatches `parse_document_path` (Docling mocked), so it cannot be an import failure — shared state leaks between tests under full-suite ordering.
-- **Action:** reproduce deterministically (pairwise / seeded orders), then add an autouse reset for the Settings/config singletons. Ranked hypotheses in #64.
+### P0-01 — Intermittent full-suite failure → **issue #64, closed 2026-08-30**
+- **Captured 2026-08-29** (run 6 of 8): `tests/test_docling_ingest.py::test_rag_ingest_pdf_low_quality_returns_error_code` → `assert 502 == 200`. The 502 is the catch-all in `api_rag.py`, so the real exception was only in server logs and was not captured.
+- **Root cause: not established.** The 08-29 session first wrote "order-dependent isolation leak, not resource pressure" (this file) and then "resource exhaustion, not a leak" (the issue and commit `d05184f`). Both were code-review conclusions, neither a deterministic reproduction. Do not cite either as fact.
+- **Remediation `d05184f` covers both:** autouse `_reset_singletons` fixture (`ModelManager`, `_global_diagnostics`) in `tests/conftest.py`, and CI split into a unit shard and an `integration` shard. CI green since.
+- **Also fixed 2026-08-30:** the test's expectation was only passing via `min_words` (24-char projection disables the alpha-ratio gate); it now uses a ≥100-char symbol projection so the alpha gate is what it tests.
+- **If it recurs:** capture the server-side traceback (the 502 body is deliberately generic) and the test order (`pytest -p randomly` seed or the CI log), then reopen #64.
 
 ### P0-02 — Docling failures reported as "not installed" → ✅ **DONE 2026-08-29**
 `DoclingBrokenInstallError` now distinguished from `DoclingUnavailableError`; explicit backend fails loudly, `auto` logs a DEGRADED warning on broken install. Commit `584a657`.
@@ -62,8 +63,11 @@ Layout parser now preflights page count via PyMuPDF and refuses oversized PDFs w
 ### P1-02 — Docling pin is 53 releases behind → **issue #65**
 - **Status:** **Evaluated 2026-08-29** the valid way (clean `pip-compile` lock + throwaway image rebuild + `ingest_quality.py` gate). **NO-GO as-is.**
 - **Result:** gate fired a *structural* regression — 2.123.1 stops promoting `Section N — …` paragraphs to `#` headings on the synthetic fixture (−2 headings, −1963 chars); **content recall unchanged** on both fixtures. Build succeeds cleanly.
-- **Caveats:** may be fixture-shape specific (reportlab Heading2 is a weak signal) → run a **real prod-like doc** before deciding; a docling format option may restore promotion. Eval container needs `--user root` (2.123.1 reads `/root/.local/share/fonts`). Artifacts in `eval_fixtures/` (uncommitted).
-- **Action:** real-doc A/B, then decide. Never upgrade Docling inside a running container. See `docs/TECHNICAL_DEBT.md` §7.
+- **Caveats:** may be fixture-shape specific (reportlab Heading2 is a weak signal) → run a **real prod-like doc** before deciding; a docling format option may restore promotion. Eval container needs `--user root` (2.123.1 reads `/root/.local/share/fonts`). Artifacts committed in `eval_fixtures/` (`ffdf4af`).
+- **Action (operator, via GUI):** ingest the same real document on both versions and compare headings/tables in the editor. Never upgrade Docling inside a running container. See `docs/TECHNICAL_DEBT.md` §7.
+  1. Baseline: the dev stack as-is (`docker compose up -d`) is 2.76.0. Ingest the doc, export or note the heading structure.
+  2. Candidate: in a scratch checkout, set `docling>=2.123.1` in `pyproject.toml`, regenerate both locks on Linux with `PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu pip-compile` (see `.github/dependabot.yml` note), then `docker compose build atlas` and `docker compose up -d atlas`. The API container will run the new image against the same Postgres/Qdrant; use a different `doc_id` so the two ingests are side by side.
+  3. Decide. If GO: land the pin + locks as one commit and rebuild; if NO-GO: close #65 with the observation and keep 2.76.0 (Dependabot already ignores the major).
 
 ### P1-03 — Coverage gate covers only `atlas.pipeline` → ✅ **DONE 2026-08-29**
 Added `--cov=atlas.vlm_ingest`; 80% fail-under gate holds (pipeline ~91%, vlm_ingest ~93%). Commit `f5b4644`.
@@ -77,9 +81,11 @@ Runtime stage now `USER atlas` (uid 1000, matching dev host). `HOME`/`PIP_CACHE_
 ### P1-06 — `/thumbnails` is unpaginated → ✅ **DONE 2026-08-29**
 Endpoint paginated (`limit`/`offset`, default 200 max 1000) returning `{pages,total,offset,limit,has_more}`. Web caller unwraps `.pages` with `limit=1000` to preserve current grid behavior; true incremental paging is a documented follow-up. Commit `786e6df`.
 
-### P1-07 — Bulk VLM does not auto-resume after API restart → **issue #66**
-- **Status:** Open. Durability landed (ledger + checkpoints + rehydrate); the *loop* still does not restart itself.
-- **Action:** product decision — offer an operator "Resume processing" (UI already lists ledger sessions). Default should stay manual so a crash does not silently spend VLM tokens.
+### P1-07 — Bulk VLM does not auto-resume after API restart → **issue #66, closed 2026-08-30 (decision: manual)**
+- **Decision:** the bulk loop stays **manual** after a restart. A crash or restart should be a pause point the operator looks at, not a silent re-spend of VLM tokens; stopping the stack mid-flight is never deliberate, so re-entering automatically would hide whatever caused it.
+- **Already true in the code, verified 2026-08-30:** startup reconciliation (`api.py` lifespan) marks `running` workflow runs as interrupted and starts nothing. `bulk_active` is an in-memory lock, so a restart releases it. Rehydrate resets any `PROCESSING` page to `PENDING`. The Ingest page lists resumable sessions from the ledger ("Resume an in-progress document") and the Start/Resume button calls `POST /{session_id}/process-all`, which skips `DONE`/`SKIPPED` pages and continues from the page cache.
+- **Not doing:** an `ATLAS_BULK_VLM_RESUME=auto` flag. Nobody has asked for auto-resume; add it when a real workflow needs it.
+- **Small gap, noted not fixed:** the resume list filters on `pages_done > 0`, so a session interrupted before its first page finished is not offered for resume (its PDF is durable; re-upload is the workaround).
 
 ---
 
@@ -167,34 +173,15 @@ GitHub Issues was the tracker through Phase 6 and then went dark. Several closur
 | **#34** VRAM monitoring in `ConcurrencyGuard` | completed via PR #39 | `src/atlas/concurrency.py` was later deleted. **Do not reopen.** GPU VRAM checks are out of scope unless local VLM inference returns. |
 | **#19** Phases 1–6 tracking | completed | Fine for that era. Phases 7–14 and the 2026-08 hardening never got successor issues. |
 
-**Stale remote branches** (all predate the August work; do not merge):
-
-- `origin/copilot/add-vlm-quality-audit`
-- `origin/copilot/add-headless-field-to-response`
-- `origin/copilot/fix-setsession-page-progress`
-- `origin/copilot/implement-vram-monitoring`
-- `origin/copilot/remove-dead-code-vlm-ingest`
-- `origin/copilot/top-down-review-e2e-testing`
-- `origin/docs/technical-debt-review`
-
-Delete them when convenient. They are not open work.
-
-This environment cannot open GitHub issues (`gh` is read-only here). Suggested issue titles, matching the IDs above:
+**Stale remote branches** — the six `copilot/*` branches and `docs/technical-debt-review` (all Feb–Mar 2026, superseded by the August work) are not open work. Tip SHAs are recorded in `WORKLOG.md` (2026-08-30) and stay reachable through their closed PRs. Delete with:
 
 ```
-P0-01  test: capture and fix the intermittent full-suite failure
-P0-02  fix(ingest): stop reporting Docling import errors as "not installed"
-P0-03  fix(compose): default ATLAS_ENV to prod in the production compose file
-P0-04  fix(api): stop leaking str(e) from RAG 502 handlers
-P1-01  fix(ingest): enforce atlas_pdf_max_pages on the layout parser
-P1-02  chore(deps): evaluate Docling 2.123 via lockfile + ingest_quality gate
-P1-03  test: extend coverage gate to atlas.vlm_ingest
-P1-04  chore: pin an explicit ruff select
-P1-05  security: run the API container as non-root
-P1-06  fix(vlm): paginate the thumbnails endpoint
-P2-01  feat: Phase 12D VLM quality audit (reopen #30)
-P2-02  feat: HITL strip-and-rejudge
+git push origin --delete copilot/add-headless-field-to-response copilot/add-vlm-quality-audit \
+  copilot/fix-setsession-page-progress copilot/implement-vram-monitoring \
+  copilot/remove-dead-code-vlm-ingest copilot/top-down-review-e2e-testing docs/technical-debt-review
 ```
+
+Issue IDs above map to GitHub as: P0-01 → #64 (closed), P1-02 → #65 (open), P1-07 → #66 (closed). P2 items do not have issues yet — file one when work starts, and reopen or replace #30 for P2-01 rather than reusing the closed issue.
 
 ---
 
