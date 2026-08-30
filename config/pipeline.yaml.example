@@ -97,9 +97,17 @@ builtin_cleanup:
   fix_ligatures: true         # Decompose ligatures (ﬁ → fi, ﬂ → fl)
   strip_zero_width_chars: true  # Remove zero-width/invisible Unicode chars
   strip_page_numbers: true    # Remove standalone page-number lines (Page 3, 2/10, etc.)
+  strip_bullet_glyphs: true      # "- • text" → "- text"; also drops PDF symbol-font glyphs (U+E000–F8FF)
+  normalize_superscripts: true   # "1×10 -7" → "1×10^-7", "1 st" → "1st"
+  dedupe_table_spans: true       # Blank repeats of a merged cell Docling copies into every spanned column
+  # table_span_min_chars: 20     # Body-row floor: shorter repeats ("off | off", "Included | Included")
+                                 # are real data and stay. Header rows are deduplicated at any length.
   strip_repetitive_lines: false  # Remove short lines repeating ≥ threshold times (OFF by default)
   # repetitive_line_threshold: 8   # Min occurrences to consider a line repetitive
   # repetitive_line_max_chars: 80  # Only lines ≤ this length are candidates
+  strip_repeated_headings: false # Drop later copies of a heading seen ≥ threshold times — per-page
+                                 # running headers. OFF: a manual repeating "## Notes" would lose them.
+  # repeated_heading_threshold: 3
 
 # ---------------------------------------------------------------------------
 # Config-driven cleanup rules (Phase 7A)

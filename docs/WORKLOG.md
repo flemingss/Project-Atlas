@@ -1,5 +1,42 @@
 # Worklog
 
+## 2026-08-30 (first real datasheet) — Judge display bug; Docling drops doubled digits; four cleanup rules
+
+Operator ingested an 11-page Microsemi SyncServer datasheet (run 22) and it
+landed in HITL with sub-scores showing as `300% / 200% / 400% / 400%`.
+
+- **Display bug, not a scoring bug.** Sub-scores are 1–5 ints; the review
+  page multiplied by 100. Actual grades 3/2/4/4 → composite 3 < cutoff 4 →
+  HITL, which is the right call for this document (formatting 2).
+- **The judge cannot measure faithfulness.** It grades the markdown alone
+  (`judge.py grade_document`) and penalised source typos ("Ouput",
+  "constallation" are in the PDF) and a source difference (S600 says
+  "hundreds of thousands", S650 says "millions"). Not changed in this pass;
+  the fix is to pass the pre-refine markdown as the reference. Recorded as
+  a P2 item.
+- **Docling 2.76.0 drops a doubled digit.** `+1 (800) 713-4113` came out as
+  `713-413` and `215-4996` as `215-496` on page 5, correct on page 11 —
+  same footer text on both. PyMuPDF's text layer is correct on both pages;
+  Docling's raw output is not; cleanup and refine reproduce what Docling
+  gave them. Doubled identical glyphs collapsed during text-cell merging.
+  That is a deterministic, checkable regression case for the 2.123.1
+  evaluation (#65) — and the kind of error that matters for RAG: a
+  confidently wrong phone number.
+- **Four cleanup rules** from what the document showed, all verified
+  against run 22's markdown before commit (counts in CHANGELOG):
+  `strip_bullet_glyphs`, `normalize_superscripts`, `dedupe_table_spans` (ON)
+  and `strip_repeated_headings` (OFF, running headers ×11 on this doc).
+  Design notes: header rows dedupe at any length, body rows need 20 chars
+  so `off | off` stays; superscript rejoin is anchored on `×10`; the
+  glyph rule also collapses the two-space residue Docling 2.76 leaves,
+  which is what actually reaches the node (the glyph itself is gone by
+  then).
+- **Docling misfires left alone**: the S650 Front/Rear Panel key/value
+  list detected as a 4-column table with the Keypad row tripled. Not
+  fixable deterministically; another 2.123.1 comparison point. The
+  hyphen joins ("ease-ofuse", "passwordprotected") are in the PDF text
+  layer itself — not an extractor defect.
+
 ## 2026-08-30 (stack readiness) — Docling was dead in the shipped image; fixed in the Dockerfile
 
 Operator asked to confirm the stack was ready for the #65 GUI test. Health

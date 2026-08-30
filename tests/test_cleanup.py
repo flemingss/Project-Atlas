@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from atlas.pipeline.cleanup import (
     CleanupNode,
+    _builtin_dedupe_table_spans,
     _builtin_fix_ligatures,
     _builtin_html_unescape,
+    _builtin_normalize_superscripts,
+    _builtin_strip_bullet_glyphs,
+    _builtin_strip_repeated_headings,
     _builtin_strip_zero_width,
     _normalise_whitespace,
     _repair_heading_hierarchy,
@@ -195,3 +199,100 @@ async def test_cleanup_node_builtin_partial_disable() -> None:
     # html_unescape and zero-width still ran
     assert "&amp;" not in result.cleaned_markdown
     assert "\u200b" not in result.cleaned_markdown
+
+
+# ---------------------------------------------------------------------------
+# Builtin fixes added 2026-08-30 from the Microsemi datasheet ingest
+# ---------------------------------------------------------------------------
+
+def test_strip_bullet_glyphs_removes_double_bullet_and_pua_glyph() -> None:
+    text = "- \u2022 Ultra-high bandwidth\n- \uf0b7 Stratum 1\n1. \uf0b7  numbered\n  - \u25e6 nested"
+    out = _builtin_strip_bullet_glyphs(text)
+    assert out == "- Ultra-high bandwidth\n- Stratum 1\n1. numbered\n  - nested"
+
+
+def test_strip_bullet_glyphs_leaves_ordinary_text_alone() -> None:
+    text = "- item with  two spaces inside\n\nplain \u00a9\u2122 text \u2022 with a bullet mid-sentence\n| \u2022 Bounce | cell |"
+    assert _builtin_strip_bullet_glyphs(text) == text
+
+
+def test_normalize_superscripts_rejoins_exponents_and_ordinals() -> None:
+    text = "Standard ±1×10 -7\nOCXO ±5x10 -9\nfrequency <1x10 -12 at one day\n(1 st 24 hours)\nOptional 2 nd power supply"
+    out = _builtin_normalize_superscripts(text)
+    assert out == "Standard ±1×10^-7\nOCXO ±5x10^-9\nfrequency <1x10^-12 at one day\n(1st 24 hours)\nOptional 2nd power supply"
+
+
+def test_normalize_superscripts_does_not_touch_prose_numbers() -> None:
+    text = "10 -7 = 3\nroom 10 St Mary\n5 thousand\nthe 3 rd party"
+    out = _builtin_normalize_superscripts(text)
+    # "10 -7" without ×10 stays; "St" is capitalised; "thousand" is not an ordinal suffix.
+    assert out == "10 -7 = 3\nroom 10 St Mary\n5 thousand\nthe 3rd party"
+
+
+def test_dedupe_table_spans_blanks_spanned_header_and_footnote_cells() -> None:
+    text = (
+        "|                 | Input BNCs   | Input BNCs   | Output BNCs   | Output BNCs   |\n"
+        "|-----------------|--------------|--------------|---------------|---------------|\n"
+        "| Standard        | IRIG B       | 10 MHz       | off           | off           |\n"
+        "| Included        | Included     | Included     | Included      | Included      |\n"
+        "| After one month of continuous operation | After one month of continuous operation |\n"
+    )
+    out = _builtin_dedupe_table_spans(text)
+    lines = out.split("\n")
+    # Header row: any adjacent repeat is a span, regardless of length.
+    assert lines[0] == "|                 | Input BNCs   |              | Output BNCs   |               |"
+    assert lines[1] == "|-----------------|--------------|--------------|---------------|---------------|"
+    # Body rows: short repeated values are real data and must survive.
+    assert lines[2] == "| Standard        | IRIG B       | 10 MHz       | off           | off           |"
+    assert lines[3] == "| Included        | Included     | Included     | Included      | Included      |"
+    # ...but a long repeated cell (a spanned footnote) is a span.
+    assert lines[4] == "| After one month of continuous operation |" + " " * 41 + "|"
+
+
+def test_dedupe_table_spans_row_widths_are_preserved() -> None:
+    row = "| Output BNCs | Output BNCs | Output BNCs |\n|---|---|---|"
+    out = _builtin_dedupe_table_spans(row)
+    first = out.split("\n")[0]
+    assert len(first) == len(row.split("\n")[0])
+    assert first == "| Output BNCs |             |             |"
+
+
+def test_dedupe_table_spans_ignores_non_table_lines_and_escaped_pipes() -> None:
+    text = "Repeated words repeated words | not a table\n| a \\| b long enough | a \\| b long enough |"
+    assert _builtin_dedupe_table_spans(text) == text
+
+
+def test_strip_repeated_headings_keeps_first_copy_at_threshold() -> None:
+    text = "## SyncServer S600\n\nintro\n\n## SyncServer S600\n\nbody\n\n## Features\n\n## SyncServer S600\n\n## Features"
+    out = _builtin_strip_repeated_headings(text, threshold=3)
+    assert out.count("## SyncServer S600") == 1
+    assert out.startswith("## SyncServer S600")
+    # Two occurrences is below the threshold — untouched.
+    assert out.count("## Features") == 2
+
+
+def test_strip_repeated_headings_is_off_by_default_and_on_via_config() -> None:
+    import asyncio
+
+    text = "## Title\n\na\n\n## Title\n\nb\n\n## Title\n\nc"
+    node = CleanupNode()
+    default = asyncio.run(node.clean(markdown=text))
+    assert default.cleaned_markdown.count("## Title") == 3
+    assert not any("strip_repeated_headings" in t for t in default.transforms_applied)
+
+    enabled = asyncio.run(
+        node.clean(markdown=text, config={"builtin_cleanup": {"strip_repeated_headings": True}})
+    )
+    assert enabled.cleaned_markdown.count("## Title") == 1
+    assert "builtin:strip_repeated_headings" in enabled.transforms_applied
+
+
+def test_new_builtins_are_on_by_default_and_reported() -> None:
+    import asyncio
+
+    text = "-  item\n\n±1×10 -7\n\n| Output BNCs long | Output BNCs long |\n|---|---|\n| a | b |"
+    result = asyncio.run(CleanupNode().clean(markdown=text))
+    for name in ("strip_bullet_glyphs", "normalize_superscripts", "dedupe_table_spans"):
+        assert f"builtin:{name}" in result.transforms_applied
+    assert "- item" in result.cleaned_markdown
+    assert "10^-7" in result.cleaned_markdown

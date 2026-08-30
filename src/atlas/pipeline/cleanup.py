@@ -17,8 +17,18 @@ Transforms (executed in order):
    - ``fix_ligatures`` (ON): decompose Unicode ligatures (ﬁ→fi, ﬂ→fl, etc.).
    - ``strip_zero_width_chars`` (ON): remove zero-width/invisible Unicode chars.
    - ``strip_page_numbers`` (ON): remove standalone page-number lines.
+   - ``strip_bullet_glyphs`` (ON): drop the bullet glyph the extractor keeps
+     inside a list item (``- • text`` → ``- text``) and any Private Use Area
+     glyphs (PDF symbol-font bullets that survive as ````).
+   - ``normalize_superscripts`` (ON): rejoin flattened superscripts —
+     ``1×10 -7`` → ``1×10^-7``, ``1 st`` → ``1st``.
+   - ``dedupe_table_spans`` (ON): blank the repeats of a merged (spanned)
+     cell that Docling's markdown export copies into every spanned column.
    - ``strip_repetitive_lines`` (**OFF by default**): remove short lines that
      repeat ≥N times (configurable threshold/max_chars).
+   - ``strip_repeated_headings`` (**OFF by default**): drop later copies of a
+     heading that appears ≥N times — per-page running headers that Docling
+     promotes to ``##`` (configurable threshold).
 """
 
 from __future__ import annotations
@@ -26,6 +36,7 @@ from __future__ import annotations
 import html
 import logging
 import re
+from collections import Counter
 from datetime import UTC, datetime
 from typing import Any
 
@@ -191,6 +202,125 @@ def _builtin_strip_repetitive_lines(
     return "\n".join("" if ln.strip() in repetitive else ln for ln in lines)
 
 
+# Private Use Area codepoints (BMP block plus the two supplementary planes).
+# PDF symbol fonts map their bullet/arrow glyphs here (Symbol's bullet is
+# U+F0B7); extractors emit them verbatim. Nothing that belongs in a markdown
+# projection lives in the PUA.
+_PUA_RE = re.compile("[\ue000-\uf8ff\U000f0000-\U000ffffd\U00100000-\U0010fffd]")
+# A typographic bullet sitting right after the markdown list marker: Docling
+# emits the PDF's own bullet glyph as the first character of the item text,
+# so every item arrives as "- • text". Plain "•" in prose is left alone.
+_DOUBLE_BULLET_RE = re.compile(
+    r"^([ \t]*(?:[-*+]|\d+[.)]))[ \t]+[\u2022\u2023\u25e6\u2043\u25aa\u25ab\u25cf\u25a0\u2219\u00b7][ \t]*(?=\S)",
+    re.MULTILINE,
+)
+# "-  text" (two+ spaces after a list marker: what removing a glyph leaves).
+_LIST_MARKER_GAP_RE = re.compile(r"^([ \t]*(?:[-*+]|\d+[.)]))[ \t]{2,}(?=\S)", re.MULTILINE)
+
+# Superscripts flattened with a space: "±1×10 -7" (exponent), "1 st" (ordinal).
+# The exponent form is anchored on "×10"/"x10" so a bare "10 -7" in prose is
+# left alone.
+_SCI_EXPONENT_RE = re.compile(r"([×x]10)[ \t]+([-−]?\d{1,3})\b")
+_ORDINAL_RE = re.compile(r"\b(\d+)[ \t]+(st|nd|rd|th)\b")
+
+# Markdown table rows. Escaped pipes inside cells are rare in extractor output
+# and would break the naive split, so rows containing them are left alone.
+_TABLE_ROW_RE = re.compile(r"^[ \t]*\|.*\|[ \t]*$")
+_TABLE_SEP_RE = re.compile(r"^[ \t]*\|?(?:[ \t]*:?-{3,}:?[ \t]*\|)+[ \t]*(?::?-{3,}:?[ \t]*)?\|?[ \t]*$")
+_HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(.*\S)[ \t]*$")
+
+
+def _builtin_strip_bullet_glyphs(text: str) -> str:
+    """Drop redundant bullet glyphs and the gap they leave after a list marker.
+
+    ``- • text`` → ``- text``; any PUA glyph is removed; and ``-  text`` (the
+    two-space residue an already-stripped glyph leaves — what Docling 2.76
+    output looks like by the time it reaches this node) becomes ``- text``.
+    """
+    out = _DOUBLE_BULLET_RE.sub(r"\1 ", text)
+    out = _PUA_RE.sub("", out)
+    return _LIST_MARKER_GAP_RE.sub(r"\1 ", out)
+
+
+def _builtin_normalize_superscripts(text: str) -> str:
+    """Rejoin superscripts that the extractor flattened with a space.
+
+    ``±1×10 -7`` → ``±1×10^-7`` and ``1 st`` → ``1st``. The caret form is
+    chosen over Unicode superscripts because it survives search, tokenisation,
+    and a plain-text diff.
+    """
+    out = _SCI_EXPONENT_RE.sub(r"\1^\2", text)
+    return _ORDINAL_RE.sub(r"\1\2", out)
+
+
+def _builtin_dedupe_table_spans(text: str, *, min_chars: int = 20) -> str:
+    """Blank the repeats of a merged cell inside a markdown table row.
+
+    Docling's markdown export writes a spanned cell into *every* column it
+    covers, so a header ``Output BNCs`` spanning six columns arrives six
+    times, and a footnote row spanning the table arrives once per column.
+    A run of consecutive identical cells is reduced to its first occurrence;
+    the others become whitespace of the same width so the row's alignment is
+    untouched.
+
+    Header rows (the row directly above the ``|---|`` separator) are deduped
+    at any length — a header never legitimately repeats a label in adjacent
+    columns. Body rows need *min_chars* per cell: short repeated values
+    (``off | off``, ``Included | Included``, ``N/A | N/A``) are real data,
+    while a spanned footnote or a long merged description is not.
+    """
+    lines = text.split("\n")
+    for i, ln in enumerate(lines):
+        if not _TABLE_ROW_RE.match(ln) or _TABLE_SEP_RE.match(ln) or "\\|" in ln:
+            continue
+        is_header = i + 1 < len(lines) and bool(_TABLE_SEP_RE.match(lines[i + 1]))
+        floor = 1 if is_header else min_chars
+        stripped = ln.strip()
+        lead = ln[: len(ln) - len(ln.lstrip())]
+        cells = stripped[1:-1].split("|")
+        prev: str | None = None
+        changed = False
+        for j, cell in enumerate(cells):
+            s = cell.strip()
+            if not s:
+                prev = None
+                continue
+            if prev is not None and s == prev and len(s) >= floor:
+                cells[j] = " " * len(cell)
+                changed = True
+            prev = s
+        if changed:
+            lines[i] = f"{lead}|{'|'.join(cells)}|"
+    return "\n".join(lines)
+
+
+def _builtin_strip_repeated_headings(text: str, *, threshold: int = 3) -> str:
+    """Drop later copies of a heading whose exact text appears ≥ *threshold* times.
+
+    Per-page running headers ("SyncServer S600" on every page of a datasheet)
+    come out of Docling as a heading per page, which then becomes the heading
+    path of every chunk on that page. The first occurrence is kept. OFF by
+    default: a manual that legitimately repeats ``## Notes`` per chapter
+    would lose those headings.
+    """
+    lines = text.split("\n")
+    heads = [
+        (i, m.group(2).strip())
+        for i, ln in enumerate(lines)
+        if (m := _HEADING_RE.match(ln))
+    ]
+    freq = Counter(t for _, t in heads)
+    seen: set[str] = set()
+    for i, t in heads:
+        if freq[t] < threshold:
+            continue
+        if t in seen:
+            lines[i] = ""
+        else:
+            seen.add(t)
+    return "\n".join(lines)
+
+
 # Registry of builtin cleanup toggles: config key → function.
 # Order matters — html_unescape should run first (entity decoding may
 # produce characters that the later passes handle).
@@ -198,9 +328,17 @@ _BUILTIN_CLEANUP_REGISTRY: list[tuple[str, Any]] = [
     ("html_unescape", _builtin_html_unescape),
     ("fix_ligatures", _builtin_fix_ligatures),
     ("strip_zero_width_chars", _builtin_strip_zero_width),
+    ("strip_bullet_glyphs", _builtin_strip_bullet_glyphs),
     ("strip_page_numbers", _builtin_strip_page_numbers),
+    ("normalize_superscripts", _builtin_normalize_superscripts),
+    ("dedupe_table_spans", _builtin_dedupe_table_spans),
     ("strip_repetitive_lines", _builtin_strip_repetitive_lines),
+    ("strip_repeated_headings", _builtin_strip_repeated_headings),
 ]
+
+# Toggles that default to OFF: each can remove legitimate content on the
+# wrong document, so the operator opts in per corpus.
+_BUILTIN_DEFAULT_OFF = frozenset({"strip_repetitive_lines", "strip_repeated_headings"})
 
 
 # ---------------------------------------------------------------------------
@@ -300,9 +438,9 @@ class CleanupNode:
         is_layout = parse_profile == "pdf_layout"
 
         for toggle_key, handler in _BUILTIN_CLEANUP_REGISTRY:
-            # Default to True (ON) when the key is absent — EXCEPT
-            # strip_repetitive_lines which defaults to OFF for safety.
-            default_on = toggle_key != "strip_repetitive_lines"
+            # Default to True (ON) when the key is absent, except the
+            # content-removing toggles in _BUILTIN_DEFAULT_OFF.
+            default_on = toggle_key not in _BUILTIN_DEFAULT_OFF
 
             # Layout parser already strips page numbers and handles ligatures
             if is_layout and toggle_key in ("strip_page_numbers",):
@@ -310,11 +448,17 @@ class CleanupNode:
 
             if builtin_cfg.get(toggle_key, default_on):
                 before = cleaned
-                # strip_repetitive_lines accepts optional threshold/max_chars
+                # Parameterised toggles read their knobs from the same section.
                 if toggle_key == "strip_repetitive_lines":
                     threshold = int(builtin_cfg.get("repetitive_line_threshold", 8))
                     max_ch = int(builtin_cfg.get("repetitive_line_max_chars", 80))
                     cleaned = handler(cleaned, threshold=threshold, max_chars=max_ch)
+                elif toggle_key == "strip_repeated_headings":
+                    threshold = int(builtin_cfg.get("repeated_heading_threshold", 3))
+                    cleaned = handler(cleaned, threshold=threshold)
+                elif toggle_key == "dedupe_table_spans":
+                    min_chars = int(builtin_cfg.get("table_span_min_chars", 20))
+                    cleaned = handler(cleaned, min_chars=min_chars)
                 else:
                     cleaned = handler(cleaned)
                 if cleaned != before:

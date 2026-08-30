@@ -14,6 +14,33 @@ assigned yet — pick the next version and bump both when it ships.
 
 Remaining work is tracked as GitHub issues, indexed in `docs/ACTION_ITEMS.md`.
 
+### Added (2026-08-30, cleanup rules from the first real datasheet)
+
+Ingesting an 11-page Microsemi datasheet (3-column layout, spanned tables,
+superscripts) through Docling 2.76.0 showed four systematic artefacts. Each
+is now a deterministic `builtin_cleanup` toggle, verified against that
+document (`docs/WORKLOG.md` 2026-08-30):
+
+- **`strip_bullet_glyphs`** (ON) — `- • text` / `-  text` → `- text`; also
+  drops Private Use Area glyphs. 109 list items on the datasheet.
+- **`normalize_superscripts`** (ON) — `±1×10 -7` → `±1×10^-7`, `1 st` →
+  `1st`. Anchored on `×10`/`x10` and lowercase ordinal suffixes so prose is
+  untouched. 24 exponents + 4 ordinals.
+- **`dedupe_table_spans`** (ON) — Docling's markdown export copies a merged
+  cell into every column it spans (`Output BNCs` ×6, a footnote row once per
+  column). Header rows are deduplicated at any length; body rows only for
+  cells ≥ `table_span_min_chars` (20), so `off | off` and
+  `Included | Included` survive.
+- **`strip_repeated_headings`** (OFF) — drop later copies of a heading seen
+  ≥ `repeated_heading_threshold` (3) times: per-page running headers that
+  Docling promotes to `##`. Off because a manual repeating `## Notes` per
+  chapter would lose them; enable per corpus.
+
+### Fixed (2026-08-30, review page)
+
+- Judge sub-scores are 1–5 integers; the HITL review page rendered them as
+  percentages (`300%`). Now `3/5`.
+
 ### Fixed (2026-08-30, Docling dead in the non-root image)
 
 - **Every Docling parse failed in the shipped image** since the container

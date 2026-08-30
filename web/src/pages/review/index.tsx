@@ -222,7 +222,8 @@ export function ReviewPage() {
               <div className="flex flex-wrap gap-2">
                 {Object.entries(taskMeta.judge_sub_scores).map(([k, v]) => (
                   <Badge key={k} variant="outline" className="text-[11px]">
-                    {k}: {(v * 100).toFixed(0)}%
+                    {/* Judge sub-scores are 1-5 integers (JudgeResult.sub_scores), not fractions. */}
+                    {k}: {v}/5
                   </Badge>
                 ))}
               </div>

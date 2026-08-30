@@ -2,7 +2,7 @@
 
 Local-first RAG system with a running FastAPI service (admin + RAG MVP), config versioning, and a black-box E2E scenario suite.
 
-Pipeline: **Ingest → Cleanup → Judge → Refine → Metadata → Embeddings → Chunking → Commit** (11 nodes). Features config-driven cleanup rules engine, cleanup feedback API, metrics aggregation, LLM-assisted rule suggestion, Cleanup & Tuning UI, multi-dimensional judge rubric with per-dimension rationale, rich judge-to-refine context injection (sub-scores + iteration context), score regression rollback, diminishing-returns detection, cleanup-rejudge cycle guard, refine content-safety guardrails (min_preservation_ratio), failed-refines-don't-burn-retries semantics, rich HITL task context with resume loop guard, retry/backoff on all external calls, chunk QA with automatic fallback, Docling health scoring, unified routing with fail-fast and rule-tag escalation, fidelity mode search filtering, and five configurable builtin extraction-artifact fixes.
+Pipeline: **Ingest → Cleanup → Judge → Refine → Metadata → Embeddings → Chunking → Commit** (11 nodes). Features config-driven cleanup rules engine, cleanup feedback API, metrics aggregation, LLM-assisted rule suggestion, Cleanup & Tuning UI, multi-dimensional judge rubric with per-dimension rationale, rich judge-to-refine context injection (sub-scores + iteration context), score regression rollback, diminishing-returns detection, cleanup-rejudge cycle guard, refine content-safety guardrails (min_preservation_ratio), failed-refines-don't-burn-retries semantics, rich HITL task context with resume loop guard, retry/backoff on all external calls, chunk QA with automatic fallback, Docling health scoring, unified routing with fail-fast and rule-tag escalation, fidelity mode search filtering, and nine configurable builtin extraction-artifact fixes.
 
 Design source of truth: `TECHNICAL_DESIGN.md` (build-continuity plan; current reality vs target end-state). `ARCHITECTURE.md` covers the current system architecture. Remaining work: `docs/ACTION_ITEMS.md`.
 
@@ -279,7 +279,7 @@ Fast unit/breadcrumb tests (no Docker/LM Studio required):
 & ".\.venv\Scripts\python.exe" -m pytest -q
 ```
 
-763 tests across 58 files (CI runs 757 in a unit shard and the 6 `integration`-marked
+773 tests across 58 files (CI runs 767 in a unit shard and the 6 `integration`-marked
 tests in their own job, where they skip without cached models). `pyproject.toml` sets
 `addopts = "--cov=atlas.pipeline --cov-report=term-missing --cov-fail-under=80"`, so a
 **partial** run (a single file, a marker filter, a `-k` selection) reports near-zero

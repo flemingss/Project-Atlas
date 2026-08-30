@@ -155,11 +155,16 @@ def _validate_config_shapes(*, config_manager: ConfigManager) -> None:
 # Builtin cleanup validation
 # ---------------------------------------------------------------------------
 
-_VALID_BUILTIN_KEYS = frozenset({
+_BUILTIN_BOOL_KEYS = frozenset({
     "html_unescape", "fix_ligatures", "strip_zero_width_chars",
-    "strip_page_numbers", "strip_repetitive_lines",
-    "repetitive_line_threshold", "repetitive_line_max_chars",
+    "strip_bullet_glyphs", "strip_page_numbers", "normalize_superscripts",
+    "dedupe_table_spans", "strip_repetitive_lines", "strip_repeated_headings",
 })
+_BUILTIN_INT_KEYS = frozenset({
+    "repetitive_line_threshold", "repetitive_line_max_chars",
+    "repeated_heading_threshold", "table_span_min_chars",
+})
+_VALID_BUILTIN_KEYS = _BUILTIN_BOOL_KEYS | _BUILTIN_INT_KEYS
 
 
 def _validate_builtin_cleanup(raw: Any) -> None:
@@ -172,16 +177,14 @@ def _validate_builtin_cleanup(raw: Any) -> None:
     if unknown:
         _log.warning("builtin_cleanup: unknown keys %s (will be ignored)", sorted(unknown))
     # Boolean toggles
-    _BOOL_KEYS = {"html_unescape", "fix_ligatures", "strip_zero_width_chars",
-                  "strip_page_numbers", "strip_repetitive_lines"}
-    for key in _BOOL_KEYS:
+    for key in _BUILTIN_BOOL_KEYS:
         val = raw.get(key)
         if val is not None and not isinstance(val, bool):
             raise RuntimeError(
                 f"pipeline.yaml builtin_cleanup.{key} must be a boolean (got {type(val).__name__})"
             )
     # Integer parameters
-    for key in ("repetitive_line_threshold", "repetitive_line_max_chars"):
+    for key in _BUILTIN_INT_KEYS:
         val = raw.get(key)
         if val is not None and not isinstance(val, int):
             raise RuntimeError(

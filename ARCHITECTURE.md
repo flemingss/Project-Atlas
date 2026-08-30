@@ -33,7 +33,7 @@ Layout-aware PDF parsing pipeline ported from RAGFlow's deepdoc engine:
 - **`pdf_parser.py`** — Main `LayoutPdfParser` entry point: 7-step pipeline (page render → hybrid OCR → layout → table → text merge → reading order → markdown). Produces `PDFParseResult` with confidence metrics
 
 - **`cleanup.py`** - Deterministic markdown cleanup node
-  - Five built-in transforms plus five configurable builtin extraction-artifact fixes (`html_unescape`, `fix_ligatures`, `strip_zero_width_chars`, `strip_page_numbers`, `strip_repetitive_lines`) — four are ON by default; only `strip_repetitive_lines` defaults to OFF
+  - Five built-in transforms plus nine configurable builtin extraction-artifact fixes (`html_unescape`, `fix_ligatures`, `strip_zero_width_chars`, `strip_bullet_glyphs`, `strip_page_numbers`, `normalize_superscripts`, `dedupe_table_spans`, `strip_repetitive_lines`, `strip_repeated_headings`) — seven are ON by default; `strip_repetitive_lines` and `strip_repeated_headings` default to OFF because they remove content
   - `strip_page_numbers` is skipped when the document was parsed with `parse_profile == "pdf_layout"` (the layout parser already removes them)
   - Runs between Ingest and Judge; no LLM calls
   - Accepts optional `doc_context` and `config` to apply config-driven cleanup rules after built-in transforms
@@ -299,7 +299,7 @@ Three chunking strategies available (configurable via `pipeline.yaml`). Default 
 
 ## Testing
 
-Current automated coverage (**763 tests across 58 files** — 757 in the CI unit shard, 6 `integration`-marked tests in a separate job that skip without cached models; 2026-08-30):
+Current automated coverage (**773 tests across 58 files** — 767 in the CI unit shard, 6 `integration`-marked tests in a separate job that skip without cached models; 2026-08-30):
 - Schema creation and validation (incl. `CleanupResult`, `JudgeResult.sub_scores`)
 - Diagnostics and error handling
 - Pipeline state transitions (11 nodes)
@@ -327,7 +327,7 @@ Current automated coverage (**763 tests across 58 files** — 757 in the CI unit
 
 Run tests:
 ```bash
-pytest -q                    # All tests (763; CI shards them, see .github/workflows/ci.yml)
+pytest -q                    # All tests (773; CI shards them, see .github/workflows/ci.yml)
 pytest -m "not integration"  # Unit shard (what CI's backend job runs)
 pytest -m integration --no-cov   # Integration shard (skips without cached Docling models)
 ```

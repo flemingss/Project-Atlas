@@ -68,6 +68,7 @@ Layout parser now preflights page count via PyMuPDF and refuses oversized PDFs w
   1. Baseline: the dev stack as-is (`docker compose up -d`) is 2.76.0. Ingest the doc, export or note the heading structure.
   2. Candidate: in a scratch checkout, set `docling>=2.123.1` in `pyproject.toml`, regenerate both locks on Linux with `PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu pip-compile` (see `.github/dependabot.yml` note), then `docker compose build atlas` and `docker compose up -d atlas`. The API container will run the new image against the same Postgres/Qdrant; use a different `doc_id` so the two ingests are side by side.
   3. Decide. If GO: land the pin + locks as one commit and rebuild; if NO-GO: close #65 with the observation and keep 2.76.0 (Dependabot already ignores the major).
+- **Concrete comparison points from the Microsemi datasheet (run 22, 2026-08-30):** (a) page-5 footer `713-4113` / `215-4996` — 2.76.0 drops the doubled digit on one page (PyMuPDF text layer is correct); (b) S650 Front/Rear Panel key/value list misdetected as a 4-column table with a tripled row; (c) spanned-cell repetition in the Timing I/O table; (d) superscripts flattened (`10 -7`, `1 st`). (a) and (b) are the ones that decide it.
 
 ### P1-03 — Coverage gate covers only `atlas.pipeline` → ✅ **DONE 2026-08-29**
 Added `--cov=atlas.vlm_ingest`; 80% fail-under gate holds (pipeline ~91%, vlm_ingest ~93%). Commit `f5b4644`.
@@ -113,6 +114,11 @@ Endpoint paginated (`limit`/`offset`, default 200 max 1000) returning `{pages,to
 ### P2-05 — Dedicated ingest regression corpus
 - **Status:** Partial. #15 was closed with *mocked* Docling tests (`parse_document_path` patched). `tests/test_docling_e2e.py` now runs the real converter against generated PDFs (quality floor, not exact string) and is skipped unless models are cached — so CI still does not exercise it. `scripts/ingest_quality.py` is the upgrade gate, not a corpus.
 - **Action:** keep generated fixtures (do not commit production manuals). Add a manual/nightly job that builds the image and runs one real ingest *as the runtime user* — the 2026-08-30 non-root regression (Docling dead in the shipped image, invisible to the suite) is exactly what such a job exists to catch. Until then: any Dockerfile change touching users, `HOME`, or caches gets a rebuilt-image parse before it is called done.
+
+### P2-10 — Judge grades without the source; "faithfulness" is unmeasured
+- **Status:** Open (found 2026-08-30 on the Microsemi datasheet).
+- **Problem:** `JudgeNode.grade_document` sees only the markdown under test. It penalised faithfulness for typos that are *in the PDF* ("Ouput", "constallation") and for a real S600/S650 difference. With no reference, the dimension measures "looks plausible", not fidelity.
+- **Action:** pass the pre-refine (cleanup-node) markdown as the reference and instruct the judge that source typos are not infidelity. Doubles judge tokens — profile-gate it (`api` profile on, `local` profile off) and measure whether HITL routing changes on the real corpus before making it default.
 
 ### P2-06 — Sectional refinement context loss
 - **Status:** Open. Foot-gun, not a bug in current defaults.
