@@ -220,6 +220,8 @@ def test_normalize_superscripts_rejoins_exponents_and_ordinals() -> None:
     text = "Standard ±1×10 -7\nOCXO ±5x10 -9\nfrequency <1x10 -12 at one day\n(1 st 24 hours)\nOptional 2 nd power supply"
     out = _builtin_normalize_superscripts(text)
     assert out == "Standard ±1×10^-7\nOCXO ±5x10^-9\nfrequency <1x10^-12 at one day\n(1st 24 hours)\nOptional 2nd power supply"
+    # A raised exponent that landed in its own paragraph is rejoined too.
+    assert _builtin_normalize_superscripts("aging: ±1×10\n\n-7\n\nnext") == "aging: ±1×10^-7\n\nnext"
 
 
 def test_normalize_superscripts_does_not_touch_prose_numbers() -> None:
@@ -262,29 +264,48 @@ def test_dedupe_table_spans_ignores_non_table_lines_and_escaped_pipes() -> None:
     assert _builtin_dedupe_table_spans(text) == text
 
 
-def test_strip_repeated_headings_keeps_first_copy_at_threshold() -> None:
-    text = "## SyncServer S600\n\nintro\n\n## SyncServer S600\n\nbody\n\n## Features\n\n## SyncServer S600\n\n## Features"
-    out = _builtin_strip_repeated_headings(text, threshold=3)
+def test_strip_repeated_headings_title_scope_only_touches_the_first_heading() -> None:
+    text = (
+        "## SyncServer S600\n\nintro\n\n## SyncServer S600\n\nbody\n\n## Notes\n\n"
+        "## SyncServer S600\n\n## Notes\n\ntext\n\n## Notes"
+    )
+    out = _builtin_strip_repeated_headings(text, threshold=3)  # scope defaults to title
     assert out.count("## SyncServer S600") == 1
     assert out.startswith("## SyncServer S600")
-    # Two occurrences is below the threshold — untouched.
-    assert out.count("## Features") == 2
+    # "## Notes" repeats three times but is not the title — untouched in title scope.
+    assert out.count("## Notes") == 3
+    # Title scope defaults to threshold 2: a repeated title is a running header.
+    two = "## T\n\na\n\n## T\n\nb"
+    assert _builtin_strip_repeated_headings(two) == "## T\n\na\n\n\n\nb"
+    assert _builtin_strip_repeated_headings(two, threshold=3) == two
 
 
-def test_strip_repeated_headings_is_off_by_default_and_on_via_config() -> None:
+def test_strip_repeated_headings_any_scope_dedupes_every_repeated_heading() -> None:
+    text = "## Title\n\n## Notes\n\na\n\n## Notes\n\nb\n\n## Notes\n\n## Features\n\n## Features"
+    out = _builtin_strip_repeated_headings(text, scope="any")  # any-scope default threshold is 3
+    assert out.count("## Notes") == 1
+    assert out.count("## Features") == 2  # below threshold
+
+
+def test_strip_repeated_headings_default_on_with_title_scope_and_config_override() -> None:
     import asyncio
 
-    text = "## Title\n\na\n\n## Title\n\nb\n\n## Title\n\nc"
+    text = "## Title\n\na\n\n## Title\n\nb\n\n## Title\n\n## Notes\n\n## Notes\n\n## Notes"
     node = CleanupNode()
     default = asyncio.run(node.clean(markdown=text))
-    assert default.cleaned_markdown.count("## Title") == 3
-    assert not any("strip_repeated_headings" in t for t in default.transforms_applied)
+    assert default.cleaned_markdown.count("## Title") == 1
+    assert default.cleaned_markdown.count("## Notes") == 3
+    assert "builtin:strip_repeated_headings" in default.transforms_applied
 
-    enabled = asyncio.run(
-        node.clean(markdown=text, config={"builtin_cleanup": {"strip_repeated_headings": True}})
+    any_scope = asyncio.run(
+        node.clean(markdown=text, config={"builtin_cleanup": {"repeated_heading_scope": "any"}})
     )
-    assert enabled.cleaned_markdown.count("## Title") == 1
-    assert "builtin:strip_repeated_headings" in enabled.transforms_applied
+    assert any_scope.cleaned_markdown.count("## Notes") == 1
+
+    off = asyncio.run(
+        node.clean(markdown=text, config={"builtin_cleanup": {"strip_repeated_headings": False}})
+    )
+    assert off.cleaned_markdown.count("## Title") == 3
 
 
 def test_new_builtins_are_on_by_default_and_reported() -> None:

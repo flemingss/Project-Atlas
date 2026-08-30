@@ -86,22 +86,32 @@ RUN useradd --uid 1000 --create-home atlas \
     && mkdir -p /app/models /app/artifacts \
     && chown atlas:atlas /app/models /app/artifacts /tmp
 ENV HOME=/home/atlas \
-    HF_HOME=/home/atlas/.cache/huggingface
+    HF_HOME=/home/atlas/.cache/huggingface \
+    DOCLING_ARTIFACTS_PATH=/home/atlas/.cache/docling/models
 
 # ---------- Parse model weights (cached with the dependency layer) ----------
 # Without this, the FIRST PDF ingest of a fresh deployment downloads these at
 # request time — minutes of added latency, and a hard failure wherever egress
 # to the HF CDN is restricted. Bake them in instead:
-# - Docling layout (heron) + table models into the HF cache ($HF_HOME), where
-#   docling.StandardPdfPipeline resolves them at runtime.
+# - Docling's layout + table (+ RapidOCR) models via Docling's own downloader
+#   into $DOCLING_ARTIFACTS_PATH. Docling then loads them from disk and never
+#   asks the Hub. A plain huggingface_hub snapshot_download into the HF cache
+#   is NOT enough: it fetches `main`, Docling asks for a pinned revision, and
+#   with no network the lookup fails ("cannot find the appropriate snapshot
+#   folder for the specified revision") — the image only worked online
+#   (found 2026-08-30 by running the smoke with --network none).
 # - deepdoc's ONNX set into ./models/deepdoc, where atlas.ingest.model_manager
 #   expects it (fallback layout parser).
-# atlas.startup_validation warns at boot if this cache is missing or unreadable.
+# atlas.startup_validation warns at boot if either is missing or unreadable;
+# .github/workflows/image.yml proves a parse with networking disabled.
 USER atlas
 RUN python -c "\
+from pathlib import Path; \
+from docling.utils.model_downloader import download_models; \
+download_models(output_dir=Path('/home/atlas/.cache/docling/models'), \
+    with_layout=True, with_tableformer=True, with_rapidocr=True, \
+    with_code_formula=False, with_picture_classifier=False); \
 from huggingface_hub import snapshot_download; \
-snapshot_download('docling-project/docling-layout-heron'); \
-snapshot_download('docling-project/docling-models'); \
 snapshot_download('InfiniFlow/deepdoc', local_dir='/app/models/deepdoc', \
     allow_patterns=['layout.onnx', 'det.onnx', 'rec.onnx', 'ocr.res', 'tsr.onnx'])"
 USER root

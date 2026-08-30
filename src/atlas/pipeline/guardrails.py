@@ -162,3 +162,47 @@ def strip_llm_artifacts(text: str) -> str:
         return text
 
     return cleaned
+
+
+# ---------------------------------------------------------------------------
+# Fact preservation (Layer 1b)
+# ---------------------------------------------------------------------------
+
+# A "fact token" is a digit-dominant word — at least three characters once
+# thousands separators are removed, with digits making up at least half of
+# it: phone-number groups (``4113``), part numbers (``090-15200-601`` →
+# ``090``, ``15200``, ``601``), model names (``S600``), standards (``60068``),
+# quantities (``360,000`` → ``360000``). These are the tokens a refine pass
+# has no business changing, and the ones whose corruption is worst for
+# retrieval — a confidently wrong number. Letter-dominant words that merely
+# contain a digit (``syst3m``, ``Ov3rview``) are *not* facts: those are the
+# OCR substitutions refine is supposed to repair. Case-folded so
+# ``S600``/``s600`` match.
+_THOUSANDS_SEP_RE = re.compile(r"(?<=\d)[,\u00a0\u202f ](?=\d{3}\b)")
+_WORD_RE = re.compile(r"\b\w{3,}\b")
+
+
+def _is_fact_token(token: str) -> bool:
+    digits = sum(ch.isdigit() for ch in token)
+    return digits > 0 and digits * 2 >= len(token)
+
+
+def fact_tokens(text: str) -> set[str]:
+    """Return the set of digit-dominant tokens (see module note) in *text*."""
+    normalised = _THOUSANDS_SEP_RE.sub("", text)
+    return {
+        m.group().casefold()
+        for m in _WORD_RE.finditer(normalised)
+        if _is_fact_token(m.group())
+    }
+
+
+def dropped_facts(before: str, after: str, *, limit: int = 10) -> list[str]:
+    """Fact tokens present in *before* but absent from *after*, sorted, capped.
+
+    A token counts as preserved if it appears anywhere in *after* — moving,
+    reformatting, or de-duplicating a repeated footer is fine; losing the
+    only copy of ``4113`` is not.
+    """
+    missing = fact_tokens(before) - fact_tokens(after)
+    return sorted(missing)[:limit]

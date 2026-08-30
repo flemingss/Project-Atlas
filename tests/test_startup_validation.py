@@ -64,6 +64,17 @@ def test_parse_model_cache_warns_when_empty(tmp_path) -> None:
     assert msg is not None and "no Docling models" in msg
 
 
+def test_parse_model_cache_prefers_docling_artifacts_path(tmp_path, monkeypatch) -> None:
+    """DOCLING_ARTIFACTS_PATH (what the image bakes) wins over the HF cache."""
+    artifacts = tmp_path / "docling-models"
+    (artifacts / "docling-project--docling-layout-heron").mkdir(parents=True)
+    monkeypatch.setenv("DOCLING_ARTIFACTS_PATH", str(artifacts))
+    assert _warn_parse_model_cache() is None
+    monkeypatch.setenv("DOCLING_ARTIFACTS_PATH", str(tmp_path / "missing"))
+    msg = _warn_parse_model_cache()
+    assert msg is not None and "does not exist" in msg
+
+
 def test_parse_model_cache_warns_when_unreadable(tmp_path, monkeypatch) -> None:
     """The /root-is-0700 case: stat on the cache raises PermissionError."""
     from pathlib import Path

@@ -78,14 +78,21 @@ def _warn_parse_model_cache(*, cache_dir: Path | None = None) -> str | None:
     non-root). Say so at startup, not at the first ingest.
 
     Returns the warning text (also logged) or ``None`` when the cache looks
-    usable. ``cache_dir`` overrides huggingface_hub's resolved cache for tests.
+    usable. ``cache_dir`` overrides the resolved location for tests. The
+    location is ``DOCLING_ARTIFACTS_PATH`` when set (the image bakes models
+    there via Docling's own downloader, which is what makes parsing work with
+    no network), else huggingface_hub's cache.
     """
     if cache_dir is None:
-        try:
-            from huggingface_hub.constants import HF_HUB_CACHE
-        except Exception:  # huggingface_hub absent: nothing to check
-            return None
-        cache_dir = Path(HF_HUB_CACHE)
+        artifacts = os.environ.get("DOCLING_ARTIFACTS_PATH")
+        if artifacts:
+            cache_dir = Path(artifacts)
+        else:
+            try:
+                from huggingface_hub.constants import HF_HUB_CACHE
+            except Exception:  # huggingface_hub absent: nothing to check
+                return None
+            cache_dir = Path(HF_HUB_CACHE)
 
     uid = getattr(os, "getuid", lambda: "?")()
     try:
@@ -164,7 +171,10 @@ _BUILTIN_INT_KEYS = frozenset({
     "repetitive_line_threshold", "repetitive_line_max_chars",
     "repeated_heading_threshold", "table_span_min_chars",
 })
-_VALID_BUILTIN_KEYS = _BUILTIN_BOOL_KEYS | _BUILTIN_INT_KEYS
+_BUILTIN_ENUM_KEYS: dict[str, frozenset[str]] = {
+    "repeated_heading_scope": frozenset({"title", "any"}),
+}
+_VALID_BUILTIN_KEYS = _BUILTIN_BOOL_KEYS | _BUILTIN_INT_KEYS | frozenset(_BUILTIN_ENUM_KEYS)
 
 
 def _validate_builtin_cleanup(raw: Any) -> None:
@@ -189,6 +199,13 @@ def _validate_builtin_cleanup(raw: Any) -> None:
         if val is not None and not isinstance(val, int):
             raise RuntimeError(
                 f"pipeline.yaml builtin_cleanup.{key} must be an integer (got {type(val).__name__})"
+            )
+    # Enumerated parameters
+    for key, allowed in _BUILTIN_ENUM_KEYS.items():
+        val = raw.get(key)
+        if val is not None and val not in allowed:
+            raise RuntimeError(
+                f"pipeline.yaml builtin_cleanup.{key} must be one of {sorted(allowed)} (got {val!r})"
             )
 
 

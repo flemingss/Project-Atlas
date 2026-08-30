@@ -199,8 +199,20 @@ class PipelineOrchestrator:
             )
             return
 
+        # Post-refine judge passes receive the pre-refine markdown as a
+        # reference so faithfulness is graded relative to the original rather
+        # than to an ideal document. `pre_refine_markdown` is only set by
+        # set_refine_result after refine has run, so the first judge pass
+        # (no reference) keeps its current meaning. Gated by config so
+        # token-constrained/local profiles can disable it.
+        reference_markdown = (
+            context.results.get("pre_refine_markdown")
+            if getattr(self.judge_node, "pass_reference_on_refine", False)
+            else None
+        )
+
         result = await self.judge_node.grade_document(
-            markdown=markdown, judge_cutoff=judge_cutoff
+            markdown=markdown, judge_cutoff=judge_cutoff, reference_markdown=reference_markdown
         )
 
         context.set_judge_result(result)

@@ -268,3 +268,8 @@ profiles:
         # the reason it holds the judge role: it is the only one that can grade
         # a ~2000-page manual whole. Beyond this the judge is skipped, not failed.
         judge_max_context_tokens: 1310720
+      thresholds:
+        # Post-refine judge passes receive the pre-refine markdown as a
+        # reference and grade faithfulness relative to it. Roughly doubles
+        # post-refine judge tokens — affordable on api, off for local.
+        judge_pass_reference_on_refine: true

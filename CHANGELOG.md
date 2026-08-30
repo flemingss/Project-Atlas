@@ -14,6 +14,51 @@ assigned yet — pick the next version and bump both when it ships.
 
 Remaining work is tracked as GitHub issues, indexed in `docs/ACTION_ITEMS.md`.
 
+### Fixed (2026-08-30, the image could not parse without network)
+
+- The model bake used `huggingface_hub.snapshot_download`, which fetches
+  `main`; Docling asks for a pinned revision, so with no egress the lookup
+  failed and every parse died — the image had only ever worked online,
+  contrary to the Dockerfile's stated purpose. Models are now baked with
+  Docling's own `download_models()` into `DOCLING_ARTIFACTS_PATH`
+  (`/home/atlas/.cache/docling/models`, ~565 MB incl. RapidOCR), which
+  Docling loads from disk without a Hub call. Verified with
+  `docker run --network none`. The startup warning and the e2e test's cache
+  probe check that path first.
+
+### Added (2026-08-30, fact-preservation guardrail + image gate)
+
+- **Refine rejects any output that loses a digit-dominant token**
+  (`thresholds.refine_fact_preservation`, default on). Phone-number groups,
+  part numbers, model names, quantities — anything ≥3 characters that is at
+  least half digits, thousands separators ignored. Letter-dominant words
+  that merely contain a digit (`syst3m`) are *not* facts, so OCR repair is
+  unaffected. The length and heading-count guards cannot see one dropped
+  digit; this can. Applies to holistic and sectional refinement alike.
+- **`.github/workflows/image.yml`** builds the appliance image on every push
+  to `main` and runs `scripts/image_smoke.py` inside it as the runtime user:
+  asserts non-root, a readable model cache, and that a manufactured PDF with
+  every extraction situation seen so far (doubled digits in a small font,
+  two-column reading order, a spanned table header, glyph bullets, a raised
+  exponent, running headers) parses and cleans up. Then runs the
+  `integration`-marked tests inside the image — the real converter, which
+  `ci.yml` can only skip. This is the gate the 2026-08-29 non-root
+  regression would have failed.
+- `strip_repeated_headings` is now **ON by default with `scope: title`**:
+  only the document's first heading is deduplicated (threshold 2 — a
+  repeated title is a running header). `scope: any` (threshold 3) is the
+  previous behaviour, opt in per corpus. `normalize_superscripts` also
+  rejoins an exponent that landed in its own paragraph (`×10\n\n-7`).
+- **P2-10: the post-refine judge grades faithfulness against a reference**
+  (`thresholds.judge_pass_reference_on_refine`, default off; the `api`
+  profile enables it). Until now the judge only ever saw the markdown, so
+  "faithfulness" measured "looks plausible", and it penalised faithful
+  reproduction of source typos. When refine has run, the judge now receives
+  the pre-refine markdown as a reference with FAITHFULNESS reworded to mean
+  "faithful to the reference — source typos are not infidelity". The
+  reference prompt variant has a distinct `judge_version` hash. Roughly
+  doubles post-refine judge tokens; hence the profile gate.
+
 ### Added (2026-08-30, cleanup rules from the first real datasheet)
 
 Ingesting an 11-page Microsemi datasheet (3-column layout, spanned tables,

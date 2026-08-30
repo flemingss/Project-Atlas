@@ -1,0 +1,71 @@
+# Image — build the appliance image and prove it can parse, as the user it ships with.
+#
+# ci.yml never builds the Dockerfile and runs the suite as root, so an
+# image-level regression is invisible to it. On 2026-08-29 the container went
+# non-root with its model cache under 0700 /root, and every Docling parse in
+# the shipped image failed for a day while CI stayed green. This workflow is
+# the gate that class of failure now has to pass:
+#
+#   1. build the image exactly as `docker compose build` would;
+#   2. run scripts/image_smoke.py inside it, as its default (non-root) user,
+#      with no services: asserts the runtime uid, the model cache, and that a
+#      manufactured PDF carrying every extraction situation seen on real
+#      documents (doubled digits, two columns, spanned table header, glyph
+#      bullets, raised exponents, running headers) parses and cleans up;
+#   3. run the `integration`-marked tests inside the image — the real
+#      converter against generated PDFs, which ci.yml can only skip.
+#
+# Triggered on push to main (post-merge) and by hand. ~15 min cold; the GHA
+# layer cache carries the dependency and model layers between runs.
+name: Image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: atlas-image-ci:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke — parse a manufactured PDF as the runtime user, no network
+        # --network none is the egress-blocked appliance. The image must parse
+        # from its baked models alone; the first version of the bake only
+        # worked online (2026-08-30).
+        run: |
+          docker run --rm --network none \
+            -v "$PWD/scripts:/smoke:ro" \
+            atlas-image-ci:${{ github.sha }} \
+            python /smoke/image_smoke.py
+
+      - name: Integration tests inside the image
+        # pytest is not baked into the runtime image; install it for this
+        # process only. No --no-cov: pyproject (and its addopts) is not in
+        # the image, so pytest-cov is neither loaded nor needed.
+        run: |
+          docker run --rm \
+            -v "$PWD/tests:/tests:ro" \
+            -e PIP_USER=1 -e PATH="/home/atlas/.local/bin:$PATH" \
+            atlas-image-ci:${{ github.sha }} \
+            sh -c 'pip install -q pytest pytest-asyncio && python -m pytest -q -rs -p no:cacheprovider -m integration /tests'

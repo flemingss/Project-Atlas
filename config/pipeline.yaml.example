@@ -2,6 +2,11 @@ version: 1
 
 thresholds:
   judge_cutoff_refine: 4
+  # When true, the post-refine judge pass receives the pre-refine markdown as
+  # a reference and grades faithfulness relative to it (source typos in the
+  # original are not infidelity). Roughly doubles post-refine judge tokens.
+  # Enable on the api profile; leave off for local.
+  judge_pass_reference_on_refine: false
   # Per-dimension judge floors (optional). If any dimension falls below its
   # floor the document is sent to refine regardless of composite score.
   # Set to 0 to disable per-dimension gating for a given dimension.
@@ -21,6 +26,11 @@ thresholds:
   # If the refined text has fewer than this fraction of the original's
   # headings, refinement is rejected as sections_dropped.
   refine_min_section_ratio: 0.8
+  # Reject a refinement that loses any digit-bearing token (phone-number
+  # groups, part numbers, model names, quantities; thousands separators are
+  # ignored so "10,000" → "10000" is fine). Length and heading ratios cannot
+  # see one dropped digit; this can. The original text is kept on rejection.
+  refine_fact_preservation: true
   # When true, a document whose formatting sub-score is below cutoff but
   # whose content dimensions are above cutoff is re-routed through CLEANUP
   # instead of REFINE.
@@ -105,9 +115,11 @@ builtin_cleanup:
   strip_repetitive_lines: false  # Remove short lines repeating ≥ threshold times (OFF by default)
   # repetitive_line_threshold: 8   # Min occurrences to consider a line repetitive
   # repetitive_line_max_chars: 80  # Only lines ≤ this length are candidates
-  strip_repeated_headings: false # Drop later copies of a heading seen ≥ threshold times — per-page
-                                 # running headers. OFF: a manual repeating "## Notes" would lose them.
-  # repeated_heading_threshold: 3
+  strip_repeated_headings: true  # Drop later copies of the document's title heading — per-page
+                                 # running headers Docling turns into "##". First copy always kept.
+  # repeated_heading_scope: title  # title (default): only the first heading. any: every heading —
+                                   # opt in per corpus; a manual repeating "## Notes" would lose them.
+  # repeated_heading_threshold: 2  # Occurrences before stripping. Defaults: 2 for title, 3 for any.
 
 # ---------------------------------------------------------------------------
 # Config-driven cleanup rules (Phase 7A)

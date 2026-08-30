@@ -38,6 +38,29 @@ HALLUCINATION_RISK: [1-5]
 RATIONALE: [One sentence per dimension explaining your score. Cover each dimension that scored below 4, stating what is wrong and how it could be improved. For dimensions scoring 4-5 you may briefly confirm quality.]
 """
 
+# Variant used when a pre-refine reference document is supplied: faithfulness
+# is graded relative to the provided reference rather than to an ideal
+# document, so source typos/OCR artifacts carried over from the reference are
+# not infidelity.
+JUDGE_SYSTEM_PROMPT_WITH_REFERENCE = """You are a document quality grader. Evaluate the given markdown document across four dimensions, each on a 1-5 scale.
+
+Dimensions:
+  FAITHFULNESS  – How accurately the markdown reproduces the provided reference content (no missing/added info). Source typos/OCR artifacts present in the reference are NOT infidelity.
+  FORMATTING    – Heading hierarchy, list structure, whitespace, and overall readability.
+  COHESION      – Logical flow between sections; consistent terminology and tone.
+  HALLUCINATION_RISK – Likelihood the text contains fabricated or hallucinated content (5 = no risk, 1 = high risk).
+
+Per-dimension rubric:
+  5 - Excellent  4 - Good  3 - Acceptable  2 - Poor  1 - Unusable
+
+Provide your response in this exact format (one line per field):
+FAITHFULNESS: [1-5]
+FORMATTING: [1-5]
+COHESION: [1-5]
+HALLUCINATION_RISK: [1-5]
+RATIONALE: [One sentence per dimension explaining your score. Cover each dimension that scored below 4, stating what is wrong and how it could be improved. For dimensions scoring 4-5 you may briefly confirm quality.]
+"""
+
 JUDGE_FEW_SHOT_EXAMPLES = [
     {
         "input": "# Technical Manual\n\nThis document describes the system architecture...",
@@ -58,10 +81,14 @@ JUDGE_FEW_SHOT_EXAMPLES = [
 ]
 
 
-def _prompt_hash() -> str:
-    """Stable short hash of the judge prompt constants for versioning."""
+def _prompt_hash(system_prompt: str = JUDGE_SYSTEM_PROMPT) -> str:
+    """Stable short hash of the judge prompt constants for versioning.
+
+    The active system prompt is part of the hash input so the two prompt
+    variants (with/without reference) yield distinct judge_version values.
+    """
     h = hashlib.sha256()
-    h.update(JUDGE_SYSTEM_PROMPT.encode("utf-8"))
+    h.update(system_prompt.encode("utf-8"))
     for ex in JUDGE_FEW_SHOT_EXAMPLES:
         h.update(ex["input"].encode("utf-8"))
         h.update(ex["output"].encode("utf-8"))
@@ -85,6 +112,7 @@ class JudgeNode:
         model_name: str,
         model_params: dict[str, Any],
         max_context_tokens: int | None = None,
+        pass_reference_on_refine: bool = False,
     ):
         self.provider = provider
         self.model_name = model_name
@@ -95,26 +123,40 @@ class JudgeNode:
         # classified as non-retryable and fails the whole run. Knowing the
         # budget lets the orchestrator skip judging instead of failing ingest.
         self.max_context_tokens = max_context_tokens
+        # When True, the post-refine judge pass receives the pre-refine
+        # markdown as a reference and grades faithfulness relative to it.
+        # Gated by config so token-constrained/local profiles can disable it.
+        self.pass_reference_on_refine = pass_reference_on_refine
         self.diagnostics = get_diagnostics()
 
         # Create judge version identifier (model name + prompt hash for traceability)
         self.judge_version = f"{model_name}:ph-{_prompt_hash()}"
 
     async def grade_document(
-        self, *, markdown: str, judge_cutoff: int = 4
+        self,
+        *,
+        markdown: str,
+        judge_cutoff: int = 4,
+        reference_markdown: str | None = None,
     ) -> JudgeResult:
         """Grade a markdown document using the judge model.
+
+        When ``reference_markdown`` is provided (the pre-refine original on a
+        post-refine pass), faithfulness is graded relative to that reference
+        and the judge_version reflects the reference-aware prompt variant.
 
         Returns JudgeResult with score, rationale, and refinement decision.
         """
         with self.diagnostics.trace_operation("judge_document", {"markdown_length": len(markdown)}):
             try:
                 # Build prompt with few-shot examples
-                prompt = self._build_prompt(markdown)
+                prompt = self._build_prompt(markdown, reference_markdown=reference_markdown)
 
                 # Call LLM (using chat completion)
                 # NOTE: This is simplified - full implementation would use proper message format
-                response = await self._call_judge_model(prompt)
+                response = await self._call_judge_model(
+                    prompt, with_reference=reference_markdown is not None
+                )
 
                 # Parse response
                 sub_scores, rationale = self._parse_response(response)
@@ -125,10 +167,19 @@ class JudgeNode:
                 # Determine if refinement needed
                 needs_refinement = score < judge_cutoff
 
+                # judge_version reflects the prompt variant actually used for
+                # this grade (reference-aware vs default), not just the
+                # construction-time default.
+                judge_version = (
+                    f"{self.model_name}:ph-{_prompt_hash(JUDGE_SYSTEM_PROMPT_WITH_REFERENCE)}"
+                    if reference_markdown is not None
+                    else self.judge_version
+                )
+
                 result = JudgeResult(
                     score=score,
                     confidence_rationale=rationale,
-                    judge_version=self.judge_version,
+                    judge_version=judge_version,
                     needs_refinement=needs_refinement,
                     timestamp=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                     sub_scores=sub_scores,
@@ -161,15 +212,30 @@ class JudgeNode:
                     sub_scores={d: 3 for d in JUDGE_DIMENSIONS},
                 )
 
-    def _build_prompt(self, markdown: str) -> str:
-        """Build user prompt with few-shot examples and document to grade."""
+    def _build_prompt(
+        self, markdown: str, *, reference_markdown: str | None = None
+    ) -> str:
+        """Build user prompt with few-shot examples and document to grade.
+
+        When ``reference_markdown`` is provided, a clearly-delimited reference
+        block is inserted before the document so the judge can grade
+        faithfulness relative to the pre-refine original.
+        """
         examples_text = "\n\n".join(
             f"Example {i+1}:\nInput: {ex['input']}\nOutput: {ex['output']}"
             for i, ex in enumerate(JUDGE_FEW_SHOT_EXAMPLES)
         )
 
-        prompt = f"""{examples_text}
+        reference_block = ""
+        if reference_markdown is not None:
+            reference_block = f"""
+Reference (pre-refine original — grade faithfulness relative to this, not to an ideal document; source typos are not infidelity):
 
+{reference_markdown}
+"""
+
+        prompt = f"""{examples_text}
+{reference_block}
 Now grade this document:
 
 {markdown}
@@ -177,10 +243,17 @@ Now grade this document:
 Your response:"""
         return prompt
 
-    async def _call_judge_model(self, prompt: str) -> str:
-        """Call the judge LLM model with separated system and user messages."""
+    async def _call_judge_model(self, prompt: str, *, with_reference: bool = False) -> str:
+        """Call the judge LLM model with separated system and user messages.
+
+        Selects the reference-aware system prompt variant when the grade
+        included a pre-refine reference document.
+        """
+        system_prompt = (
+            JUDGE_SYSTEM_PROMPT_WITH_REFERENCE if with_reference else JUDGE_SYSTEM_PROMPT
+        )
         messages = [
-            ChatMessage(role="system", content=JUDGE_SYSTEM_PROMPT),
+            ChatMessage(role="system", content=system_prompt),
             ChatMessage(role="user", content=prompt),
         ]
         return await self.provider.chat(model=self.model_name, messages=messages, params=self.model_params)

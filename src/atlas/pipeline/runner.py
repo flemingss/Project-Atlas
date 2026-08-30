@@ -160,6 +160,14 @@ def _build_orchestrator(*, settings: Settings, models_cfg: dict[str, Any], pipel
             (pipeline_cfg.get("limits", {}) or {}).get("judge_max_context_tokens", 0)
         )
         or None,
+        # Post-refine judge passes receive the pre-refine markdown as a
+        # reference (roughly doubles post-refine judge tokens); off by default
+        # for token-constrained/local profiles.
+        pass_reference_on_refine=bool(
+            (pipeline_cfg.get("thresholds", {}) or {}).get(
+                "judge_pass_reference_on_refine", False
+            )
+        ),
     )
     refine_node = RefineNode(
         provider=refine_provider,
@@ -182,6 +190,9 @@ def _build_orchestrator(*, settings: Settings, models_cfg: dict[str, Any], pipel
             (pipeline_cfg.get("thresholds", {}) or {}).get(
                 "refine_min_section_ratio", 0.8
             )
+        ),
+        fact_preservation=bool(
+            (pipeline_cfg.get("thresholds", {}) or {}).get("refine_fact_preservation", True)
         ),
         max_context_tokens=int(
             (pipeline_cfg.get("limits", {}) or {}).get("max_context_tokens", 16384)

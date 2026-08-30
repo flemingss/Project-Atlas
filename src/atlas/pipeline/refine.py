@@ -12,7 +12,7 @@ from typing import Any
 from atlas.diagnostics import ErrorCode, get_diagnostics
 from atlas.llm.openai_compat import strip_reasoning_tags
 from atlas.llm.provider import ChatMessage, ILlmProvider
-from atlas.pipeline.guardrails import strip_llm_artifacts
+from atlas.pipeline.guardrails import dropped_facts, strip_llm_artifacts
 from atlas.pipeline.tokens import count_headings, estimate_tokens, split_into_sections
 from atlas.schemas import RefineResult
 
@@ -85,6 +85,7 @@ class RefineNode:
         max_retries: int = 2,
         min_preservation_ratio: float = _DEFAULT_MIN_PRESERVATION_RATIO,
         min_section_ratio: float = 0.8,
+        fact_preservation: bool = True,
         max_context_tokens: int = 16384,
         max_section_tokens: int = 6000,
         max_output_tokens: int | None = None,
@@ -95,6 +96,11 @@ class RefineNode:
         self.max_retries = max_retries
         self.min_preservation_ratio = min_preservation_ratio
         self.min_section_ratio = min_section_ratio
+        # Reject a refinement that loses any digit-bearing token (phone-number
+        # groups, part numbers, model names, quantities). Length and heading
+        # counts cannot see a single dropped digit; this can, and a wrong
+        # number is the worst thing a refine pass can put into a RAG corpus.
+        self.fact_preservation = fact_preservation
         self.max_context_tokens = max_context_tokens
         self.max_section_tokens = max_section_tokens
         # Declared response ceiling for this model. Refine emits a full rewrite,
@@ -222,6 +228,14 @@ class RefineNode:
                         success=False,
                         timestamp=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                     )
+
+                # ----------------------------------------------------------
+                # Fact-preservation guardrail: reject if any digit-bearing
+                # token disappeared (a dropped digit, a lost part number).
+                # ----------------------------------------------------------
+                rejected = self._reject_if_facts_dropped(markdown, refined_markdown)
+                if rejected is not None:
+                    return rejected
 
                 # Analyze improvements
                 improvements = self._analyze_improvements(markdown, refined_markdown)
@@ -356,6 +370,10 @@ class RefineNode:
                 timestamp=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             )
 
+        rejected = self._reject_if_facts_dropped(markdown, reassembled, sectional=True)
+        if rejected is not None:
+            return rejected
+
         improvements = self._analyze_improvements(markdown, reassembled)
         improvements.insert(0, f"sectional_refine:{len(sections)}_sections")
 
@@ -448,6 +466,36 @@ class RefineNode:
         # (preamble, postamble, code fences, meta-sections) that the LLM
         # may inject despite explicit prompt instructions.
         return strip_llm_artifacts(result)
+
+    def _reject_if_facts_dropped(
+        self, markdown: str, refined: str, *, sectional: bool = False
+    ) -> RefineResult | None:
+        """Return a rejection result if *refined* lost any fact token, else None.
+
+        Shared by the holistic and sectional paths so both enforce the same
+        rule on the whole document. See :func:`atlas.pipeline.guardrails.dropped_facts`.
+        """
+        if not self.fact_preservation:
+            return None
+        missing = dropped_facts(markdown, refined)
+        if not missing:
+            return None
+        label = "sectional_facts_dropped" if sectional else "facts_dropped"
+        self.diagnostics.log_warning(
+            component="refine",
+            message=(
+                f"{'Sectional refinement' if sectional else 'Refinement'} rejected — "
+                f"{len(missing)}+ digit-bearing tokens missing from output "
+                f"(e.g. {', '.join(missing[:5])}). Keeping original text."
+            ),
+        )
+        return RefineResult(
+            refined_markdown=markdown,
+            improvements_made=[f"refinement_rejected:{label}"],
+            refine_version=self.refine_version,
+            success=False,
+            timestamp=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        )
 
     def _analyze_improvements(self, original: str, refined: str) -> list[str]:
         """Analyze what improvements were made."""

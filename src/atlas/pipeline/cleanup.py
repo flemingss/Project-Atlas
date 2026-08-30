@@ -26,9 +26,10 @@ Transforms (executed in order):
      cell that Docling's markdown export copies into every spanned column.
    - ``strip_repetitive_lines`` (**OFF by default**): remove short lines that
      repeat ≥N times (configurable threshold/max_chars).
-   - ``strip_repeated_headings`` (**OFF by default**): drop later copies of a
-     heading that appears ≥N times — per-page running headers that Docling
-     promotes to ``##`` (configurable threshold).
+   - ``strip_repeated_headings`` (ON, ``scope: title``): drop later copies of
+     the document's title heading when it appears ≥N times — per-page running
+     headers that Docling promotes to ``##``. ``scope: any`` extends this to
+     every heading (opt in; a manual repeating ``## Notes`` would lose them).
 """
 
 from __future__ import annotations
@@ -219,8 +220,9 @@ _LIST_MARKER_GAP_RE = re.compile(r"^([ \t]*(?:[-*+]|\d+[.)]))[ \t]{2,}(?=\S)", r
 
 # Superscripts flattened with a space: "±1×10 -7" (exponent), "1 st" (ordinal).
 # The exponent form is anchored on "×10"/"x10" so a bare "10 -7" in prose is
-# left alone.
-_SCI_EXPONENT_RE = re.compile(r"([×x]10)[ \t]+([-−]?\d{1,3})\b")
+# left alone. Whitespace may include a paragraph break — a raised exponent
+# sometimes lands in its own block ("±1×10\n\n-7").
+_SCI_EXPONENT_RE = re.compile(r"([×x]10)\s+([-−]?\d{1,3})\b")
 _ORDINAL_RE = re.compile(r"\b(\d+)[ \t]+(st|nd|rd|th)\b")
 
 # Markdown table rows. Escaped pipes inside cells are rare in extractor output
@@ -294,25 +296,37 @@ def _builtin_dedupe_table_spans(text: str, *, min_chars: int = 20) -> str:
     return "\n".join(lines)
 
 
-def _builtin_strip_repeated_headings(text: str, *, threshold: int = 3) -> str:
+def _builtin_strip_repeated_headings(
+    text: str, *, threshold: int | None = None, scope: str = "title"
+) -> str:
     """Drop later copies of a heading whose exact text appears ≥ *threshold* times.
 
     Per-page running headers ("SyncServer S600" on every page of a datasheet)
     come out of Docling as a heading per page, which then becomes the heading
-    path of every chunk on that page. The first occurrence is kept. OFF by
-    default: a manual that legitimately repeats ``## Notes`` per chapter
-    would lose those headings.
+    path of every chunk on that page. The first occurrence is always kept.
+
+    ``scope="title"`` (default, ON) only considers the document's *first*
+    heading — running headers almost always repeat the title, and a manual
+    that legitimately repeats ``## Notes`` per chapter is untouched. A title
+    repeated even once is a running header, so the threshold defaults to 2.
+    ``scope="any"`` considers every heading (opt in per corpus) and defaults
+    to 3, since two ``## Features`` in one file is ordinary structure.
     """
+    if threshold is None:
+        threshold = 2 if scope == "title" else 3
     lines = text.split("\n")
     heads = [
         (i, m.group(2).strip())
         for i, ln in enumerate(lines)
         if (m := _HEADING_RE.match(ln))
     ]
+    if not heads:
+        return text
     freq = Counter(t for _, t in heads)
+    candidates = {heads[0][1]} if scope == "title" else set(freq)
     seen: set[str] = set()
     for i, t in heads:
-        if freq[t] < threshold:
+        if t not in candidates or freq[t] < threshold:
             continue
         if t in seen:
             lines[i] = ""
@@ -338,7 +352,7 @@ _BUILTIN_CLEANUP_REGISTRY: list[tuple[str, Any]] = [
 
 # Toggles that default to OFF: each can remove legitimate content on the
 # wrong document, so the operator opts in per corpus.
-_BUILTIN_DEFAULT_OFF = frozenset({"strip_repetitive_lines", "strip_repeated_headings"})
+_BUILTIN_DEFAULT_OFF = frozenset({"strip_repetitive_lines"})
 
 
 # ---------------------------------------------------------------------------
@@ -454,8 +468,10 @@ class CleanupNode:
                     max_ch = int(builtin_cfg.get("repetitive_line_max_chars", 80))
                     cleaned = handler(cleaned, threshold=threshold, max_chars=max_ch)
                 elif toggle_key == "strip_repeated_headings":
-                    threshold = int(builtin_cfg.get("repeated_heading_threshold", 3))
-                    cleaned = handler(cleaned, threshold=threshold)
+                    raw_threshold = builtin_cfg.get("repeated_heading_threshold")
+                    threshold = int(raw_threshold) if raw_threshold is not None else None
+                    scope = str(builtin_cfg.get("repeated_heading_scope", "title"))
+                    cleaned = handler(cleaned, threshold=threshold, scope=scope)
                 elif toggle_key == "dedupe_table_spans":
                     min_chars = int(builtin_cfg.get("table_span_min_chars", 20))
                     cleaned = handler(cleaned, min_chars=min_chars)

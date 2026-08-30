@@ -16,6 +16,7 @@ import pytest
 
 from atlas.llm.deterministic import DeterministicProvider
 from atlas.llm.provider import ChatMessage, ILlmProvider
+from atlas.pipeline.guardrails import dropped_facts, fact_tokens
 from atlas.pipeline.refine import RefineNode
 
 # ---------------------------------------------------------------------------
@@ -372,3 +373,106 @@ class TestUnfixableInput:
 # ---------------------------------------------------------------------------
 # Fidelity flag: score=1
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Fact-preservation guardrail (2026-08-30)
+# ---------------------------------------------------------------------------
+
+class _DigitDroppingProvider(ILlmProvider):
+    """Echoes the document with one digit removed from a phone number —
+    the exact damage Docling 2.76 did to the Microsemi datasheet, here as
+    if refine had done it. Length and heading guards cannot see it."""
+
+    async def chat(self, *, model: str, messages: list[ChatMessage], params: dict) -> str:
+        text = messages[-1].content if messages else ""
+        if "Document to improve:" in text:
+            md = text.split("Document to improve:\n", 1)[1].split("\nImproved Document:", 1)[0]
+        else:
+            md = text
+        return md.replace("713-4113", "713-413")
+
+    async def embed(self, *, model: str, texts: list[str], params: dict) -> list[list[float]]:
+        return [[0.0] * 384 for _ in texts]
+
+
+class _ReformattingProvider(ILlmProvider):
+    """Echoes the document with only legitimate changes: thousands separators
+    dropped, a duplicated footer removed, a superscript rejoined, case changed."""
+
+    async def chat(self, *, model: str, messages: list[ChatMessage], params: dict) -> str:
+        text = messages[-1].content if messages else ""
+        if "Document to improve:" in text:
+            md = text.split("Document to improve:\n", 1)[1].split("\nImproved Document:", 1)[0]
+        else:
+            md = text
+        md = md.replace("360,000", "360000").replace("10 -7", "10^-7").replace("1PPS", "1pps")
+        first, _, rest = md.partition("Footer: +1 (800) 713-4113\n")
+        return first + "Footer: +1 (800) 713-4113\n" + rest.replace("Footer: +1 (800) 713-4113\n", "")
+
+    async def embed(self, *, model: str, texts: list[str], params: dict) -> list[list[float]]:
+        return [[0.0] * 384 for _ in texts]
+
+
+_FACT_DOC = """\
+# SyncServer S600
+
+Handles 360,000 NTP requests per second; drift ±1×10 -7; 1PPS output.
+Part numbers 090-15200-601 and 090-15200-602. Standard IEC 60068-2-1Ab.
+
+Footer: +1 (800) 713-4113
+Footer: +1 (800) 713-4113
+"""
+
+
+def test_fact_tokens_extracts_digit_bearing_words_and_ignores_separators() -> None:
+    toks = fact_tokens(_FACT_DOC)
+    assert {"s600", "360000", "090", "15200", "601", "602", "60068", "713", "4113"} <= toks
+    # Two-character digit runs, pure words, and letter-dominant words that
+    # merely contain a digit (OCR substitutions refine should fix) are not facts.
+    assert "10" not in toks and "ntp" not in toks and "per" not in toks
+    assert "1pps" not in toks and "1ab" not in toks
+    assert fact_tokens("Ov3rview of the syst3m c0nsists") == set()
+
+
+def test_dropped_facts_reports_the_missing_token_only() -> None:
+    assert dropped_facts(_FACT_DOC, _FACT_DOC.replace("713-4113", "713-413")) == ["4113"]
+    assert dropped_facts(_FACT_DOC, _FACT_DOC.replace("360,000", "360000")) == []
+
+
+class TestFactPreservationGuardrail:
+    @pytest.mark.asyncio
+    async def test_rejects_when_a_digit_is_dropped(self) -> None:
+        node = _make_node(_DigitDroppingProvider())
+        result = await node.refine_document(markdown=_FACT_DOC, judge_score=3, retry_count=0)
+        assert result.success is False
+        assert result.improvements_made == ["refinement_rejected:facts_dropped"]
+        assert result.refined_markdown == _FACT_DOC
+
+    @pytest.mark.asyncio
+    async def test_accepts_reformatting_dedupe_and_case_changes(self) -> None:
+        node = _make_node(_ReformattingProvider())
+        result = await node.refine_document(markdown=_FACT_DOC, judge_score=3, retry_count=0)
+        assert result.success is True
+        assert "360000" in result.refined_markdown
+        assert result.refined_markdown.count("713-4113") == 1
+
+    @pytest.mark.asyncio
+    async def test_can_be_disabled(self) -> None:
+        node = _make_node(_DigitDroppingProvider(), fact_preservation=False)
+        result = await node.refine_document(markdown=_FACT_DOC, judge_score=3, retry_count=0)
+        assert result.success is True
+        assert "713-413" in result.refined_markdown
+
+    @pytest.mark.asyncio
+    async def test_sectional_path_keeps_the_original_too(self) -> None:
+        """Per-section refinement runs the same guard on each section, so a
+        dropped digit inside one section is rejected there and the original
+        section is kept — the reassembled document still carries 4113."""
+        node = _make_node(_DigitDroppingProvider(), max_context_tokens=40, max_section_tokens=30)
+        result = await node.refine_document_sectional(
+            markdown=_FACT_DOC, judge_score=3, retry_count=0
+        )
+        assert result.success is False
+        assert "713-4113" in result.refined_markdown
+        assert "713-413 " not in result.refined_markdown

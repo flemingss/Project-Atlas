@@ -1,5 +1,42 @@
 # Worklog
 
+## 2026-08-30 (hardening round 2) — Fact guard; image gate found the image was online-only; 2.123.1 measured
+
+Operator approved six items in order. Done here: fact-preservation refine
+guard, 2.123.1 candidate image, title-scoped running-header strip, the
+image-build gate. Version tag and judge-reference follow in their own
+entries.
+
+- **Refine fact guard** (`thresholds.refine_fact_preservation`): a refinement
+  that loses any digit-dominant token is rejected and the original kept.
+  First cut treated any digit-bearing word as a fact and immediately broke
+  the deterministic provider's OCR repair (`syst3m` → `system`): the rule is
+  now "≥ half digits", which keeps `S600`/`4113`/`15200` and lets
+  `syst3m` go. Applied on the holistic and sectional paths.
+- **The image gate paid for itself on its first dry run.** The manufactured
+  PDF parsed fine online; with `--network none` the *current* image failed:
+  the bake used `snapshot_download` (fetches `main`), Docling asks the Hub
+  for a pinned revision, and offline that lookup has nothing to fall back
+  to. The Dockerfile's stated reason for baking models — "hard failure
+  wherever egress is restricted" — had never been true. Fixed by baking
+  with Docling's `download_models()` into `DOCLING_ARTIFACTS_PATH`, which
+  Docling reads from disk with no Hub call; verified offline in a volume
+  before rebuilding. The workflow runs the smoke with `--network none`.
+- **Docling drops bottom-margin text as page furniture.** The fixture's
+  6-pt footer at y=800 never reached the markdown; the same text in the
+  body area did. Datasheet footers with revision codes (`900-00715-000
+  Rev C`) are therefore not in the corpus. Noted, not changed.
+- **2.123.1 measured properly** (clean locks, candidate image, real doc +
+  synthetic fixture + smoke, online and offline). Verdict is mixed and
+  recorded in ACTION_ITEMS P1-02 and on #65: better text fidelity on the
+  real datasheet, worse structure on the synthetic fixture, and a lost
+  table in offline mode. Recommendation: hold for v0.9.0.
+- `strip_repeated_headings` is ON by default in `scope: title` mode
+  (threshold 2); `scope: any` keeps threshold 3. The smoke showed Docling
+  itself drops some running headers as furniture, so the count that
+  survives varies by page — hence a title repeated even once is stripped.
+- Unit shard 774 passed, 90.16% coverage.
+
 ## 2026-08-30 (first real datasheet) — Judge display bug; Docling drops doubled digits; four cleanup rules
 
 Operator ingested an 11-page Microsemi SyncServer datasheet (run 22) and it
