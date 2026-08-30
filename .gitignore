@@ -28,3 +28,6 @@ volumes/
 models/
 *.egg-info/
 backups/
+
+# Agent-fleet ledgers and reports (see .github/agents/README.md)
+.agent/
